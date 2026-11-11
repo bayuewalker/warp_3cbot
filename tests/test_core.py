@@ -5,7 +5,6 @@ import json
 import os
 import tempfile
 import unittest
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -13,26 +12,39 @@ import httpx
 
 from warp3c.config import Settings
 from warp3c.engine import Engine
-from warp3c.models import Account, Signal
+from warp3c.models import Account, MarketEvidence, Signal
 from warp3c.risk import GlobalRisk, committed_quote, dca_ladder_factor, make_trade_payload
 from warp3c.state import OrderJournal
 from warp3c.threecommas import IntegrationError, ThreeCommas
 from warp3c.vibe import VibeResearch
 
 
+def evidence(symbol="BTCUSDT"):
+    return MarketEvidence(
+        symbol, datetime.now(timezone.utc), Decimal("100"), Decimal("10000000"),
+        "up", Decimal("0.02"), Decimal("60"), Decimal("0.01"), "trend_up",
+        Decimal("5"), 2, True, True, "ok",
+    )
+
+
 def sig(symbol="BTCUSDT", confidence="0.9"):
     return Signal(symbol, "BUY", Decimal(confidence), datetime.now(timezone.utc),
-                  "verified feed at timestamp", "Fresh momentum with volume confirmation")
+                  "verified feed at timestamp", "Fresh momentum with volume confirmation", evidence(symbol))
 
 
 def strategy(symbol="SOLUSDT", client_id="warp3c-12345678901234567890123456789012"):
+    base = symbol[: -4] if symbol.endswith("USDT") else symbol
     return {
         "clientId": client_id, "strategyId": "abc", "createdBy": "open_api",
-        "pair": symbol, "exchange": {"code": "BINANCE", "pairType": "spot", "pairSymbols": {"quote": "USDT"}},
+        "status": "entered", "paperTrading": True, "pair": symbol, "pairType": "spot",
+        "pairSymbols": {"base": base, "quote": "USDT"},
+        "exchange": {"code": "BINANCE"},
         "profileStrategies": [{"profile": {"code": "p123"}}],
         "initFixedAmount": 20, "initFixedAmountSymbol": "quote",
         "extraOrderCount": 4, "extraOrderVolumeMultiplier": 1.5,
         "applyDcaForFirstSafetyOrder": False, "totalEntryCost": 20,
+        "totalExitCost": 0, "totalEntryAmount": "0.01", "totalExitAmount": "0",
+        "lastPrice": "100",
     }
 
 
@@ -55,7 +67,7 @@ class RiskTests(unittest.TestCase):
     def test_dca_plans_respect_global_cap(self):
         cfg = Settings(max_base=Decimal("100"))
         account = Account("p123", True, Decimal("1000"), Decimal("0"), Decimal("1000"))
-        plans = GlobalRisk(cfg).plan(account, [], [sig("BTCUSDT"), sig("ETHUSDT")])
+        plans = GlobalRisk(cfg).plan(account, [], [sig("BTCUSDT"), sig("ETHUSDT")], equity=Decimal("1000"))
         self.assertEqual(len(plans), 2)
         self.assertLessEqual(sum((p.full_commitment for p in plans), Decimal("0")), Decimal("400"))
         self.assertTrue(all(p.full_commitment <= Decimal("150") for p in plans))
@@ -63,20 +75,28 @@ class RiskTests(unittest.TestCase):
     def test_external_strategy_blocks(self):
         account = Account("p123", True, Decimal("1000"), Decimal("0"), Decimal("1000"))
         with self.assertRaises(IntegrationError):
-            GlobalRisk(Settings()).plan(account, [strategy(client_id="outside-bot")], [sig()])
+            GlobalRisk(Settings()).plan(
+                account, [strategy(client_id="outside-bot")], [sig()], equity=Decimal("1000")
+            )
 
     def test_duplicate_active_pair_is_skipped(self):
         account = Account("p123", True, Decimal("1000"), Decimal("0"), Decimal("1000"))
-        plans = GlobalRisk(Settings()).plan(account, [strategy(symbol="BTCUSDT")], [sig()])
+        plans = GlobalRisk(Settings()).plan(
+            account, [strategy(symbol="BTCUSDT")], [sig()], equity=Decimal("1000")
+        )
         self.assertEqual(plans, [])
 
     def test_payload_is_spot_quote_and_limited(self):
         cfg = Settings(profile_code="p123")
-        plan = GlobalRisk(cfg).plan(Account("p123", True, Decimal("1000"), 0, Decimal("1000")), [], [sig()])[0]
+        plan = GlobalRisk(cfg).plan(
+            Account("p123", True, Decimal("1000"), 0, Decimal("1000")), [], [sig()], equity=Decimal("1000")
+        )[0]
         payload = make_trade_payload(cfg, plan, "warp3c-" + "0" * 32)
         self.assertEqual(payload["amountPerTradeType"], "quote")
         self.assertEqual(payload["side"], "long")
-        self.assertEqual(payload["takeProfits"][0]["portfolio"], 1)
+        self.assertEqual(payload["takeProfits"][0]["portfolio"], Decimal("1"))
+        self.assertEqual(payload["profiles"], [{"code": "p123", "multiplier": 1}])
+        self.assertNotIn("profilesCodes", payload)
 
 
 class BoundaryTests(unittest.TestCase):
@@ -148,10 +168,17 @@ class JournalTests(unittest.TestCase):
         class Research:
             def research(self, symbols, age):
                 return [sig()]
+
+        class Markets:
+            def scan(self, symbols, now=None):
+                return {symbol: evidence(symbol) for symbol in symbols}
+
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Settings(db_path=os.path.join(tmp, "warp.db"), api_key="read", api_secret="read", profile_code="p123")
             journal = OrderJournal(cfg.db_path)
-            self.assertEqual(Engine(cfg, Broker(), Research(), journal).cycle(), 1)
+            engine = Engine(cfg, Broker(), Research(), journal, Markets())
+            self.assertEqual(engine.cycle(), 1)
+            self.assertFalse(engine.status.execution_permitted)
             self.assertEqual(journal.unresolved(), [])
             journal.close()
 

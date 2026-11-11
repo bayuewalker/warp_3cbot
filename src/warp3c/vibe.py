@@ -3,15 +3,35 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 
 import httpx
 
 from .models import Signal
 
+_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
+
 
 class ResearchError(RuntimeError):
     pass
+
+
+def extract_decisions(answer: str) -> dict:
+    """Accept a raw JSON object or a fenced object. Ignore any surrounding prose."""
+    text = _FENCE.sub("", answer.strip())
+    candidates = [text]
+    start, end = text.find("{"), text.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(text[start : end + 1])
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict) and isinstance(parsed.get("decisions"), list):
+            return parsed
+    raise ResearchError("Vibe response not a decisions object")
 
 
 class VibeResearch:
@@ -28,10 +48,10 @@ class VibeResearch:
             "call broker execution tools, or invent missing observations. Universe: "
             + ", ".join(symbols)
             + ". Return exactly one JSON object with a decisions array. Each item has "
-            "symbol, action (BUY or HOLD), confidence (0..1), as_of (UTC ISO8601 timestamp "
-            "of latest observed market data), source (actual verified provider/tool and date), "
-            "and thesis (short evidence-backed explanation). If data is unavailable, return "
-            "{\"decisions\":[]}. No Markdown and no suggested trade amounts."
+            "symbol, action (BUY, WAIT, or SKIP), confidence (0..1), as_of (UTC ISO8601 "
+            "timestamp of the latest tool observation), source (tool name and observation time), "
+            "and thesis (short evidence-backed explanation). Do not include prices, sizes, or "
+            "order instructions. If data is unavailable, return {\"decisions\":[]}."
         )
         try:
             session = self.http.post("/sessions", json={"title": "WARP scheduled research"})
@@ -56,8 +76,7 @@ class VibeResearch:
                 time.sleep(2)
             if answer is None:
                 raise ResearchError("Vibe research timed out")
-            # Strict parse prevents a paragraph, tool trace or injected instruction from becoming an order.
-            result = json.loads(answer)
+            result = extract_decisions(answer)
             if not isinstance(result, dict) or not isinstance(result.get("decisions"), list):
                 raise ResearchError("Vibe response not a decisions object")
             if len(result["decisions"]) > len(symbols):
