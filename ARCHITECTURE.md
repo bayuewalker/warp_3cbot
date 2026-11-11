@@ -10,6 +10,24 @@
 
 AI output cannot skip the risk engine. A failed or stale read fails closed and blocks new entries.
 
+```mermaid
+flowchart LR
+  exchange[Binance public spot] --> scan[Market scan]
+  scan --> vibe[Vibe research thread]
+  vibe --> risk[Global risk]
+  broker[3Commas reads] --> risk
+  risk --> journal[SQLite journal]
+  risk -->|observe: no POST| halt[HALT or breaker]
+  risk -->|paper or live only| post[POST strategy]
+  journal --> dash[Operator API]
+```
+
+Auto discovery is off unless `WARP_DISCOVERY=auto`. The static `WARP_SYMBOLS` list stays the allowlist and the fallback when the public exchange read fails. A research thread cannot call the broker. Monitoring and reconciliation use their own intervals, so a slow research call does not delay the risk check.
+
+Only the `trend_up` profile can size a new ladder. Range, downtrend, and high volatility do not open entries. Those bounds are code, not model output. Changing an existing 3Commas strategy is not implemented: the official edit, pause, and cancel contracts were not re-checked against a live response in this build. `HALT` and the risk breakers stop new entries and leave current positions untouched.
+
+Alerts stay `pending` until the HTTPS webhook or Telegram call returns success. A failed send is retried with backoff. The operator page is `/dashboard`. JSON routes under `/api/` require `Authorization: Bearer` and the token is `WARP_OPERATOR_TOKEN`. The page can pause new entries. It cannot submit an order.
+
 ## Deployment / state
 
 `/live` returns 200 when the process is up. `/ready` returns 200 only after a successful cycle whose dependencies answered. `/health` returns the same JSON and is not a trading approval. `execution_permitted` is false in observe mode.
@@ -46,7 +64,8 @@ Create `/data/HALT` to stop new submissions. It does not close 3Commas positions
 3. Correlation groups, volatility, RSI, daily loss, and drawdown defaults need Technical Lead confirmation.
 4. Terminal strategies are invisible to the Open API. Use a dedicated profile.
 5. Paper mark-to-market assumes free balance does not fall while a position is open. If a demo profile behaves differently, equity is conservative or marked unreliable.
-6. Alert delivery is best-effort HTTPS. There is no tested backup restore.
-7. Vibe signal quality is not forward-tested.
+6. Alert delivery now waits for an HTTP success before it is marked delivered. A Fly volume backup has not been restored; the SQLite backup helpers are covered by a local test only.
+7. Editing, pausing, or cancelling an existing 3Commas strategy is not implemented.
+8. Vibe signal quality is not forward-tested.
 
 Do not enable real money until those gaps are closed and an operator explicitly turns live mode on.

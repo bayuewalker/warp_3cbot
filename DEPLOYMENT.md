@@ -28,7 +28,7 @@ Vibe-Trading is installed from the pinned fork in the Dockerfile. Measure RAM be
 ## Operations
 
 - Do not delete the volume. It holds the order journal, equity marks, and Vibe state.
-- Back up the volume and restore it onto a spare volume before relying on it. That restore has not been executed in this repository.
+- The process can copy its SQLite file with the backup helper. Restoring that copy onto a spare Fly volume has not been executed. Do not delete the live volume to test it.
 - Logs are JSON lines. They must not contain API keys or signatures. If a provider token appears, rotate it.
 - Billing for compute, volume, egress, and bandwidth is separate. See [Fly pricing](https://fly.io/pricing-update/).
 

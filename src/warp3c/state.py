@@ -46,6 +46,33 @@ class OrderJournal:
             )
             """
         )
+        self.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS alerts (
+                id INTEGER PRIMARY KEY,
+                event TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                state TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TEXT NOT NULL,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                delivered_at TEXT
+            )
+            """
+        )
+        self.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS decisions (
+                id INTEGER PRIMARY KEY,
+                recorded_at TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                detail TEXT NOT NULL
+            )
+            """
+        )
 
     def close(self) -> None:
         self.db.close()
@@ -134,21 +161,139 @@ class OrderJournal:
         )
 
     def clear_alert(self) -> None:
+        """Allow a new incident after recovery. Undelivered rows stay pending."""
         self.db.execute("DELETE FROM runtime WHERE key='alert'")
+        self.db.execute("UPDATE alerts SET state='resolved' WHERE state='delivered'")
 
-    def claim_alert(self, key: str) -> bool:
-        """True when this alert key has not been sent yet."""
-        row = self.db.execute("SELECT value FROM runtime WHERE key='alert'").fetchone()
-        if row and row[0] == key:
+    def enqueue_alert(self, event: str, detail: str, *, now: datetime | None = None) -> bool:
+        """Queue one incident. A pending or unresolved delivery suppresses duplicates."""
+        moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        existing = self.db.execute(
+            """
+            SELECT state FROM alerts
+             WHERE event=? AND state IN ('pending', 'delivered')
+             ORDER BY id DESC LIMIT 1
+            """,
+            (event,),
+        ).fetchone()
+        if existing:
             return False
         self.db.execute(
             """
-            INSERT INTO runtime(key, value, updated_at) VALUES('alert', ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP
+            INSERT INTO alerts(event, detail, state, attempts, next_attempt_at, created_at)
+            VALUES(?, ?, 'pending', 0, ?, ?)
             """,
-            (key,),
+            (event, detail[:500], moment.isoformat(), moment.isoformat()),
         )
         return True
+
+    def due_alerts(self, now: datetime) -> list[tuple[int, str, str, int]]:
+        moment = now.astimezone(timezone.utc).isoformat()
+        return list(
+            self.db.execute(
+                """
+                SELECT id, event, detail, attempts FROM alerts
+                 WHERE state='pending' AND next_attempt_at<=?
+                 ORDER BY id
+                """,
+                (moment,),
+            )
+        )
+
+    def mark_delivered(self, alert_id: int, now: datetime) -> None:
+        moment = now.astimezone(timezone.utc).isoformat()
+        self.db.execute(
+            """
+            UPDATE alerts
+               SET state='delivered', delivered_at=?, attempts=attempts+1, last_error=NULL
+             WHERE id=? AND state='pending'
+            """,
+            (moment, alert_id),
+        )
+
+    def mark_retry(self, alert_id: int, *, attempts: int, next_at: datetime, error: str) -> None:
+        self.db.execute(
+            """
+            UPDATE alerts
+               SET attempts=?, next_attempt_at=?, last_error=?
+             WHERE id=? AND state='pending'
+            """,
+            (attempts, next_at.astimezone(timezone.utc).isoformat(), error[:200], alert_id),
+        )
+
+    def recent_alerts(self, limit: int = 20) -> list[dict]:
+        rows = self.db.execute(
+            """
+            SELECT id, event, state, attempts, last_error, created_at, delivered_at
+              FROM alerts ORDER BY id DESC LIMIT ?
+            """,
+            (limit,),
+        )
+        return [
+            {
+                "id": row[0],
+                "event": row[1],
+                "state": row[2],
+                "attempts": row[3],
+                "last_error": row[4],
+                "created_at": row[5],
+                "delivered_at": row[6],
+            }
+            for row in rows
+        ]
+
+    def record_decisions(self, rows: list[tuple[str, str, str, str, str]]) -> None:
+        self.db.executemany(
+            "INSERT INTO decisions(recorded_at, symbol, stage, reason, detail) VALUES(?,?,?,?,?)",
+            rows,
+        )
+
+    def recent_decisions(self, limit: int = 50) -> list[dict]:
+        rows = self.db.execute(
+            """
+            SELECT recorded_at, symbol, stage, reason, detail
+              FROM decisions ORDER BY id DESC LIMIT ?
+            """,
+            (limit,),
+        )
+        return [
+            {"recorded_at": row[0], "symbol": row[1], "stage": row[2], "reason": row[3], "detail": row[4]}
+            for row in rows
+        ]
+
+    def recent_submissions(self, limit: int = 20) -> list[dict]:
+        rows = self.db.execute(
+            """
+            SELECT client_id, symbol, state, strategy_id, created_at
+              FROM submissions ORDER BY created_at DESC LIMIT ?
+            """,
+            (limit,),
+        )
+        return [
+            {
+                "client_id": row[0],
+                "symbol": row[1],
+                "state": row[2],
+                "strategy_id": row[3],
+                "created_at": row[4],
+            }
+            for row in rows
+        ]
+
+    def backup(self, dest: str) -> None:
+        Path(dest).parent.mkdir(parents=True, exist_ok=True)
+        target = sqlite3.connect(dest)
+        try:
+            self.db.backup(target)
+        finally:
+            target.close()
+
+    def restore_from(self, src: str) -> None:
+        source = sqlite3.connect(src)
+        try:
+            source.backup(self.db)
+        finally:
+            source.close()
 
 
 def _json(value: object) -> str:

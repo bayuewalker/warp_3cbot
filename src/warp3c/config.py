@@ -51,6 +51,18 @@ class Settings:
     db_path: str = "/data/warp.db"
     cycle_seconds: int = 900
     symbols: tuple[str, ...] = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
+    discovery: str = "static"
+    deny_symbols: tuple[str, ...] = ()
+    max_candidates: int = 12
+    max_spread: Decimal = Decimal("0.005")
+    scan_seconds: int = 300
+    research_seconds: int = 900
+    monitor_seconds: int = 60
+    reconcile_seconds: int = 120
+    slippage_bps: Decimal = Decimal("0")
+    operator_token: str = field(default="", repr=False)
+    telegram_bot_token: str = field(default="", repr=False)
+    telegram_chat_id: str = ""
     exchange_code: str = "BINANCE"
     api_url: str = "https://trade.3commas.io"
     api_key: str = field(default="", repr=False)
@@ -95,10 +107,26 @@ class Settings:
             raise ValueError("3Commas credentials and API profile are required")
         if self.cycle_seconds < 60 or self.max_signal_age < 1 or self.max_account_age < 30:
             raise ValueError("Invalid cadence or freshness window")
+        if self.discovery not in {"static", "auto"}:
+            raise ValueError("Invalid WARP_DISCOVERY")
         if not self.symbols or len(set(self.symbols)) != len(self.symbols):
             raise ValueError("Symbol universe empty or duplicated")
         if any(not (s.isalnum() and s.endswith("USDT")) for s in self.symbols):
             raise ValueError("Only allowlisted USDT pairs are supported")
+        if any(not (s.isalnum() and s.endswith("USDT")) for s in self.deny_symbols):
+            raise ValueError("Denylist must be USDT pairs")
+        if len(set(self.deny_symbols)) != len(self.deny_symbols):
+            raise ValueError("Denylist contains a duplicate")
+        if not 1 <= self.max_candidates <= 50:
+            raise ValueError("Invalid candidate cap")
+        if min(self.scan_seconds, self.research_seconds, self.monitor_seconds, self.reconcile_seconds) < 30:
+            raise ValueError("Invalid cadence")
+        if self.operator_token and len(self.operator_token) < 16:
+            raise ValueError("Operator token must be at least 16 characters")
+        if bool(self.telegram_bot_token) != bool(self.telegram_chat_id):
+            raise ValueError("Telegram needs both a bot token and a chat id")
+        if self.telegram_chat_id and not self.telegram_chat_id.lstrip("-").isdigit():
+            raise ValueError("Telegram chat id must be numeric")
         if self.max_positions < 1 or not 1 <= self.dca_orders <= 30:
             raise ValueError("Invalid position/order count")
         if self.min_base <= 0 or self.max_base < self.min_base:
@@ -115,8 +143,11 @@ class Settings:
             "max_daily_loss",
             "max_drawdown",
             "max_volatility",
+            "max_spread",
         ):
             _fraction(name, getattr(self, name))
+        if not Decimal("0") <= self.slippage_bps <= Decimal("100"):
+            raise ValueError("Invalid slippage buffer")
         if self.max_committed + self.min_reserve > 1:
             raise ValueError("Committed + reserve fractions cannot exceed one")
         if not Decimal("0.001") <= self.dca_deviation <= Decimal("0.2"):
@@ -149,6 +180,10 @@ class Settings:
     def fee_rate(self) -> Decimal:
         return self.fee_bps / Decimal("10000")
 
+    @property
+    def slippage_rate(self) -> Decimal:
+        return self.slippage_bps / Decimal("10000")
+
     @classmethod
     def from_env(cls) -> Settings:
         return cls(
@@ -160,6 +195,20 @@ class Settings:
                 for s in os.getenv("WARP_SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT").split(",")
                 if s.strip()
             ),
+            discovery=os.getenv("WARP_DISCOVERY", "static").strip().lower(),
+            deny_symbols=tuple(
+                s.strip().upper() for s in os.getenv("WARP_DENY_SYMBOLS", "").split(",") if s.strip()
+            ),
+            max_candidates=int(os.getenv("WARP_MAX_CANDIDATES", "12")),
+            max_spread=dec("WARP_MAX_SPREAD", "0.005"),
+            scan_seconds=int(os.getenv("WARP_SCAN_SECONDS", "300")),
+            research_seconds=int(os.getenv("WARP_RESEARCH_SECONDS", "900")),
+            monitor_seconds=int(os.getenv("WARP_MONITOR_SECONDS", "60")),
+            reconcile_seconds=int(os.getenv("WARP_RECONCILE_SECONDS", "120")),
+            slippage_bps=dec("WARP_SLIPPAGE_BPS", "0"),
+            operator_token=os.getenv("WARP_OPERATOR_TOKEN", ""),
+            telegram_bot_token=os.getenv("WARP_TELEGRAM_BOT_TOKEN", ""),
+            telegram_chat_id=os.getenv("WARP_TELEGRAM_CHAT_ID", "").strip(),
             exchange_code=os.getenv("WARP_EXCHANGE_CODE", "BINANCE").upper(),
             api_url=os.getenv("THREECOMMAS_API_URL", "https://trade.3commas.io"),
             api_key=os.getenv("THREECOMMAS_API_KEY", ""),

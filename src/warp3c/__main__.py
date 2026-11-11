@@ -10,6 +10,7 @@ import signal
 import subprocess
 import threading
 import time
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -18,8 +19,12 @@ import httpx
 from .config import Settings
 from .engine import Engine
 from .market import MarketData
+from .notify import flush_alerts
+from .operator import DASHBOARD_HTML, ROUTES, SNAPSHOT, authorized, pause_new_entries, publish
+from .schedule import Clocks
 from .state import OrderJournal
-from .telemetry import log_event, send_alert
+from .supervisor import ResearchGate, once
+from .telemetry import log_event, send_alert, send_telegram
 from .threecommas import IntegrationError, ThreeCommas
 from .vibe import VibeResearch
 
@@ -29,6 +34,7 @@ HEALTH = {
     "dependencies_healthy": False,
     "market_data_fresh": False,
     "execution_permitted": False,
+    "risk_permitted": False,
     "mode": "observe",
     "last_cycle_ok": None,
     "reason": "starting",
@@ -38,6 +44,18 @@ HEALTH = {
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        if path == "/dashboard":
+            body = DASHBOARD_HTML.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if path in ROUTES:
+            self._api(path)
+            return
         if path not in {"/health", "/live", "/ready"}:
             self.send_error(404)
             return
@@ -45,7 +63,29 @@ class HealthHandler(BaseHTTPRequestHandler):
             code = 200 if HEALTH.get("dependencies_healthy") and HEALTH.get("last_cycle_ok") else 503
         else:
             code = 200
-        body = json.dumps(HEALTH, separators=(",", ":")).encode()
+        self._json(code, HEALTH)
+
+    def do_POST(self):
+        path = self.path.split("?", 1)[0]
+        if path != "/api/pause":
+            self.send_error(404)
+            return
+        if not authorized(self.headers.get("Authorization")):
+            self._json(401, {"error": "unauthorized"})
+            return
+        if not pause_new_entries(HEALTH.get("halt_path")):
+            self._json(503, {"error": "halt_path_unconfigured"})
+            return
+        self._json(200, {"paused": True, "closes_positions": False})
+
+    def _api(self, path: str) -> None:
+        if not authorized(self.headers.get("Authorization")):
+            self._json(401, {"error": "unauthorized"})
+            return
+        self._json(200, SNAPSHOT.get(path, {}))
+
+    def _json(self, code: int, payload: dict) -> None:
+        body = json.dumps(payload, separators=(",", ":"), default=str).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
@@ -90,11 +130,27 @@ def start_vibe() -> subprocess.Popen | None:
 
 
 def _notify(cfg: Settings, journal: OrderJournal | None, event: str, detail: str) -> None:
-    if journal is None or not journal.claim_alert(event):
+    if journal is None:
         return
-    log_event(event, detail=detail, mode=cfg.mode)
+    if journal.enqueue_alert(event, detail, now=datetime.now(timezone.utc)):
+        log_event(event, detail=detail, mode=cfg.mode)
+
+
+def _deliver(cfg: Settings, event: str, detail: str) -> bool:
+    if not cfg.alert_webhook and not cfg.telegram_bot_token:
+        return True
+    ok = True
     if cfg.alert_webhook:
-        send_alert(cfg.alert_webhook, event, detail)
+        ok = send_alert(cfg.alert_webhook, event, detail) and ok
+    if cfg.telegram_bot_token:
+        ok = send_telegram(cfg.telegram_bot_token, cfg.telegram_chat_id, event, detail) and ok
+    return ok
+
+
+def _flush(cfg: Settings, journal: OrderJournal | None) -> None:
+    if journal is None:
+        return
+    flush_alerts(journal, lambda event, detail: _deliver(cfg, event, detail))
 
 
 def main():
@@ -102,6 +158,8 @@ def main():
     cfg = Settings.from_env()
     HEALTH["mode"] = cfg.mode
     HEALTH["execution_permitted"] = False
+    HEALTH["risk_permitted"] = False
+    HEALTH["halt_path"] = str(Path(cfg.db_path).parent / "HALT")
     if cfg.mode != "observe":
         log_event("mode_warning", mode=cfg.mode, detail="process is not in observe mode")
     Path(cfg.db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -124,30 +182,38 @@ def main():
         market = MarketData(cfg.market_data_url, cfg)
         journal = OrderJournal(cfg.db_path)
         engine = Engine(cfg, broker, research, journal, market)
-        log_event("worker_started", mode=cfg.mode, symbols=",".join(cfg.symbols))
+        gate = ResearchGate()
+        clocks = Clocks()
+        log_event("worker_started", mode=cfg.mode, symbols=",".join(cfg.symbols), discovery=cfg.discovery)
         while not STOP.is_set():
             if vibe_process and vibe_process.poll() is not None:
                 raise RuntimeError("Vibe API exited; supervisor restarting")
             try:
-                engine.cycle()
-                HEALTH["last_cycle_ok"] = True
+                clocks = once(engine, gate, clocks)
+                HEALTH["last_cycle_ok"] = engine.status.dependencies_healthy
                 HEALTH["dependencies_healthy"] = engine.status.dependencies_healthy
                 HEALTH["market_data_fresh"] = engine.status.market_data_fresh
                 HEALTH["execution_permitted"] = engine.status.execution_permitted
+                HEALTH["risk_permitted"] = engine.status.risk_permitted
                 HEALTH["reason"] = engine.status.reason
+                publish(cfg, journal, engine)
                 if engine.status.reason in {"ok", "observe_without_account"}:
                     journal.clear_alert()
-                elif not engine.status.execution_permitted:
+                elif not engine.status.risk_permitted:
                     _notify(cfg, journal, engine.status.reason, "new entries are paused")
             except Exception as exc:
                 HEALTH["last_cycle_ok"] = False
                 HEALTH["dependencies_healthy"] = False
                 HEALTH["execution_permitted"] = False
+                HEALTH["risk_permitted"] = False
                 HEALTH["reason"] = "cycle_blocked"
                 detail = str(exc) if isinstance(exc, IntegrationError) else exc.__class__.__name__
                 log_event("cycle_blocked", error=detail[:300])
                 _notify(cfg, journal, "cycle_blocked", detail[:300])
-            STOP.wait(cfg.cycle_seconds)
+            finally:
+                if journal is not None:
+                    _flush(cfg, journal)
+            STOP.wait(cfg.monitor_seconds)
     finally:
         HEALTH["alive"] = False
         HEALTH["execution_permitted"] = False

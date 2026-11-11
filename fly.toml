@@ -10,6 +10,8 @@ kill_timeout = 30
   WARP_DB_PATH = "/data/warp.db"
   WARP_CYCLE_SECONDS = "900"
   TRADING_MODE = "observe"
+  WARP_DISCOVERY = "static"
+  WARP_MONITOR_SECONDS = "60"
   WARP_MANAGE_VIBE = "1"
 
 [http_service]

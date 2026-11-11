@@ -22,6 +22,22 @@ def log_event(event: str, **fields: object) -> None:
     LOG.info("%s", json.dumps(payload, default=str, separators=(",", ":")))
 
 
+def send_telegram(token: str, chat_id: str, event: str, detail: str, *, transport=None) -> bool:
+    """POST to Telegram. The bot token is not written to the log."""
+    if not token or not chat_id:
+        return False
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    body = {"chat_id": chat_id, "text": f"{event}: {detail[:400]}"}
+    try:
+        with httpx.Client(transport=transport, timeout=5) as client:
+            response = client.post(url, json=body)
+            response.raise_for_status()
+    except httpx.HTTPError:
+        log_event("alert_failed", alert_event=event, channel="telegram")
+        return False
+    return True
+
+
 def send_alert(url: str, event: str, detail: str) -> bool:
     parsed = urlparse(url)
     if parsed.scheme != "https" or not parsed.netloc:

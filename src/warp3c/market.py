@@ -9,6 +9,7 @@ import httpx
 
 from .config import Settings
 from .models import MarketEvidence, positive
+from .universe import Candidate, select_universe
 
 
 class MarketDataError(RuntimeError):
@@ -150,6 +151,40 @@ def analyze(
     )
 
 
+def _ticker_index(payload: object) -> dict[str, dict]:
+    if isinstance(payload, dict) and payload.get("symbol"):
+        return {str(payload["symbol"]): payload}
+    if not isinstance(payload, list):
+        raise MarketDataError("Ticker payload is not a list")
+    indexed = {}
+    for row in payload:
+        if isinstance(row, dict) and row.get("symbol"):
+            indexed[str(row["symbol"])] = row
+    return indexed
+
+
+def _spread(ticker: dict) -> Decimal | None:
+    if ticker.get("bidPrice") is None or ticker.get("askPrice") is None:
+        return None
+    try:
+        bid = positive(ticker["bidPrice"], "bid")
+        ask = positive(ticker["askPrice"], "ask", allow_zero=False)
+    except ValueError:
+        return None
+    if ask <= 0 or bid > ask:
+        return None
+    return (ask - bid) / ask
+
+
+def _min_notional(row: dict) -> Decimal:
+    for item in row.get("filters") or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("filterType") in {"NOTIONAL", "MIN_NOTIONAL"} and item.get("minNotional") is not None:
+            return positive(item["minNotional"], "min notional", allow_zero=False)
+    return Decimal("0")
+
+
 def quantize_quote(amount: Decimal, precision: int) -> Decimal:
     if precision < 0 or precision > 18:
         raise ValueError("Invalid quote precision")
@@ -160,6 +195,8 @@ def quantize_quote(amount: Decimal, precision: int) -> Decimal:
 class MarketData:
     def __init__(self, url: str, cfg: Settings, *, transport=None):
         self.cfg = cfg
+        self._info_at: datetime | None = None
+        self._info: dict | None = None
         self.http = httpx.Client(
             base_url=url.rstrip("/"),
             timeout=15,
@@ -169,6 +206,62 @@ class MarketData:
 
     def close(self) -> None:
         self.http.close()
+
+    def discover(self, *, now: datetime | None = None) -> tuple[tuple[str, ...], list[tuple[str, str]]]:
+        """Rank eligible spot USDT markets. The static allowlist is the outer bound."""
+        moment = now or datetime.now(timezone.utc)
+        info = self._exchange_info_all(moment)
+        tickers = self._get("/api/v3/ticker/24hr", {})
+        by_symbol = _ticker_index(tickers)
+        candidates: list[Candidate] = []
+        for row in info.get("symbols") or []:
+            if not isinstance(row, dict) or row.get("quoteAsset") != "USDT":
+                continue
+            if row.get("isSpotTradingAllowed") is not True:
+                continue
+            symbol = str(row.get("symbol") or "")
+            ticker = by_symbol.get(symbol, {})
+            try:
+                volume = positive(ticker.get("quoteVolume"), "24h quote volume") if ticker else Decimal("0")
+                spread = _spread(ticker) if ticker else None
+                precision = row.get("quoteAssetPrecision", row.get("quotePrecision"))
+                quote_precision = precision if isinstance(precision, int) else -1
+                min_notional = _min_notional(row)
+            except (ValueError, MarketDataError):
+                volume = Decimal("0")
+                spread = None
+                quote_precision = -1
+                min_notional = Decimal("0")
+            candidates.append(
+                Candidate(
+                    symbol=symbol,
+                    quote_volume=volume,
+                    spread=spread,
+                    tradable=row.get("status") == "TRADING",
+                    min_notional=min_notional,
+                    quote_precision=quote_precision,
+                )
+            )
+        return select_universe(
+            candidates,
+            allow=set(self.cfg.symbols),
+            deny=set(self.cfg.deny_symbols),
+            min_volume=self.cfg.min_quote_volume,
+            max_spread=self.cfg.max_spread,
+            limit=self.cfg.max_candidates,
+        )
+
+    def _exchange_info_all(self, now: datetime) -> dict:
+        if self._info is not None and self._info_at is not None:
+            age = (now - self._info_at).total_seconds()
+            if 0 <= age < self.cfg.scan_seconds:
+                return self._info
+        payload = self._get("/api/v3/exchangeInfo", {})
+        if not isinstance(payload, dict) or not isinstance(payload.get("symbols"), list):
+            raise MarketDataError("exchangeInfo payload is not an object")
+        self._info = payload
+        self._info_at = now
+        return payload
 
     def scan(self, symbols: tuple[str, ...], *, now: datetime | None = None) -> dict[str, MarketEvidence]:
         moment = now or datetime.now(timezone.utc)

@@ -7,7 +7,16 @@ from decimal import Decimal
 
 from .config import Settings
 from .market import quantize_quote
-from .models import Account, EquityMark, PlannedOrder, RiskDecision, Signal, positive
+from .models import (
+    Account,
+    EquityMark,
+    MarketEvidence,
+    PlannedOrder,
+    RiskDecision,
+    Signal,
+    positive,
+)
+from .regime import profile_for
 from .threecommas import IntegrationError
 
 ACTIVE = {"new", "entered", "cancelling", "panic_exiting"}
@@ -238,6 +247,7 @@ class GlobalRisk:
         prices: dict[str, Decimal],
         marks: list[EquityMark],
         now: datetime | None = None,
+        evidence: dict[str, MarketEvidence] | None = None,
     ) -> RiskDecision:
         moment = now or datetime.now(timezone.utc)
         self._require_fresh(account, moment)
@@ -251,6 +261,8 @@ class GlobalRisk:
         reason = circuit_reason(marks, equity, reliable, self.cfg, moment)
         if reason or not reliable or equity is None:
             return RiskDecision([], False, reason or "mtm_unreliable", equity if reliable else None, reliable)
+        if _abnormal_volatility(active, evidence or {}, self.cfg.max_volatility):
+            return RiskDecision([], False, "abnormal_volatility", equity, True)
         orders = self.plan(account, positions, signals, equity=equity, now=moment)
         return RiskDecision(orders, True, "ok", equity, True)
 
@@ -288,7 +300,7 @@ class GlobalRisk:
                 strategy, self.cfg.fee_rate
             )
         factor = dca_ladder_factor(self.cfg.dca_orders, self.cfg.dca_multiplier)
-        gross = factor * (Decimal("1") + self.cfg.fee_rate)
+        gross = factor * (Decimal("1") + self.cfg.fee_rate + self.cfg.slippage_rate)
         proposals = []
         spendable = account.free_usdt - locked
         for signal in sorted(signals, key=lambda item: item.confidence, reverse=True):
@@ -307,7 +319,10 @@ class GlobalRisk:
                 break
             evidence = signal.evidence
             assert evidence is not None
-            base = min(self.cfg.max_base, full_budget / gross)
+            profile = profile_for(evidence.regime, self.cfg)
+            if not profile.entries_allowed or profile.size_scale <= 0:
+                continue
+            base = min(self.cfg.max_base * profile.size_scale, full_budget / gross)
             base = quantize_quote(base, evidence.quote_precision)
             if base < self.cfg.min_base or base < evidence.min_notional:
                 continue
@@ -327,8 +342,19 @@ class GlobalRisk:
             raise IntegrationError("Account snapshot is stale")
 
 
+def _abnormal_volatility(strategies: list[dict], evidence: dict[str, MarketEvidence], limit: Decimal) -> bool:
+    for strategy in strategies:
+        item = evidence.get(str(strategy.get("pair") or ""))
+        if item is not None and item.volatility > limit:
+            return True
+    return False
+
+
 def make_trade_payload(cfg: Settings, plan: PlannedOrder, client_id: str) -> dict:
     """Spot long, market entry, quote sizing, one take-profit and a stop."""
+    profile = profile_for("trend_up", cfg)
+    if not profile.entries_allowed:
+        raise ValueError("Trend profile does not permit entries")
     if not 32 <= len(client_id) <= 64:
         raise ValueError("clientId length is outside the 3Commas contract")
     if len(cfg.profile_code) < 4:
@@ -342,15 +368,15 @@ def make_trade_payload(cfg: Settings, plan: PlannedOrder, client_id: str) -> dic
         "orderType": "market",
         "amountPerTrade": plan.base_amount,
         "amountPerTradeType": "quote",
-        "extraOrderCount": cfg.dca_orders,
-        "extraOrderDeviation": cfg.dca_deviation,
-        "extraOrderVolumeMultiplier": cfg.dca_multiplier,
-        "extraOrderDeviationMultiplier": cfg.dca_step_multiplier,
+        "extraOrderCount": profile.dca_orders,
+        "extraOrderDeviation": profile.dca_deviation,
+        "extraOrderVolumeMultiplier": profile.dca_multiplier,
+        "extraOrderDeviationMultiplier": profile.dca_step_multiplier,
         "extraOrderCostAveraging": "quote",
         "applyDcaForFirstSafetyOrder": False,
-        "takeProfits": [{"priceDeviation": cfg.take_profit, "portfolio": Decimal("1")}],
+        "takeProfits": [{"priceDeviation": profile.take_profit, "portfolio": Decimal("1")}],
         "takeProfitBaseOn": "average_price",
-        "stopLoss": cfg.stop_loss,
+        "stopLoss": profile.stop_loss,
         "stopLossBaseOn": "average_price",
         "keepPositionOpen": False,
     }
