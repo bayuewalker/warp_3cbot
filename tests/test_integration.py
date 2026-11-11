@@ -10,14 +10,22 @@ from warp3c.threecommas import IntegrationError, ThreeCommas, dump_payload
 from warp3c.vibe import VibeResearch, extract_decisions
 
 
-def profile():
+def profile(code="p123"):
     return {
-        "code": "p123", "status": "active", "demo": True,
+        "code": code, "status": "active", "demo": True,
         "exchange": {"code": "BINANCE", "name": "BINANCE-SPOT"},
         "balance": {"assets": {
             "USDT": {"free": "950.00", "used": "50.00", "total": "1000.00"},
             "BTC": {"free": "0", "used": "0", "total": "0"},
         }},
+    }
+
+
+def envelope(items, *, page, total, pages, limit=100):
+    """Documented REST list shape: items plus pagination.page/limit/total/pages."""
+    return {
+        "items": items,
+        "pagination": {"page": page, "limit": limit, "total": total, "pages": pages},
     }
 
 
@@ -28,18 +36,22 @@ class ContractTests(unittest.TestCase):
         self.assertNotIn("__DEC__", body)
         self.assertEqual(json.loads(body)["nested"]["take"], 0.025)
 
-    def test_profiles_page_is_followed_until_complete(self):
+    def test_official_pages_reach_account_and_live_strategies(self):
         def handler(req):
-            self.assertIn("page", req.url.params)
+            self.assertEqual(req.url.params["limit"], "100")
+            page = req.url.params["page"]
             if req.url.path.endswith("api_profiles"):
-                page = req.url.params["page"]
                 if page == "1":
-                    return httpx.Response(200, json={"data": [{"code": "other"}], "has_more": True, "next_page": 2})
-                return httpx.Response(200, json={"data": [profile()], "has_more": False})
+                    stubs = [{"code": f"other-{i:03d}"} for i in range(100)]
+                    return httpx.Response(200, json=envelope(stubs, page=1, total=101, pages=2))
+                if page == "2":
+                    return httpx.Response(200, json=envelope([profile()], page=2, total=101, pages=2))
             if req.url.path.endswith("live"):
-                if req.url.params["page"] == "1":
-                    return httpx.Response(200, json={"data": [{"strategyId": "s1"}], "has_more": True, "next_page": 2})
-                return httpx.Response(200, json={"data": [{"strategyId": "s2"}], "has_more": False})
+                if page == "1":
+                    stubs = [{"strategyId": f"s{i:03d}"} for i in range(100)]
+                    return httpx.Response(200, json=envelope(stubs, page=1, total=101, pages=2))
+                if page == "2":
+                    return httpx.Response(200, json=envelope([{"strategyId": "s-last"}], page=2, total=101, pages=2))
             raise AssertionError(req.url.path)
 
         api = ThreeCommas("https://trade.3commas.io", "key", "secret", transport=httpx.MockTransport(handler))
@@ -47,16 +59,74 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(account.free_usdt, Decimal("950.00"))
         self.assertTrue(account.demo)
         self.assertEqual(account.assets["BTC"].total, Decimal("0"))
-        self.assertEqual([row["strategyId"] for row in api.get_live()], ["s1", "s2"])
+        live = api.get_live()
+        self.assertEqual(len(live), 101)
+        self.assertEqual(live[-1]["strategyId"], "s-last")
         api.close()
 
-    def test_truncated_page_without_a_cursor_fails_closed(self):
-        def handler(_req):
-            return httpx.Response(200, json={"data": [profile()]})
+    def test_empty_official_page_is_complete(self):
+        def handler(req):
+            pages = 0 if req.url.params["page"] == "1" else 99
+            return httpx.Response(200, json=envelope([], page=1, total=0, pages=pages))
 
         api = ThreeCommas("https://trade.3commas.io", "key", "secret", transport=httpx.MockTransport(handler))
+        self.assertEqual(api.get_live(), [])
         with self.assertRaises(IntegrationError):
+            api.get_account("p123")
+        api.close()
+
+    def test_inconsistent_pages_fail_closed(self):
+        samples = [
+            {"data": [profile()], "has_more": False},
+            envelope([profile()], page=1, total=1, pages=1) | {"items": ["bad"]},
+            envelope([], page=2, total=0, pages=0),
+            envelope([{"code": "p123"}, {"code": "p123"}], page=1, total=2, pages=1),
+            envelope([{"code": "only"}], page=1, total=150, pages=2),
+            envelope([profile()], page=1, total=150, pages=1),
+            {"items": [profile()], "pagination": {"page": "1", "limit": 100, "total": 1, "pages": 1}},
+        ]
+
+        def run(payload):
+            api = ThreeCommas(
+                "https://trade.3commas.io", "key", "secret",
+                transport=httpx.MockTransport(lambda _req: httpx.Response(200, json=payload)),
+            )
+            try:
+                with self.assertRaises(IntegrationError):
+                    api.get_profiles()
+            finally:
+                api.close()
+
+        for payload in samples:
+            run(payload)
+
+    def test_second_page_repeating_cursor_fails_closed(self):
+        def handler(req):
+            if req.url.params["page"] == "1":
+                stubs = [{"code": f"c{i:03d}"} for i in range(100)]
+                return httpx.Response(200, json=envelope(stubs, page=1, total=101, pages=2))
+            return httpx.Response(200, json=envelope([profile()], page=1, total=101, pages=2))
+
+        api = ThreeCommas("https://trade.3commas.io", "key", "secret", transport=httpx.MockTransport(handler))
+        with self.assertRaises(IntegrationError) as caught:
             api.get_profiles()
+        self.assertIn("cursor", str(caught.exception).lower())
+        api.close()
+
+    def test_http_errors_do_not_return_a_partial_list(self):
+        def handler(req):
+            code = 500 if req.url.path.endswith("live") else 401
+            return httpx.Response(code, json={"error": "nope"})
+
+        api = ThreeCommas("https://trade.3commas.io", "key", "secret", transport=httpx.MockTransport(handler))
+        with self.assertRaises(IntegrationError) as denied:
+            api.get_profiles()
+        self.assertEqual(denied.exception.status_code, 401)
+        self.assertFalse(denied.exception.uncertain)
+        with self.assertRaises(IntegrationError) as failed:
+            api.get_live()
+        self.assertEqual(failed.exception.status_code, 500)
+        self.assertTrue(failed.exception.uncertain)
         api.close()
 
     def test_post_is_not_retried_and_signed_body_matches(self):

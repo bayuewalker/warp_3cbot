@@ -120,10 +120,12 @@ class BoundaryTests(unittest.TestCase):
     def test_profile_and_live_adapters(self):
         def handler(req):
             if req.url.path.endswith("api_profiles"):
-                return httpx.Response(200, json=[{"code": "p123", "status": "active", "demo": True,
-                                                   "exchange": {"code": "BINANCE", "name": "BINANCE-SPOT"},
-                                                   "balance": {"assets": {"USDT": {"free": 950, "used": 50, "total": 1000}}}}])
-            return httpx.Response(200, json=[])
+                body = {"items": [{"code": "p123", "status": "active", "demo": True,
+                                    "exchange": {"code": "BINANCE", "name": "BINANCE-SPOT"},
+                                    "balance": {"assets": {"USDT": {"free": 950, "used": 50, "total": 1000}}}}],
+                        "pagination": {"page": 1, "limit": 100, "total": 1, "pages": 1}}
+                return httpx.Response(200, json=body)
+            return httpx.Response(200, json={"items": [], "pagination": {"page": 1, "limit": 100, "total": 0, "pages": 0}})
         api = ThreeCommas("https://trade.3commas.io", "key", "secret", transport=httpx.MockTransport(handler))
         self.assertEqual(api.get_account("p123").free_usdt, Decimal("950"))
         self.assertEqual(api.get_live(), [])

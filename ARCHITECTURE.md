@@ -14,6 +14,8 @@ AI output cannot skip the risk engine. A failed or stale read fails closed and b
 
 `/live` returns 200 when the process is up. `/ready` returns 200 only after a successful cycle whose dependencies answered. `/health` returns the same JSON and is not a trading approval. `execution_permitted` is false in observe mode.
 
+`GET /open_api/api_profiles` and `GET /open_api/strategies/live` must return `items` plus `pagination.page`, `pagination.limit`, `pagination.total`, and `pagination.pages`. A bare list or a `data`/`has_more` body is incomplete and blocks entries. Every declared page is read, and a short page, repeated cursor, duplicate id, or total that does not match the items fails closed.
+
 SQLite uses WAL and `synchronous=FULL`. The journal row is inserted before the POST. `unknown` stays blocking until `GET /open_api/strategies/{clientId}` or the live list returns that client id. A definite non-429 4xx marks the row `rejected` and does not retry that POST. HTTP 429 and 5xx on a POST stay `unknown`. GET requests may retry; POSTs never do.
 
 The file lock plus `fly scale count 1` is the single-writer control. A second Machine would not share the volume lock and could double-submit, so the deploy procedure forbids it. `auto_start_machines` is false and `auto_stop_machines` is off.

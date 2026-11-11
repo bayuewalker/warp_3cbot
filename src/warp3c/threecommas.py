@@ -27,6 +27,52 @@ class IntegrationError(RuntimeError):
         self.status_code = status_code
 
 
+_PAGE_LIMIT = 100
+_MAX_PAGES = 50
+
+
+def _as_int(value: object, label: str) -> int:
+    if type(value) is not int:
+        raise IntegrationError(f"{label} is missing or not an integer", uncertain=True)
+    return value
+
+
+def _parse_page(result: object, *, requested_page: int, requested_limit: int) -> tuple[list[dict], dict[str, int]]:
+    if not isinstance(result, dict):
+        raise IntegrationError("Unrecognized paged response", uncertain=True)
+    pagination = result.get("pagination")
+    items = result.get("items")
+    if not isinstance(pagination, dict) or not isinstance(items, list):
+        raise IntegrationError("Paged response missing items or pagination", uncertain=True)
+    if any(not isinstance(item, dict) for item in items):
+        raise IntegrationError("Invalid paged item", uncertain=True)
+    meta = {
+        "page": _as_int(pagination.get("page"), "pagination.page"),
+        "limit": _as_int(pagination.get("limit"), "pagination.limit"),
+        "total": _as_int(pagination.get("total"), "pagination.total"),
+        "pages": _as_int(pagination.get("pages"), "pagination.pages"),
+    }
+    if meta["page"] != requested_page:
+        raise IntegrationError("Misordered or unexpected pagination cursor", uncertain=True)
+    if meta["limit"] != requested_limit:
+        raise IntegrationError("pagination.limit does not match the request", uncertain=True)
+    if meta["page"] < 1 or meta["limit"] < 1 or meta["total"] < 0 or meta["pages"] < 0:
+        raise IntegrationError("Pagination metadata is inconsistent", uncertain=True)
+    return items, meta
+
+
+def _check_page_math(total: int, pages: int, limit: int) -> None:
+    if total == 0:
+        if pages not in (0, 1):
+            raise IntegrationError("Empty list has an inconsistent page count", uncertain=True)
+        return
+    expected = (total + limit - 1) // limit
+    if pages != expected:
+        raise IntegrationError("pagination.pages does not match total", uncertain=True)
+    if pages > _MAX_PAGES:
+        raise IntegrationError("pagination.pages exceeds the safety cap", uncertain=True)
+
+
 class StrategyNotFound(IntegrationError):
     def __init__(self, client_id: str):
         super().__init__(f"Strategy {client_id} was not found", uncertain=False, status_code=404)
@@ -124,40 +170,61 @@ class ThreeCommas:
             wait = 0.5
         return min(wait, 1.5)
 
-    def _pages(self, path: str, query: dict | None = None) -> list[dict]:
-        page = 1
+    def _pages(self, path: str, *, identity: str, query: dict | None = None) -> list[dict]:
+        """Official list envelope: {items, pagination: {page, limit, total, pages}}."""
         collected: list[dict] = []
-        for _ in range(50):
+        seen: set[str] = set()
+        seen_pages: set[int] = set()
+        expected_total: int | None = None
+        expected_pages: int | None = None
+        page = 1
+        while page <= _MAX_PAGES:
             params = dict(query or {})
-            params.update({"page": page, "limit": 100})
-            result = self.request("GET", path, query=params)
-            if isinstance(result, list):
-                if page != 1:
-                    raise IntegrationError("Paged and bare list responses were mixed", uncertain=True)
-                return result
-            if not isinstance(result, dict) or not isinstance(result.get("data"), list):
-                raise IntegrationError("Unrecognized paged response", uncertain=True)
-            collected.extend(result["data"])
-            has_more = result.get("has_more")
-            if has_more is True:
-                nxt = result.get("next_page")
-                page = int(nxt) if nxt is not None else page + 1
-                if page <= 1:
-                    raise IntegrationError("Pagination cursor did not advance", uncertain=True)
-                continue
-            if has_more is False:
+            params.update({"page": page, "limit": _PAGE_LIMIT})
+            items, meta = _parse_page(
+                self.request("GET", path, query=params),
+                requested_page=page,
+                requested_limit=_PAGE_LIMIT,
+            )
+            if expected_total is None:
+                expected_total = meta["total"]
+                expected_pages = meta["pages"]
+                _check_page_math(expected_total, expected_pages, _PAGE_LIMIT)
+            elif meta["total"] != expected_total or meta["pages"] != expected_pages:
+                raise IntegrationError("Pagination metadata changed between pages", uncertain=True)
+            if meta["page"] in seen_pages:
+                raise IntegrationError("Duplicate pagination cursor", uncertain=True)
+            seen_pages.add(meta["page"])
+            if expected_pages == 0:
+                if items or expected_total != 0:
+                    raise IntegrationError("Empty page count returned items", uncertain=True)
+                return []
+            last = page == expected_pages
+            if not last and len(items) != _PAGE_LIMIT:
+                raise IntegrationError("Truncated intermediate page", uncertain=True)
+            if last and len(items) > _PAGE_LIMIT:
+                raise IntegrationError("Last page is longer than the limit", uncertain=True)
+            for item in items:
+                key = item.get(identity)
+                if not isinstance(key, str) or not key:
+                    raise IntegrationError("Paged item is missing its identity", uncertain=True)
+                if key in seen:
+                    raise IntegrationError("Duplicate paged item", uncertain=True)
+                seen.add(key)
+                collected.append(item)
+            if last:
+                if len(collected) != expected_total:
+                    raise IntegrationError("Incomplete paged total", uncertain=True)
+                if seen_pages != set(range(1, expected_pages + 1)):
+                    raise IntegrationError("Pagination cursor did not cover every page", uncertain=True)
                 return collected
-            total = result.get("total")
-            if total is not None and int(total) == len(collected):
-                return collected
-            if total is not None and int(total) > len(collected):
-                page += 1
-                continue
-            raise IntegrationError("Cannot prove the remote list is complete", uncertain=True)
+            page += 1
+            if expected_pages is not None and page > expected_pages:
+                raise IntegrationError("Pagination cursor overran declared pages", uncertain=True)
         raise IntegrationError("Pagination exceeded the safety cap", uncertain=True)
 
     def get_profiles(self) -> list[dict]:
-        return self._pages("/open_api/api_profiles")
+        return self._pages("/open_api/api_profiles", identity="code")
 
     def get_account(self, profile_code: str, exchange_code: str = "BINANCE") -> Account:
         matches = [row for row in self.get_profiles() if row.get("code") == profile_code]
@@ -188,7 +255,7 @@ class ThreeCommas:
         return Account(profile_code, profile["demo"], usdt.free, usdt.used, usdt.total, assets)
 
     def get_live(self) -> list[dict]:
-        return self._pages("/open_api/strategies/live")
+        return self._pages("/open_api/strategies/live", identity="strategyId")
 
     def get_strategy(self, client_id: str) -> dict:
         result = self.request("GET", "/open_api/strategies/" + quote(client_id, safe=""))
