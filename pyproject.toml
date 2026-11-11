@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "warp-3cbot"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["httpx>=0.27,<1"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
