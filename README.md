@@ -1,27 +1,26 @@
 # WARP 3C Bot
 
-Vibe-Trading AI research + deterministic global risk + official 3Commas REST execution. One always-on Fly.io worker, Binance Spot USDT pairs, and audit logging.
+Vibe-Trading proposes candidates. A deterministic risk engine sizes them. 3Commas is the only execution path. One Fly.io worker, Binance Spot USDT pairs.
 
-> Integration MVP, **not yet live-verified**. Default mode is observe-only. Never grant trade permissions until demo tests and account reconciliation pass.
+Default mode is **observe**. This build is not live-verified. Do not grant trade permission until a demo round-trip and account reconciliation have passed, and do not treat a green `/health` or `/live` response as permission to trade.
 
 ## Flow
 
-1. Read current 3Commas API profile balances and live strategies.
-2. Vibe researches configured symbols and returns strictly structured, dated signals.
-3. WARP validates symbols, evidence freshness and confidence; risk rules determine sizing.
-4. Reserve the full DCA ladder capital and write a unique order ID to SQLite before calling 3Commas.
-5. Reconcile any uncertain submissions before permitting further entries.
+1. Read public Binance spot candles, 24h volume, and exchange filters. No trading key is used.
+2. Ask Vibe for `BUY` / `WAIT` / `SKIP`. Model prices and sizes are ignored. A `BUY` also needs a successful Vibe market-data tool call.
+3. Read the 3Commas API profile and live strategies when credentials exist. Paginate until the list is proven complete.
+4. Reserve the full DCA ladder plus a fee buffer, enforce portfolio, pair, correlation, reserve, daily-loss, and drawdown limits, and refuse stale or unexplained balances.
+5. In `paper` or `live` only, write a `warp3c-` client id to SQLite and then POST. Timeouts stay unresolved and block new entries. Definite 4xx responses are marked rejected and are not retried blindly.
 
-Modes: `observe` (no writes), `paper` (3Commas demo profile only), `live` (real profile, separate acknowledgement required). The 3Commas account should be dedicated to WARP: manual trades and external bots can make risk accounting incomplete.
+Modes: `observe` (no writes), `paper` (demo profile only), `live` (real profile plus `WARP_LIVE_EXECUTION_ACK`). Live is not enabled by this repository. The 3Commas profile should be dedicated to WARP: terminal strategies are invisible to the Open API.
 
 ## Run locally
 
-1. Copy `.env.example` to `.env`. Do not commit credentials.
-2. Configure the Vibe LLM provider and the 3Commas profile. Only read permissions are needed in `observe`.
-3. `docker compose up --build` (first build installs Vibe-Trading dependencies).
-4. Check `http://localhost:8080/health` and logs. With no credentials WARP remains idle.
-5. `python -m unittest discover -s tests -v` runs offline tests.
+1. Copy `.env.example` to `.env`. Do not commit it.
+2. `docker compose up --build` installs the pinned Vibe-Trading fork. With no 3Commas credentials the worker still scans and researches, and it does not submit.
+3. `http://127.0.0.1:8080/live` is process liveness. `/ready` is dependency health. `execution_permitted` in the JSON is the trading flag and stays false in observe.
+4. `python -m pip install -e ".[dev]" && ruff check src tests && python -m unittest discover -s tests -v`
 
-Read [ARCHITECTURE.md](ARCHITECTURE.md) and [DEPLOYMENT.md](DEPLOYMENT.md) before connecting a demo or live profile.
+Read [ARCHITECTURE.md](ARCHITECTURE.md) and [DEPLOYMENT.md](DEPLOYMENT.md) before connecting a demo profile.
 
-Official contracts: [Vibe sessions](https://github.com/HKUDS/Vibe-Trading#-api-server), [3Commas HMAC](https://trade.3commas.io/docs/rest-api/auth), [3Commas API profiles](https://trade.3commas.io/docs/rest-api/schemas/apiprofile), [live strategies](https://trade.3commas.io/docs/rest-api/get-strategies-live), [new strategy](https://trade.3commas.io/docs/rest-api/post-strategies-trade).
+Contracts: [Vibe sessions](https://github.com/HKUDS/Vibe-Trading/blob/master/guides/cli-and-api.md), [3Commas HMAC](https://trade.3commas.io/docs/rest-api/auth), [API profiles](https://trade.3commas.io/docs/rest-api/schemas/apiprofile), [strategy schema](https://trade.3commas.io/docs/rest-api/schemas/strategy), [new trade](https://trade.3commas.io/docs/rest-api/post-strategies-trade).
