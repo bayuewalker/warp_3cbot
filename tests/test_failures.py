@@ -159,7 +159,7 @@ class FailureTests(unittest.TestCase):
             open(os.path.join(tmp, "HALT"), "w").close()
             broker = ExplodingBroker()
             self.assertEqual(Engine(cfg, broker, Research(), journal, Markets()).cycle(), 0)
-            self.assertEqual(broker.reads, 0)
+            self.assertGreaterEqual(broker.reads, 1)
             self.assertEqual(broker.creates, 0)
             journal.close()
 

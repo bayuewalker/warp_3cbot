@@ -109,7 +109,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(calls.count("/api/v3/exchangeInfo"), 1)
         data.close()
 
-    def test_discovery_failure_falls_back_to_the_allowlist(self):
+    def test_discovery_failure_does_not_trade_the_static_list(self):
         class Boom(Markets):
             def discover(self, now=None):
                 raise MarketDataError("down")
@@ -120,9 +120,77 @@ class DiscoveryTests(unittest.TestCase):
             engine = Engine(cfg, _QuietBroker(), Research(), journal, Boom())
             engine.cycle()
             reasons = [row["reason"] for row in journal.recent_decisions()]
-            self.assertIn("discovery_fallback_allowlist", reasons)
-            self.assertEqual(engine.universe, cfg.symbols)
+            self.assertIn("discovery_unavailable", reasons)
+            self.assertEqual(engine.universe, ())
+            self.assertEqual(engine.status.reason, "discovery_unavailable")
             journal.close()
+
+    def test_open_discovery_can_select_a_coin_outside_the_static_list(self):
+        def row(symbol):
+            return {
+                "symbol": symbol, "status": "TRADING", "quoteAsset": "USDT",
+                "isSpotTradingAllowed": True, "quoteAssetPrecision": 2,
+                "filters": [{"filterType": "NOTIONAL", "minNotional": "5"}],
+            }
+
+        def ticker(symbol):
+            return {"symbol": symbol, "quoteVolume": "8000000", "bidPrice": "100", "askPrice": "100.1"}
+
+        def handler(req):
+            if req.url.path.endswith("exchangeInfo"):
+                return httpx.Response(200, json={"symbols": [row("BTCUSDT"), row("ADAUSDT")]})
+            if req.url.path.endswith("ticker/24hr"):
+                return httpx.Response(200, json=[ticker("BTCUSDT"), ticker("ADAUSDT")])
+            raise AssertionError(req.url.path)
+
+        open_cfg = Settings(deny_symbols=("XRPUSDT",))
+        data = MarketData("https://data-api.binance.vision", open_cfg, transport=httpx.MockTransport(handler))
+        chosen, _rejected = data.discover(now=datetime(2026, 1, 1, tzinfo=timezone.utc))
+        self.assertIn("ADAUSDT", chosen)
+        self.assertIn("BTCUSDT", chosen)
+        data.close()
+
+        limited = Settings(discovery_allow=("ADAUSDT",), deny_symbols=("XRPUSDT",))
+        data = MarketData("https://data-api.binance.vision", limited, transport=httpx.MockTransport(handler))
+        chosen, rejected = data.discover(now=datetime(2026, 1, 1, tzinfo=timezone.utc))
+        self.assertEqual(chosen, ("ADAUSDT",))
+        self.assertEqual(dict(rejected)["BTCUSDT"], "outside_allowlist")
+        data.close()
+        Settings(discovery="auto", correlation=(("ADAUSDT", "alts"),))
+
+    def test_auto_scan_fails_closed_without_a_spread(self):
+        now = datetime(2026, 1, 2, tzinfo=timezone.utc)
+        candles = []
+        price = 100
+        for i in range(80):
+            close_at = now - timedelta(minutes=15 * (80 - i))
+            price += 0.4
+            candles.append([
+                0, str(price), str(price + 1), str(price - 1), str(price), "1",
+                int(close_at.timestamp() * 1000), "1000", 0, "0", "0", "0",
+            ])
+
+        def handler(req):
+            if req.url.path.endswith("exchangeInfo"):
+                return httpx.Response(200, json={"symbols": [{
+                    "symbol": "BTCUSDT", "status": "TRADING", "quoteAsset": "USDT",
+                    "isSpotTradingAllowed": True, "quoteAssetPrecision": 2,
+                    "filters": [{"filterType": "NOTIONAL", "minNotional": "5"}],
+                }]})
+            if req.url.path.endswith("ticker/24hr"):
+                return httpx.Response(200, json={
+                    "symbol": "BTCUSDT", "quoteVolume": "5000000", "lastPrice": "130",
+                })
+            if req.url.path.endswith("klines"):
+                return httpx.Response(200, json=candles)
+            raise AssertionError(req.url.path)
+
+        cfg = Settings(discovery="auto", rsi_max=Decimal("100"), symbols=("BTCUSDT",))
+        data = MarketData("https://data-api.binance.vision", cfg, transport=httpx.MockTransport(handler))
+        item = data.scan(("BTCUSDT",), now=now)["BTCUSDT"]
+        self.assertFalse(item.passed)
+        self.assertEqual(item.reason, "spread_unknown")
+        data.close()
 
 
 class _QuietBroker:
@@ -232,6 +300,37 @@ class ScheduleTests(unittest.TestCase):
             self.assertGreaterEqual(broker.reads, 1)
             release.set()
             gate._thread.join(2)
+            journal.close()
+
+    def test_halt_keeps_the_research_result_for_a_later_cycle(self):
+        class RecordingBroker(ExplodingBroker):
+            def create_strategy(self, payload):
+                self.creates += 1
+                return {"strategyId": "mock-1", "clientId": payload["clientId"]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Settings(
+                mode="paper", db_path=os.path.join(tmp, "warp.db"),
+                api_key="k", api_secret="s", profile_code="p123",
+            )
+            journal = OrderJournal(cfg.db_path)
+            broker = RecordingBroker()
+            engine = Engine(cfg, broker, Research(), journal, Markets())
+            engine.evidence = {"BTCUSDT": evidence("BTCUSDT")}
+            engine.universe = ("BTCUSDT",)
+            gate = ResearchGate()
+            self.assertTrue(gate.start(lambda: [sig()]))
+            gate._thread.join(2)
+            now = datetime.now(timezone.utc)
+            open(os.path.join(tmp, "HALT"), "w").close()
+            once(engine, gate, Clocks(scan=now, research=now, reconcile=now), now=now)
+            self.assertEqual(broker.creates, 0)
+            self.assertGreaterEqual(broker.reads, 1)
+            os.remove(os.path.join(tmp, "HALT"))
+            later = now + timedelta(seconds=1)
+            fresh = Clocks(scan=later, research=later, monitor=later, reconcile=later)
+            once(engine, gate, fresh, now=later)
+            self.assertEqual(broker.creates, 1)
             journal.close()
 
 

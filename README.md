@@ -6,7 +6,7 @@ Default mode is **observe**. This build is not live-verified. Do not grant trade
 
 ## Flow
 
-1. Read public Binance spot candles, 24h volume, and exchange filters. No trading key is used. `WARP_DISCOVERY=auto` ranks the allowlist by volume and spread; `static` keeps `WARP_SYMBOLS`.
+1. Read public Binance spot candles, 24h volume, and exchange filters. No trading key is used. `static` scans `WARP_SYMBOLS`. `WARP_DISCOVERY=auto` can see a wider book through `WARP_DISCOVERY_ALLOWLIST`, and it stays off unless that switch is set.
 2. Ask Vibe for `BUY` / `WAIT` / `SKIP`. Model prices and sizes are ignored. A `BUY` also needs a successful Vibe market-data tool call.
 3. Read the 3Commas API profile and live strategies when credentials exist. Paginate until the list is proven complete.
 4. Reserve the full DCA ladder plus a fee buffer, enforce portfolio, pair, correlation, reserve, daily-loss, and drawdown limits, and refuse stale or unexplained balances.

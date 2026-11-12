@@ -22,7 +22,7 @@ flowchart LR
   journal --> dash[Operator API]
 ```
 
-Auto discovery is off unless `WARP_DISCOVERY=auto`. The static `WARP_SYMBOLS` list stays the allowlist and the fallback when the public exchange read fails. A research thread cannot call the broker. Monitoring and reconciliation use their own intervals, so a slow research call does not delay the risk check.
+Auto discovery is off unless `WARP_DISCOVERY=auto`. `WARP_SYMBOLS` is the static universe. `WARP_DISCOVERY_ALLOWLIST` is a separate optional cap used only in auto mode; empty means the public USDT book, still minus `WARP_DENY_SYMBOLS`. Auto mode does not fall back to trading the static list when discovery fails or a spread is missing. A research thread cannot call the broker. Monitoring and reconciliation keep running while the HALT file blocks new submissions. A held asset that rotates out of the entry list still needs its own USDT mark, or new entries stop.
 
 Only the `trend_up` profile can size a new ladder. Range, downtrend, and high volatility do not open entries. Those bounds are code, not model output. Changing an existing 3Commas strategy is not implemented: the official edit, pause, and cancel contracts were not re-checked against a live response in this build. `HALT` and the risk breakers stop new entries and leave current positions untouched.
 

@@ -72,6 +72,7 @@ def public_config(cfg) -> dict:
         "mode": cfg.mode,
         "discovery": cfg.discovery,
         "symbols": list(cfg.symbols),
+        "discovery_allow": list(cfg.discovery_allow),
         "deny_symbols": list(cfg.deny_symbols),
         "max_candidates": cfg.max_candidates,
         "max_committed": _text(cfg.max_committed),

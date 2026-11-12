@@ -25,7 +25,9 @@ Cadence defaults: monitor 60s, reconcile 120s, scan 300s, research 900s. `WARP_C
 
 ## Pause and resume
 
-Pause stops new strategies. It does not close, reduce, or hide 3Commas positions.
+Pause stops new strategies. It does not close, reduce, or hide 3Commas positions, and it does not stop account reads or reconciliation.
+
+`WARP_SYMBOLS` is the static scan list. `WARP_DISCOVERY_ALLOWLIST` is used only when `WARP_DISCOVERY=auto`. Leave that allowlist empty to consider other USDT markets. The denylist still applies. If the public read fails, auto mode scans nothing until it recovers.
 
 - Dashboard button, or `POST /api/pause` with the bearer token.
 - Or create `/data/HALT` (`fly ssh console -C "touch /data/HALT"` once a Machine exists).

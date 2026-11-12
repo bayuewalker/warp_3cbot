@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import ROUND_DOWN, Decimal
 
@@ -208,7 +209,7 @@ class MarketData:
         self.http.close()
 
     def discover(self, *, now: datetime | None = None) -> tuple[tuple[str, ...], list[tuple[str, str]]]:
-        """Rank eligible spot USDT markets. The static allowlist is the outer bound."""
+        """Rank spot USDT markets. The optional discovery allowlist is not the static fallback."""
         moment = now or datetime.now(timezone.utc)
         info = self._exchange_info_all(moment)
         tickers = self._get("/api/v3/ticker/24hr", {})
@@ -244,7 +245,7 @@ class MarketData:
             )
         return select_universe(
             candidates,
-            allow=set(self.cfg.symbols),
+            allow=set(self.cfg.discovery_allow),
             deny=set(self.cfg.deny_symbols),
             min_volume=self.cfg.min_quote_volume,
             max_spread=self.cfg.max_spread,
@@ -285,7 +286,7 @@ class MarketData:
             raise MarketDataError("Ticker payload is not an object")
         klines = self._get("/api/v3/klines", {"symbol": symbol, "interval": "15m", "limit": 120})
         candles = closed_candles(klines, now=now)
-        return analyze(
+        item = analyze(
             symbol,
             candles,
             quote_volume_24h=positive(ticker.get("quoteVolume"), "24h quote volume"),
@@ -295,6 +296,20 @@ class MarketData:
             cfg=self.cfg,
             now=now,
         )
+        if self.cfg.discovery == "auto" and item.passed:
+            spread = _spread(ticker)
+            if spread is None:
+                item = replace(item, passed=False, reason="spread_unknown")
+            elif spread > self.cfg.max_spread:
+                item = replace(item, passed=False, reason="spread_too_wide")
+        return item
+
+    def last_price(self, symbol: str) -> Decimal:
+        """Last trade for a held asset that is outside the entry universe."""
+        ticker = self._get("/api/v3/ticker/24hr", {"symbol": symbol})
+        if not isinstance(ticker, dict):
+            raise MarketDataError("Ticker payload is not an object")
+        return positive(ticker.get("lastPrice"), "last price", allow_zero=False)
 
     def _rules(self, symbol: str) -> dict:
         payload = self._get("/api/v3/exchangeInfo", {"symbol": symbol})

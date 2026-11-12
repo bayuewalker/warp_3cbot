@@ -52,6 +52,7 @@ class Settings:
     cycle_seconds: int = 900
     symbols: tuple[str, ...] = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
     discovery: str = "static"
+    discovery_allow: tuple[str, ...] = ()
     deny_symbols: tuple[str, ...] = ()
     max_candidates: int = 12
     max_spread: Decimal = Decimal("0.005")
@@ -113,6 +114,10 @@ class Settings:
             raise ValueError("Symbol universe empty or duplicated")
         if any(not (s.isalnum() and s.endswith("USDT")) for s in self.symbols):
             raise ValueError("Only allowlisted USDT pairs are supported")
+        if any(not (s.isalnum() and s.endswith("USDT")) for s in self.discovery_allow):
+            raise ValueError("Discovery allowlist must be USDT pairs")
+        if len(set(self.discovery_allow)) != len(self.discovery_allow):
+            raise ValueError("Discovery allowlist contains a duplicate")
         if any(not (s.isalnum() and s.endswith("USDT")) for s in self.deny_symbols):
             raise ValueError("Denylist must be USDT pairs")
         if len(set(self.deny_symbols)) != len(self.deny_symbols):
@@ -167,9 +172,15 @@ class Settings:
             if parsed.scheme != "https" or not parsed.netloc:
                 raise ValueError("Alert webhook must be an https URL")
         known = {symbol for symbol, _group in self.correlation}
-        unknown = known.difference(self.symbols)
-        if unknown:
-            raise ValueError("Correlation group contains a symbol outside the universe")
+        if self.discovery == "auto" and not self.discovery_allow:
+            invalid = [symbol for symbol in known if not (symbol.isalnum() and symbol.endswith("USDT"))]
+            if invalid:
+                raise ValueError("Correlation group contains a symbol that is not a USDT pair")
+        else:
+            universe = set(self.symbols) | set(self.discovery_allow)
+            unknown = known.difference(universe)
+            if unknown:
+                raise ValueError("Correlation group contains a symbol outside the universe")
 
     def group_for(self, symbol: str) -> str:
         if not self.correlation:
@@ -196,6 +207,9 @@ class Settings:
                 if s.strip()
             ),
             discovery=os.getenv("WARP_DISCOVERY", "static").strip().lower(),
+            discovery_allow=tuple(
+                s.strip().upper() for s in os.getenv("WARP_DISCOVERY_ALLOWLIST", "").split(",") if s.strip()
+            ),
             deny_symbols=tuple(
                 s.strip().upper() for s in os.getenv("WARP_DENY_SYMBOLS", "").split(",") if s.strip()
             ),

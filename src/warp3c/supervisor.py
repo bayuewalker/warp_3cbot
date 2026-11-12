@@ -90,7 +90,9 @@ def once(engine, gate: ResearchGate, clocks: Clocks, *, now: datetime | None = N
         clocks = replace(clocks, research=moment)
     if gate.error is not None:
         log_event("research_blocked", error=type(gate.error).__name__)
+    if engine._halted():
+        return clocks
     pending = gate.take(engine.cfg.max_signal_age, moment)
-    if pending is not None and not engine._halted():
+    if pending is not None:
         engine.execute_cached(pending, moment)
     return clocks

@@ -10,7 +10,7 @@ from pathlib import Path
 from .config import Settings
 from .market import MarketData, MarketDataError
 from .models import Signal
-from .risk import GlobalRisk, make_trade_payload
+from .risk import GlobalRisk, make_trade_payload, pair_symbols
 from .state import OrderJournal
 from .telemetry import log_event
 from .threecommas import IntegrationError, StrategyNotFound, ThreeCommas
@@ -47,12 +47,10 @@ class Engine:
         self.evidence = {}
         self.last_positions: list[dict] = []
         self.last_decision = None
+        self._discovery_block: str | None = None
 
     def cycle(self) -> int:
         self.status = CycleStatus()
-        if self._halted():
-            self._mark_halt()
-            return 0
         try:
             now = datetime.now(timezone.utc)
             account, positions = self._load_account()
@@ -66,11 +64,8 @@ class Engine:
         return opened
 
     def monitor(self) -> int:
-        """Reconcile and re-score risk. Does not call research and does not submit."""
+        """Reconcile and re-score risk. Pause does not skip this. It does not submit."""
         self.status = CycleStatus()
-        if self._halted():
-            self._mark_halt()
-            return 0
         try:
             now = datetime.now(timezone.utc)
             account, positions = self._load_account()
@@ -85,9 +80,6 @@ class Engine:
     def execute_cached(self, signals: list[Signal], now: datetime | None = None) -> int:
         """Submit only after research has finished. Still goes through the risk engine."""
         moment = now or datetime.now(timezone.utc)
-        if self._halted():
-            self._mark_halt()
-            return 0
         try:
             account, positions = self._load_account()
             opened = self._submit(account, positions, signals, moment, submit=True)
@@ -107,21 +99,22 @@ class Engine:
         return self._research()
 
     def _select_universe(self, now: datetime) -> tuple[str, ...]:
+        self._discovery_block = None
         if self.cfg.discovery != "auto":
             return self.cfg.symbols
         try:
             selected, rejected = self.market.discover(now=now)
         except MarketDataError:
-            self._record(
-                [(now.isoformat(), "*", "universe", "discovery_fallback_allowlist", "market_data")]
-            )
-            return self.cfg.symbols
+            self._discovery_block = "discovery_unavailable"
+            self._record([(now.isoformat(), "*", "universe", "discovery_unavailable", "fail_closed")])
+            return ()
         self._record(
             [(now.isoformat(), symbol, "universe", reason, "rejected") for symbol, reason in rejected]
         )
         if not selected:
-            self._record([(now.isoformat(), "*", "universe", "no_eligible_market", "fallback_allowlist")])
-            return self.cfg.symbols
+            self._discovery_block = "no_eligible_market"
+            self._record([(now.isoformat(), "*", "universe", "no_eligible_market", "fail_closed")])
+            return ()
         return selected
 
     def _research(self) -> list[Signal]:
@@ -144,20 +137,31 @@ class Engine:
         for symbol, item in self.evidence.items():
             notes.append((stamp, symbol, "market", item.reason, "passed" if item.passed else "rejected"))
         self._mark_fresh(now)
+        paused = self._halted()
         if account is None:
             self.status.dependencies_healthy = True
             self.status.execution_permitted = False
             self.status.risk_permitted = False
-            self.status.reason = "observe_without_account"
+            self.status.reason = "halt" if paused else "observe_without_account"
             self._record(notes)
-            log_event("observe", signals=len(deduped), fresh=self.status.market_data_fresh)
+            log_event("halt" if paused else "observe", signals=len(deduped), fresh=self.status.market_data_fresh)
+            return 0
+
+        prices, price_problem = self._price_map(account, positions)
+        if price_problem:
+            self.status.dependencies_healthy = True
+            self.status.execution_permitted = False
+            self.status.risk_permitted = False
+            self.status.reason = "halt" if paused else price_problem
+            self._record(notes)
+            log_event("entries_paused", mode=self.cfg.mode, reason=self.status.reason)
             return 0
 
         decision = self.guard.assess(
             account,
             positions,
             deduped,
-            prices={symbol: item.last_price for symbol, item in self.evidence.items()},
+            prices=prices,
             marks=self.journal.equity_marks(),
             now=now,
             evidence=self.evidence,
@@ -167,18 +171,29 @@ class Engine:
             self.journal.record_equity(decision.equity, decision.equity_reliable, now=now)
         self.status.dependencies_healthy = True
         self.status.risk_permitted = decision.execution_permitted
-        self.status.execution_permitted = bool(submit and decision.execution_permitted and self.cfg.mode != "observe")
+        self.status.execution_permitted = bool(
+            submit and decision.execution_permitted and self.cfg.mode != "observe" and not paused
+        )
         self.status.reason = decision.reason
+        if self._discovery_block and decision.execution_permitted:
+            self.status.reason = self._discovery_block
+            self.status.risk_permitted = False
+            self.status.execution_permitted = False
+        if paused:
+            self.status.reason = "halt"
+            self.status.execution_permitted = False
         planned = {plan.symbol for plan in decision.orders}
         for signal in deduped:
             if signal.symbol in planned:
                 notes.append((stamp, signal.symbol, "risk", decision.reason, "planned"))
             elif signal.action == "BUY":
                 notes.append((stamp, signal.symbol, "risk", decision.reason, "rejected"))
-        if not decision.execution_permitted or not submit:
+        if paused or self._discovery_block or not decision.execution_permitted or not submit:
             self._record(notes)
-            if not decision.execution_permitted:
-                log_event("entries_paused", mode=self.cfg.mode, reason=decision.reason)
+            if paused:
+                log_event("halt", mode=self.cfg.mode)
+            elif not self.status.risk_permitted:
+                log_event("entries_paused", mode=self.cfg.mode, reason=self.status.reason)
             return 0
 
         opened = 0
@@ -190,7 +205,9 @@ class Engine:
             if opened >= 1:
                 break
             if self._halted():
-                self._mark_halt()
+                self.status.reason = "halt"
+                self.status.execution_permitted = False
+                notes.append((stamp, plan.symbol, "broker", "halt", "not_submitted"))
                 break
             if self.cfg.mode == "observe":
                 notes.append((stamp, plan.symbol, "broker", "observe", "not_submitted"))
@@ -234,6 +251,39 @@ class Engine:
         self.last_positions = []
         return None, []
 
+    def _needed_symbols(self, account, positions) -> set[str]:
+        needed: set[str] = set()
+        for row in positions:
+            if not isinstance(row, dict):
+                continue
+            pair = row.get("pair")
+            if isinstance(pair, str) and pair.endswith("USDT"):
+                needed.add(pair)
+            try:
+                base = pair_symbols(row).get("base")
+            except IntegrationError:
+                base = None
+            if base:
+                needed.add(f"{base}USDT")
+        if account is not None:
+            for asset, balance in account.holdings().items():
+                if asset != "USDT" and balance.total > 0:
+                    needed.add(f"{asset}USDT")
+        return needed
+
+    def _price_map(self, account, positions) -> tuple[dict, str | None]:
+        prices = {symbol: item.last_price for symbol, item in self.evidence.items()}
+        missing = [symbol for symbol in sorted(self._needed_symbols(account, positions)) if symbol not in prices]
+        quote = getattr(self.market, "last_price", None)
+        for symbol in missing:
+            if quote is None:
+                return prices, "mark_unavailable"
+            try:
+                prices[symbol] = quote(symbol)
+            except MarketDataError:
+                return prices, "mark_unavailable"
+        return prices, None
+
     def _fresh(self, now: datetime) -> bool:
         if not self.evidence:
             return False
@@ -244,13 +294,6 @@ class Engine:
 
     def _mark_fresh(self, now: datetime) -> None:
         self.status.market_data_fresh = self._fresh(now)
-
-    def _mark_halt(self) -> None:
-        self.status.reason = "halt"
-        self.status.dependencies_healthy = True
-        self.status.execution_permitted = False
-        self.status.risk_permitted = False
-        log_event("halt", mode=self.cfg.mode)
 
     def _mark_blocked(self, exc: Exception) -> None:
         self.status.reason = type(exc).__name__

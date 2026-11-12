@@ -4,7 +4,7 @@ Verdict for this coding pass: **BLOCKED**. The observe-mode worker now has the m
 
 ## Implemented
 
-- Static allowlist by default. `WARP_DISCOVERY=auto` ranks Binance spot USDT markets by quote volume after liquidity, spread, denylist, and precision checks, caches `exchangeInfo`, and falls back to `WARP_SYMBOLS` when the public read fails.
+- Static universe by default. `WARP_DISCOVERY=auto` ranks the public USDT book, or `WARP_DISCOVERY_ALLOWLIST` when that list is set. The denylist always applies. A discovery failure or a missing spread does not make the static list tradable. HALT blocks new submissions and still reads and reconciles the account. Held assets outside the entry list are priced separately, or new entries stop.
 - Separate scan, research, monitor, and reconcile intervals. Research runs on a side thread and cannot call 3Commas. Monitoring still runs while research is busy.
 - Decision rows for universe, market, research, risk, and broker outcomes.
 - Trend profile is the only one that can size a ladder. Model fields such as `amount` are not read. Slippage is an extra buffer and defaults to 0 bps.
@@ -17,7 +17,7 @@ Verdict for this coding pass: **BLOCKED**. The observe-mode worker now has the m
 
 - Edit, pause, or cancel of an existing 3Commas strategy. Those official mutation responses were not re-verified here, so the worker does not call them.
 - Range and downtrend entries. Turning them on would be a trading-policy change.
-- Auto discovery is implemented and left off in `fly.toml` (`WARP_DISCOVERY=static`) so a deploy does not widen the pair list by itself.
+- Auto discovery stays off in `fly.toml` (`WARP_DISCOVERY=static`). Turning it on is an operator switch. An empty discovery allowlist searches beyond `WARP_SYMBOLS` and is still disabled until that switch is set.
 
 ## External blockers
 
