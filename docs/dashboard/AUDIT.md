@@ -14,3 +14,7 @@ Baseline is PR #6 at `194f836`. The review follows the React entry point, shared
 PR #5 at `46146dc` independently adds provider cooldown, model and health fields to status and changes the old Overview component. Consume its optional fields when supplied. The missing provider telemetry on #6 must stay explicit. Reconcile the two Overview edits when stacking changes upstream.
 
 PR #6 supplies stage state and selected counts, plus per-card signal and evidence times. It does not publish stage completion times, a numeric risk score, or a separate screener timestamp. Keep these distinct from the time the browser fetched a snapshot. Retain the existing Binance discovery and manual TradingView chart boundary.
+
+## WalkerMind theme revision
+
+At e39e1e8, the mode and full language selector occupy different heights. The account cards precede the first indication of a blocked entry gate, even when no equity mark is available. Several source and timing labels are only 10–11px. The revision brings the scanner and gate into the first viewport and groups account figures below.

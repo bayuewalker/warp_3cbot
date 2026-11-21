@@ -1,5 +1,6 @@
 import {
   Activity,
+  ChevronRight,
   Bot,
   Boxes,
   CircleDollarSign,
@@ -197,7 +198,7 @@ function Pipeline({ lang, row }: { lang: Lang; row: Status }) {
                     </Badge>
                   </div>
                   <div className="stage-meta">
-                    <span>{source?.replaceAll("_", " ") || "—"}</span>
+                    <span>{source === "binance_spot_public" ? "Binance Spot" : source?.replaceAll("_", " ") || "—"}</span>
                     {stage && "count" in stage && (
                       <span>
                         {t(lang, "outputs")} <b>{stage.count}</b>
@@ -245,6 +246,35 @@ function Pipeline({ lang, row }: { lang: Lang; row: Status }) {
   );
 }
 
+function ScannerSummary({ lang, row }: { lang: Lang; row: Status }) {
+  const screen = row.pipeline?.screening;
+  const analysis = row.pipeline?.analysis;
+  const source = screen?.source === "binance_spot_public" ? "Binance Spot" : screen?.source?.replaceAll("_", " ");
+  const risk = row.halt ? "HALT" : row.gating === "awaiting_worker" ? t(lang, "awaitingWorker")
+    : row.risk_permitted === false ? t(lang, "gateBlocked") : stateLabel(lang, row.pipeline?.risk?.state);
+  return (
+    <section className="scan-card" aria-labelledby="scan-title">
+      <div className="scan-body">
+        <div className="scan-copy">
+          <p className="scan-source"><ScanLine size={16} />{source || t(lang, "unknown")}</p>
+          <h2 id="scan-title">{t(lang, "scanTitle")} <em>{t(lang, "scanAccent")}</em></h2>
+          <p className="scan-count"><strong>{screen?.count?.toLocaleString(lang) ?? "—"}</strong> {t(lang, "screenedSymbols")}</p>
+        </div>
+        <div className="scan-dial">
+          <strong>{analysis?.count?.toLocaleString(lang) ?? "—"}</strong>
+          <span>{t(lang, "analysisOutputs")}</span>
+        </div>
+      </div>
+      <div className="scan-foot">
+        <span className={row.halt || row.risk_permitted === false ? "risk-warning" : undefined}>
+          <ShieldCheck size={16} /><span><span className="sr-only">{t(lang, "riskStatus")} · </span><b>{risk}</b></span>
+        </span>
+        <a href="#screener">{t(lang, "openScreener")} <ChevronRight size={15} /></a>
+      </div>
+    </section>
+  );
+}
+
 export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
   const positions = useLoad<{ positions: Position[] }>("/api/positions", true);
   const bots = useLoad<{ bots: WarpBot[] }>("/api/warp-bots", true);
@@ -270,6 +300,7 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
   ] as const;
   return (
     <div className="overview">
+      <ScannerSummary lang={lang} row={row} />
       <div className="metrics">
         {metrics.map((m) => (
           <Card key={m.title} className="kpi">
@@ -277,7 +308,7 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
               <span>{t(lang, m.title)}</span>
               <m.icon size={16} />
             </div>
-            <strong>
+            <strong className={m.value == null ? "kpi-missing" : undefined}>
               {m.value == null ? t(lang, "unavailable") : m.value}{" "}
               {m.value != null && "unit" in m && <small>{m.unit}</small>}
             </strong>

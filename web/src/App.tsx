@@ -1,8 +1,8 @@
 import {
   Activity,
   ArrowUpRight,
+  Bell,
   Bot,
-  ChartNoAxesCombined,
   ChevronRight,
   Clock3,
   Crosshair,
@@ -64,7 +64,7 @@ function Brand() {
   return (
     <div className="brand">
       <span className="mark">
-        <ChartNoAxesCombined size={24} />
+        <span aria-hidden="true">W</span>
       </span>
       <strong>
         WARP <b>3C</b>
@@ -94,13 +94,13 @@ export function App() {
     localStorage.setItem("warp.lang", lang);
   }, [lang]);
   const language = (
-    <div role="group" aria-label={t(lang, "language")} className="lang-switch">
-      {(["en", "id"] as const).map((item) => (
-        <button key={item} aria-pressed={lang === item} onClick={() => setLang(item)}>
-          {item.toUpperCase()}
-        </button>
-      ))}
-    </div>
+    <button
+      className="tool-button language-button"
+      aria-label={lang === "en" ? "EN · Switch to Indonesian" : "ID · Ganti ke bahasa Inggris"}
+      onClick={() => setLang(lang === "en" ? "id" : "en")}
+    >
+      <span>{lang.toUpperCase()}</span>
+    </button>
   );
   if (!authed)
     return (
@@ -236,37 +236,39 @@ function Workspace({
         <nav aria-label={t(lang, "navigation")}>{links(false)}</nav>
       </aside>
       <div className="workarea">
-        <header className="topbar">
-          <div className="breadcrumb">
-            <Activity size={16} />
-            <span>{t(lang, "desk")}</span>
-            <ChevronRight size={14} />
-            <strong>{t(lang, page)}</strong>
-          </div>
-          <div className="mobile-brand">
-            <Brand />
-          </div>
-          <div className="toolbar">
-            <LiveBadge lang={lang} />
-            {status.data?.halt && <Badge tone="bad">HALT</Badge>}
-            <Badge tone={row?.halt || row?.mode === "live" ? "bad" : row?.mode === "paper" ? "warn" : "info"}>
-              {row?.mode?.toUpperCase() ?? "—"}
-            </Badge>
-            {language}
-            <button
-              className="icon-button"
-              aria-label={t(lang, "logout")}
-              title={t(lang, "logout")}
-              onClick={() => void logout().catch(() => setLogoutError(true))}
-            >
-              <LogOut size={17} />
-            </button>
-          </div>
-        </header>
+        <div className="header-group">
+          <header className="topbar">
+            <div className="breadcrumb">
+              <Activity size={16} />
+              <span>{t(lang, "desk")}</span>
+              <ChevronRight size={14} />
+              <strong>{t(lang, page)}</strong>
+            </div>
+            <div className="mobile-brand">
+              <Brand />
+            </div>
+            <div className="toolbar">
+              <LiveBadge lang={lang} />
+              <Badge tone={row?.halt || row?.mode === "live" ? "bad" : row?.mode === "paper" ? "warn" : "info"}>
+                {row?.mode?.toUpperCase() ?? "—"}
+              </Badge>
+              <Alerts lang={lang} row={row} halted={status.data?.halt === true} error={status.error} />
+              {language}
+              <button
+                className="icon-button"
+                aria-label={t(lang, "logout")}
+                title={t(lang, "logout")}
+                onClick={() => void logout().catch(() => setLogoutError(true))}
+              >
+                <LogOut size={17} />
+              </button>
+            </div>
+          </header>
+          {status.data?.halt && <div className="halt-strip" role="alert"><strong>HALT</strong> {t(lang, "haltHelp")}</div>}
+        </div>
         <main id="workspace" className="workspace">
-          {(status.data?.halt || status.error || logoutError) && (
+          {(status.error || logoutError) && (
             <div className="alert" role="alert">
-              {status.data?.halt && <strong>HALT · {t(lang, "haltHelp")} </strong>}
               {status.error && (
                 <button onClick={status.reload}>
                   {t(lang, "noSnapshot")} · {t(lang, "retry")}
@@ -317,6 +319,51 @@ function Workspace({
     </div>
   );
 }
+function Alerts({ lang, row, halted, error }: { lang: Lang; row: Status | null; halted: boolean; error: boolean }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    function dismiss(event: PointerEvent) {
+      if (!root.current?.contains(event.target as Node)) setOpen(false);
+    }
+    function escape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpen(false);
+        trigger.current?.focus();
+      }
+    }
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [open]);
+  const messages: string[] = [];
+  if (halted) messages.push("HALT · " + t(lang, "haltHelp"));
+  if (error) messages.push(t(lang, "noSnapshot"));
+  if (row?.market_data_fresh === false) messages.push(t(lang, "stale"));
+  if (!halted && row?.risk_permitted === false) messages.push(t(lang, "gateBlocked"));
+  return (
+    <div className="alerts-tool" ref={root} onBlur={(event) => {
+      if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+    }}>
+      <button ref={trigger} type="button" className="tool-button" aria-controls="desk-alerts"
+        aria-expanded={open} aria-label={t(lang, "statusAlerts") + (messages.length ? " (" + messages.length + ")" : "")}
+        onClick={() => setOpen(!open)}>
+        <span><Bell size={16} />{messages.length > 0 && <i className="alert-dot" />}</span>
+      </button>
+      <section id="desk-alerts" className="alerts-list" hidden={!open} aria-label={t(lang, "statusAlerts")}>
+        <h2>{t(lang, "statusAlerts")}</h2>
+        {messages.length ? <ul>{messages.map(message => <li key={message}>{message}</li>)}</ul>
+          : <p>{t(lang, row ? "noDeskAlerts" : "loading")}</p>}
+      </section>
+    </div>
+  );
+}
+
 function Sections<K extends Key>({
   lang,
   items,
