@@ -3,30 +3,37 @@
 ## Responsibility boundary
 
 - **Public market data**: Binance spot klines, 24h quote volume, and `exchangeInfo` filters from `WARP_MARKET_DATA_URL` (default `https://data-api.binance.vision`). This is the only numeric evidence that can make a signal executable. `api.binance.com` returned HTTP 451 from the build environment; the vision host served the same `/api/v3` routes.
-- **Vibe-Trading**: proposes `BUY`, `WAIT`, or `SKIP`. It does not receive the 3Commas key, secret, profile code, live acknowledgement, or alert webhook. Shell tools are disabled. Model confidence is a filter, not a position size. Model prices and amounts are discarded.
-- **WARP risk worker**: reads balances and strategies, applies deterministic limits, and is the only component that can call `POST /open_api/strategies/trade`.
-- **3Commas**: places and manages the spot DCA strategy.
-- **Fly.io**: one always-on Machine, one volume, region `sin`.
+- **Screener**: `POST https://scanner.tradingview.com/crypto/scan`, then Binance `GET /api/v3/ticker/24hr` if that call fails. Filters live in the SQLite `settings` table. A screener failure does not fall back to the static symbol list when discovery mode is `screener`.
+- **Analysis**: NVIDIA and OpenRouter chat-completions. The prompt forbids prices. `strip_price_fields` drops any price-like keys before `Signal.parse`, and `as_of` is taken from the candle snapshot. A daily call cap and a flat USD estimate live in the process. The cap resets on restart. Vibe-Trading's HTTP client is still in the tree for `WARP_ANALYSIS=vibe` or `auto` when no LLM key is set. The image does not install the fork. The audited pin remains `bayuewalker/Vibe-Trading` @ `61d20c9a3a5954dcb52ce2bb758ca0ac4d6c71a4`.
+- **Levels and backtest**: entry is the last trade. The stop fraction is `min(configured stop, max(2 * volatility, 1%))`. The target fraction is the configured take-profit. The backtest is long-only on closed candles and treats a bar that touches the stop as a loss. It is required only when `WARP_REQUIRE_BACKTEST=1`.
+- **WARP risk worker**: reads balances and strategies, applies deterministic limits, and is the only component that can POST to 3Commas. Confirmed grid or cabinet-DCA rows that are not on the strategy list still count against the pair cap.
+- **3Commas**: the default write is `POST /open_api/strategies/trade` (spot DCA ladder, returns `strategyId`). Grid uses `POST /open_api/grid_bots/create?gridMarket=spot`. Cabinet DCA uses `POST /open_api/dca_bots/create`. A write without an id stays `unknown` and blocks new entries. POSTs are not retried.
+- **Dashboard**: FastAPI or the stdlib server, same dispatcher. Password session plus the existing bearer token. The React app is built in the image and served from `web/dist`.
+- **Fly.io**: one always-on Machine, one volume, region `sin`. `fly.toml` stays in observe, turns the screener on, and requires the backtest gate.
 
 AI output cannot skip the risk engine. A failed or stale read fails closed and blocks new entries.
 
 ```mermaid
 flowchart LR
-  exchange[Binance public spot] --> scan[Market scan]
-  scan --> vibe[Vibe research thread]
-  vibe --> risk[Global risk]
+  tv[TradingView scanner] --> screen[Screener]
+  exchange[Binance public spot] --> screen
+  exchange --> candles[OHLCV evidence]
+  screen --> analysis[NVIDIA then OpenRouter]
+  candles --> analysis
+  analysis --> levels[Deterministic entry stop target]
+  levels --> risk[Global risk and backtest]
   broker[3Commas reads] --> risk
   risk --> journal[SQLite journal]
   risk -->|observe: no POST| halt[HALT or breaker]
-  risk -->|paper or live only| post[POST strategy]
-  journal --> dash[Operator API]
+  risk -->|paper or live only| post[Strategy DCA or grid]
+  journal --> dash[Dashboard]
 ```
 
 Auto discovery is off unless `WARP_DISCOVERY=auto`. `WARP_SYMBOLS` is the static universe. `WARP_DISCOVERY_ALLOWLIST` is a separate optional cap used only in auto mode; empty means the public USDT book, still minus `WARP_DENY_SYMBOLS`. Auto mode does not fall back to trading the static list when discovery fails or a spread is missing. A research thread cannot call the broker. Monitoring and reconciliation keep running while the HALT file blocks new submissions. A held asset that rotates out of the entry list still needs its own USDT mark, or new entries stop.
 
 Only the `trend_up` profile can size a new ladder. Range, downtrend, and high volatility do not open entries. Those bounds are code, not model output. Changing an existing 3Commas strategy is not implemented: the official edit, pause, and cancel contracts were not re-checked against a live response in this build. `HALT` and the risk breakers stop new entries and leave current positions untouched.
 
-Alerts stay `pending` until the HTTPS webhook or Telegram call returns success. A failed send is retried with backoff. The operator page is `/dashboard`. JSON routes under `/api/` require `Authorization: Bearer` and the token is `WARP_OPERATOR_TOKEN`. The page can pause new entries. It cannot submit an order.
+Alerts stay `pending` until the HTTPS webhook or Telegram call returns success. A failed send is retried with backoff. The operator page is `/dashboard`. JSON routes under `/api/` accept a session cookie or `Authorization: Bearer` with `WARP_OPERATOR_TOKEN`. The page can pause or resume new entries. It cannot submit an order or change `TRADING_MODE`.
 
 ## Deployment / state
 

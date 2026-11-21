@@ -6,3 +6,5 @@
 data
 *.db
 tests
+web/node_modules
+web/dist

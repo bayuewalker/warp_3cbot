@@ -2,15 +2,27 @@
 
 from __future__ import annotations
 
-import uuid
+import json
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
+from .bots import (
+    BotTemplate,
+    allocate_client_id,
+    build_dca_bot_payload,
+    build_grid_payload,
+    build_strategy_dca_payload,
+    execution_fractions,
+)
 from .config import Settings
+from .levels import derive_levels
 from .market import MarketData, MarketDataError
 from .models import Signal
-from .risk import GlobalRisk, make_trade_payload, pair_symbols
+from .qualify import qualify
+from .risk import GlobalRisk, pair_symbols
+from .screener import ScreenerError, ScreenerFilters, select_symbols
 from .state import OrderJournal
 from .telemetry import log_event
 from .threecommas import IntegrationError, StrategyNotFound, ThreeCommas
@@ -27,6 +39,14 @@ class CycleStatus:
     reason: str = "not_run"
 
 
+def _broker_id(result: dict) -> str:
+    for key in ("strategyId", "code", "botCode", "id"):
+        value = result.get(key)
+        if isinstance(value, str) and value:
+            return value
+    raise IntegrationError("3Commas returned no confirmed bot id", uncertain=True)
+
+
 class Engine:
     def __init__(
         self,
@@ -35,18 +55,27 @@ class Engine:
         research: VibeResearch,
         journal: OrderJournal,
         market: MarketData,
+        *,
+        screener=None,
+        analyst=None,
     ):
         self.cfg = cfg
         self.broker = broker
         self.research = research
         self.journal = journal
         self.market = market
+        self.screener = screener
+        self.analyst = analyst
         self.guard = GlobalRisk(cfg)
         self.status = CycleStatus()
         self.universe = cfg.symbols
         self.evidence = {}
+        self.screener_hits: list = []
+        self.screener_error: str | None = None
+        self.screener_source = ""
         self.last_positions: list[dict] = []
         self.last_decision = None
+        self.last_opportunities: list[dict] = []
         self._discovery_block: str | None = None
 
     def cycle(self) -> int:
@@ -90,9 +119,30 @@ class Engine:
         return opened
 
     def refresh_market(self, now: datetime) -> None:
+        self._refresh_screener()
         self.universe = self._select_universe(now)
         self.evidence = self.market.scan(self.universe, now=now) if self.universe else {}
         self._mark_fresh(now)
+
+    def _refresh_screener(self) -> None:
+        if self.screener is None:
+            self.screener_hits = []
+            self.screener_source = ""
+            return
+        try:
+            self.screener_hits = self.screener.scan(self._filters())
+            self.screener_source = getattr(self.screener, "source", "")
+            self.screener_error = None
+        except (ScreenerError, ValueError) as exc:
+            self.screener_hits = []
+            self.screener_source = ""
+            self.screener_error = str(exc)[:200]
+
+    def _filters(self) -> ScreenerFilters:
+        raw = self.journal.get_setting("screener_filters")
+        if not raw:
+            return ScreenerFilters.from_settings(self.cfg)
+        return ScreenerFilters.from_mapping(json.loads(raw))
 
     def collect_research(self) -> list[Signal]:
         """Called from the research thread. Must not touch the broker or the journal."""
@@ -100,6 +150,22 @@ class Engine:
 
     def _select_universe(self, now: datetime) -> tuple[str, ...]:
         self._discovery_block = None
+        if self.cfg.discovery == "screener":
+            if self.screener is None or self.screener_error:
+                self._discovery_block = "screener_unavailable"
+                self._record([(now.isoformat(), "*", "universe", "screener_unavailable", "fail_closed")])
+                return ()
+            selected = select_symbols(
+                self.screener_hits,
+                allow=set(self.cfg.discovery_allow),
+                deny=set(self.cfg.deny_symbols),
+                limit=self.cfg.max_candidates,
+            )
+            if not selected:
+                self._discovery_block = "no_eligible_market"
+                self._record([(now.isoformat(), "*", "universe", "no_eligible_market", "fail_closed")])
+                return ()
+            return selected
         if self.cfg.discovery != "auto":
             return self.cfg.symbols
         try:
@@ -120,20 +186,37 @@ class Engine:
     def _research(self) -> list[Signal]:
         if not self.universe:
             return []
+        analyst = self.analyst
+        if self.cfg.analysis in {"llm", "auto"} and analyst is not None and analyst.configured():
+            return analyst.research(self.universe, self.evidence, self.cfg.max_signal_age)
+        if self.cfg.analysis == "llm":
+            raise ResearchError("LLM analysis is not configured")
         return self.research.research(self.universe, self.cfg.max_signal_age)
 
     def _submit(self, account, positions, signals, now, *, submit: bool) -> int:
         deduped: list[Signal] = []
         seen: set[str] = set()
         notes: list[tuple[str, str, str, str, str]] = []
+        replace_cards = submit or bool(signals)
+        if replace_cards:
+            self.last_opportunities = []
+        template = self._template()
         stamp = now.astimezone(timezone.utc).isoformat()
         for signal in signals:
             if signal.symbol in seen:
                 notes.append((stamp, signal.symbol, "research", "duplicate", "rejected"))
                 continue
             seen.add(signal.symbol)
-            deduped.append(replace(signal, evidence=self.evidence.get(signal.symbol)))
-            notes.append((stamp, signal.symbol, "research", signal.action, "accepted"))
+            enriched = replace(signal, evidence=self.evidence.get(signal.symbol))
+            candles = getattr(self.market, "last_candles", {}).get(signal.symbol)
+            gated, card = qualify(enriched, enriched.evidence, candles, self.cfg, template)
+            self.last_opportunities.append(card)
+            deduped.append(gated)
+            notes.append((stamp, signal.symbol, "research", gated.action, "accepted"))
+            if gated.action != signal.action:
+                notes.append((stamp, signal.symbol, "backtest", card.get("backtest_reason", ""), "rejected"))
+        if replace_cards:
+            self.last_opportunities.sort(key=lambda card: Decimal(card.get("blended") or "0"), reverse=True)
         for symbol, item in self.evidence.items():
             notes.append((stamp, symbol, "market", item.reason, "passed" if item.passed else "rejected"))
         self._mark_fresh(now)
@@ -165,6 +248,7 @@ class Engine:
             marks=self.journal.equity_marks(),
             now=now,
             evidence=self.evidence,
+            extra_commitments=self._untracked(positions),
         )
         self.last_decision = decision
         if decision.equity is not None:
@@ -219,24 +303,87 @@ class Engine:
                 )
                 opened += 1
                 continue
-            client_id = "warp3c-" + uuid.uuid4().hex
-            payload = make_trade_payload(self.cfg, plan, client_id)
-            self.journal.reserve(client_id, plan.symbol, payload)
+            template = self._template()
+            client_id = allocate_client_id(self.journal, plan.symbol, template, now)
+            if client_id is None:
+                notes.append((stamp, plan.symbol, "broker", "duplicate_client", "skipped"))
+                log_event("duplicate_skipped", symbol=plan.symbol)
+                continue
             try:
-                result = self.broker.create_strategy(payload)
+                result = self._place(plan, client_id, template)
             except IntegrationError as exc:
                 notes.append((stamp, plan.symbol, "broker", "rejected" if not exc.uncertain else "unknown", "halted"))
                 self._record(notes)
                 if not exc.uncertain:
                     self.journal.reject(client_id)
                 raise
-            self.journal.confirm(client_id, str(result["strategyId"]))
-            notes.append((stamp, plan.symbol, "broker", "confirmed", str(result["strategyId"])))
-            log_event("strategy_confirmed", symbol=plan.symbol, strategy_id=str(result["strategyId"]))
+            broker_id = _broker_id(result)
+            self.journal.confirm(client_id, broker_id)
+            self.journal.enqueue_alert(
+                f"order:{plan.symbol}:{client_id}",
+                f"{self.cfg.mode} {template.kind} {plan.symbol} {broker_id}",
+                now=now,
+            )
+            notes.append((stamp, plan.symbol, "broker", "confirmed", broker_id))
+            log_event("strategy_confirmed", symbol=plan.symbol, strategy_id=broker_id)
             opened += 1
         self.status.opened = opened
         self._record(notes)
         return opened
+
+    def _template(self) -> BotTemplate:
+        raw = self.journal.get_setting("bot_template")
+        if not raw:
+            return BotTemplate()
+        return BotTemplate.from_mapping(json.loads(raw))
+
+    def _build(self, plan, client_id: str, template: BotTemplate) -> tuple[dict, dict]:
+        if template.kind == "grid":
+            stop_fraction, take_fraction = execution_fractions(self.cfg, template)
+            levels = derive_levels(
+                self.evidence.get(plan.symbol),
+                self.cfg,
+                stop_fraction=stop_fraction,
+                take_fraction=take_fraction,
+            )
+            if levels is None:
+                raise IntegrationError("Grid levels unavailable", uncertain=False)
+            request, total = build_grid_payload(self.cfg, plan, levels, client_id, template)
+            return request, {"product": "grid_bot", "commitment": format(total, "f"), "request": request}
+        if template.product == "dca_bot":
+            request = build_dca_bot_payload(self.cfg, plan, client_id, template)
+            return request, {
+                "product": "dca_bot",
+                "commitment": format(plan.full_commitment, "f"),
+                "request": request,
+            }
+        request = build_strategy_dca_payload(self.cfg, plan, client_id, template)
+        return request, request
+
+    def _place(self, plan, client_id: str, template: BotTemplate) -> dict:
+        request, envelope = self._build(plan, client_id, template)
+        self.journal.reserve(client_id, plan.symbol, envelope)
+        if template.kind == "grid":
+            return self.broker.create_grid_bot(request)
+        if template.product == "dca_bot":
+            return self.broker.create_dca_bot(request)
+        return self.broker.create_strategy(request)
+
+    def _untracked(self, positions) -> tuple[tuple[str, Decimal], ...]:
+        live = {
+            str(row.get("clientId"))
+            for row in positions
+            if isinstance(row, dict) and row.get("clientId")
+        }
+        rows: list[tuple[str, Decimal]] = []
+        for row in self.journal.confirmed_submissions():
+            if row["client_id"] in live:
+                continue
+            payload = row["payload"]
+            if payload.get("product") not in {"grid_bot", "dca_bot"}:
+                continue
+            rows.append((str(row["symbol"]), Decimal(str(payload.get("commitment") or "0"))))
+        return tuple(rows)
 
     def _load_account(self):
         if self.cfg.api_key and self.cfg.api_secret and self.cfg.profile_code:

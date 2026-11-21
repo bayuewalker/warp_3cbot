@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import fcntl
-import json
 import logging
 import os
 import signal
@@ -18,9 +17,10 @@ import httpx
 
 from .config import Settings
 from .engine import Engine
+from .httpapi import dispatch
 from .market import MarketData
 from .notify import flush_alerts
-from .operator import DASHBOARD_HTML, ROUTES, SNAPSHOT, authorized, pause_new_entries, publish
+from .operator import HEALTH, publish
 from .schedule import Clocks
 from .state import OrderJournal
 from .supervisor import ResearchGate, once
@@ -29,69 +29,25 @@ from .threecommas import IntegrationError, ThreeCommas
 from .vibe import VibeResearch
 
 STOP = threading.Event()
-HEALTH = {
-    "alive": True,
-    "dependencies_healthy": False,
-    "market_data_fresh": False,
-    "execution_permitted": False,
-    "risk_permitted": False,
-    "mode": "observe",
-    "last_cycle_ok": None,
-    "reason": "starting",
-}
 
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        path = self.path.split("?", 1)[0]
-        if path == "/dashboard":
-            body = DASHBOARD_HTML.encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        if path in ROUTES:
-            self._api(path)
-            return
-        if path not in {"/health", "/live", "/ready"}:
-            self.send_error(404)
-            return
-        if path == "/ready":
-            code = 200 if HEALTH.get("dependencies_healthy") and HEALTH.get("last_cycle_ok") else 503
-        else:
-            code = 200
-        self._json(code, HEALTH)
+        self._serve("GET", b"")
 
     def do_POST(self):
-        path = self.path.split("?", 1)[0]
-        if path != "/api/pause":
-            self.send_error(404)
-            return
-        if not authorized(self.headers.get("Authorization")):
-            self._json(401, {"error": "unauthorized"})
-            return
-        if not pause_new_entries(HEALTH.get("halt_path")):
-            self._json(503, {"error": "halt_path_unconfigured"})
-            return
-        self._json(200, {"paused": True, "closes_positions": False})
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if 0 < length <= 100_000 else b""
+        self._serve("POST", body)
 
-    def _api(self, path: str) -> None:
-        if not authorized(self.headers.get("Authorization")):
-            self._json(401, {"error": "unauthorized"})
-            return
-        self._json(200, SNAPSHOT.get(path, {}))
-
-    def _json(self, code: int, payload: dict) -> None:
-        body = json.dumps(payload, separators=(",", ":"), default=str).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(body)))
+    def _serve(self, method: str, body: bytes) -> None:
+        status, headers, payload = dispatch(method, self.path, self.headers, body)
+        self.send_response(status)
+        for key, value in headers:
+            self.send_header(key, value)
+        self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
-        self.wfile.write(body)
+        self.wfile.write(payload)
 
     def log_message(self, *_args):
         return
@@ -101,8 +57,49 @@ def run_health(server: ThreadingHTTPServer):
     server.serve_forever()
 
 
+def _build_research(cfg: Settings):
+    from .llm import LlmAnalyst
+    from .screener import Screener
+
+    screener = Screener(cfg.screener_url, cfg.market_data_url)
+    analyst = LlmAnalyst(
+        nvidia_key=cfg.nvidia_api_key,
+        nvidia_model=cfg.nvidia_model,
+        openrouter_key=cfg.openrouter_api_key,
+        openrouter_model=cfg.openrouter_model,
+        timeout=cfg.llm_timeout,
+        daily_calls=cfg.llm_daily_calls,
+        daily_usd=cfg.llm_daily_usd,
+        usd_per_call=cfg.llm_usd_per_call,
+    )
+    return screener, analyst
+
+
+def _start_http(port: int):
+    if os.getenv("WARP_HTTP", "stdlib") == "fastapi":
+        import uvicorn
+
+        from .webapi import create_app
+
+        config = uvicorn.Config(create_app(), host="0.0.0.0", port=port, log_level="info")
+        server = uvicorn.Server(config)
+        threading.Thread(target=server.run, daemon=True).start()
+        return server
+    server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+    threading.Thread(target=run_health, args=(server,), daemon=True).start()
+    return server
+
+
+def _stop_http(server) -> None:
+    if isinstance(server, ThreadingHTTPServer):
+        server.shutdown()
+        server.server_close()
+        return
+    server.should_exit = True
+
+
 def start_vibe() -> subprocess.Popen | None:
-    if os.getenv("WARP_MANAGE_VIBE", "1") != "1":
+    if os.getenv("WARP_MANAGE_VIBE", "0") != "1":
         return None
     vibe_env = os.environ.copy()
     for name in (
@@ -111,6 +108,10 @@ def start_vibe() -> subprocess.Popen | None:
         "THREECOMMAS_PROFILE_CODE",
         "WARP_LIVE_EXECUTION_ACK",
         "WARP_ALERT_WEBHOOK_URL",
+        "WARP_DASHBOARD_PASSWORD",
+        "WARP_SESSION_SECRET",
+        "NVIDIA_API_KEY",
+        "OPENROUTER_API_KEY",
     ):
         vibe_env.pop(name, None)
     vibe_env["VIBE_TRADING_ENABLE_SHELL_TOOLS"] = "0"
@@ -171,17 +172,17 @@ def main():
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_args: STOP.set())
     port = int(os.getenv("PORT", "8080"))
-    server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
-    threading.Thread(target=run_health, args=(server,), daemon=True).start()
+    server = _start_http(port)
     vibe_process = None
-    broker = research = journal = market = None
+    broker = research = journal = market = screener = analyst = None
     try:
         vibe_process = start_vibe()
         broker = ThreeCommas(cfg.api_url, cfg.api_key, cfg.api_secret)
         research = VibeResearch(cfg.vibe_url, cfg.vibe_key)
         market = MarketData(cfg.market_data_url, cfg)
         journal = OrderJournal(cfg.db_path)
-        engine = Engine(cfg, broker, research, journal, market)
+        screener, analyst = _build_research(cfg)
+        engine = Engine(cfg, broker, research, journal, market, screener=screener, analyst=analyst)
         gate = ResearchGate()
         clocks = Clocks()
         log_event("worker_started", mode=cfg.mode, symbols=",".join(cfg.symbols), discovery=cfg.discovery)
@@ -217,11 +218,15 @@ def main():
     finally:
         HEALTH["alive"] = False
         HEALTH["execution_permitted"] = False
-        server.shutdown()
+        _stop_http(server)
         if journal:
             journal.close()
         if market:
             market.close()
+        if screener:
+            screener.close()
+        if analyst:
+            analyst.close()
         if research:
             research.close()
         if broker:

@@ -14,6 +14,7 @@ from .models import EquityMark
 class OrderJournal:
     def __init__(self, filename: str):
         Path(filename).parent.mkdir(parents=True, exist_ok=True)
+        self.path = filename
         self.db = sqlite3.connect(filename, isolation_level=None, timeout=30)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
@@ -70,6 +71,15 @@ class OrderJournal:
                 stage TEXT NOT NULL,
                 reason TEXT NOT NULL,
                 detail TEXT NOT NULL
+            )
+            """
+        )
+        self.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
@@ -279,6 +289,44 @@ class OrderJournal:
             }
             for row in rows
         ]
+
+    def submission_state(self, client_id: str) -> str | None:
+        row = self.db.execute("SELECT state FROM submissions WHERE client_id=?", (client_id,)).fetchone()
+        return None if row is None else str(row[0])
+
+    def get_setting(self, key: str) -> str | None:
+        row = self.db.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return None if row is None else str(row[0])
+
+    def set_setting(self, key: str, value: str) -> None:
+        """Write from the HTTP thread without borrowing the worker connection."""
+        db = sqlite3.connect(self.path, isolation_level=None, timeout=30)
+        try:
+            db.execute("PRAGMA busy_timeout=5000")
+            db.execute(
+                """
+                INSERT INTO settings(key, value, updated_at) VALUES(?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP
+                """,
+                (key, value),
+            )
+        finally:
+            db.close()
+
+    def confirmed_submissions(self) -> list[dict]:
+        rows = self.db.execute(
+            "SELECT client_id, symbol, payload FROM submissions WHERE state='confirmed'"
+        )
+        found = []
+        for client_id, symbol, payload in rows:
+            try:
+                parsed = json.loads(payload)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("Journal payload is unreadable") from exc
+            if not isinstance(parsed, dict):
+                raise RuntimeError("Journal payload is unreadable")
+            found.append({"client_id": client_id, "symbol": symbol, "payload": parsed})
+        return found
 
     def backup(self, dest: str) -> None:
         Path(dest).parent.mkdir(parents=True, exist_ok=True)

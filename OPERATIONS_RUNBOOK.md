@@ -5,7 +5,7 @@ Default `TRADING_MODE=observe`. This runbook does not authorize paper or live tr
 ## What the process does
 
 1. Monitor reads the 3Commas profile and live strategies when credentials exist, reconciles unknown client ids, and refreshes equity marks.
-2. Scan reads public Binance data. Research asks Vibe for `BUY`, `WAIT`, or `SKIP` and ignores any size the model adds.
+2. Scan reads the TradingView screener with a Binance ticker fallback, then public Binance candles. Research asks NVIDIA and OpenRouter for `BUY`, `WAIT`, or `SKIP` and ignores any price or size the model adds. Entry, stop, and target are computed from the last trade.
 3. Risk may plan one new ladder. Observe logs it and does not POST. Paper and live POST only after the journal reserves the client id.
 4. A busy research thread does not stop step 1.
 
@@ -18,8 +18,8 @@ Cadence defaults: monitor 60s, reconcile 120s, scan 300s, research 900s. `WARP_C
 | `/live` | Process is up. Fly uses this so a risk halt does not reboot the Machine. |
 | `/ready` | The last monitor or cycle finished without a dependency error. |
 | `/health` | Same JSON as `/live`, including `risk_permitted` and `execution_permitted`. |
-| `/dashboard` | Mobile page. It holds no account data until an operator token is entered. |
-| `/api/*` | JSON snapshot. Requires `Authorization: Bearer $WARP_OPERATOR_TOKEN`. |
+| `/dashboard` | Mobile page. English by default, with an Indonesian toggle. Sign in with the dashboard password. |
+| `/api/*` | JSON snapshot. Session cookie or `Authorization: Bearer $WARP_OPERATOR_TOKEN`. |
 
 `execution_permitted` is false in observe. A 200 from `/live` is not permission to trade.
 
@@ -29,10 +29,12 @@ Pause stops new strategies. It does not close, reduce, or hide 3Commas positions
 
 `WARP_SYMBOLS` is the static scan list. `WARP_DISCOVERY_ALLOWLIST` is used only when `WARP_DISCOVERY=auto`. Leave that allowlist empty to consider other USDT markets. The denylist still applies. If the public read fails, auto mode scans nothing until it recovers.
 
-- Dashboard button, or `POST /api/pause` with the bearer token.
+- Dashboard HALT button (type `HALT`), or `POST /api/pause` with the session cookie or bearer token.
 - Or create `/data/HALT` (`fly ssh console -C "touch /data/HALT"` once a Machine exists).
 
-Resume is deleting that file on the Machine. There is no HTTP resume route. Scaling to zero also stops reconciliation until the Machine is started again.
+Resume is the dashboard button (type `RESUME`), `POST /api/resume`, or deleting that file. Resume does not switch the mode to live and does not place an order. Scaling to zero also stops reconciliation until the Machine is started again.
+
+Screener filters and the DCA/Grid preset are `POST /api/screener/filters` and `POST /api/bots/template`. Both write SQLite settings. Neither one submits an order. The next paper or live cycle uses the saved template. Moderate DCA on the strategy endpoint matches the previous payload.
 
 ## Alerts
 
@@ -59,7 +61,7 @@ Rollback of the image is in [DEPLOYMENT.md](DEPLOYMENT.md). Rolling back does no
 ## Invariants
 
 - One Machine, one volume, one flock.
-- Vibe's environment does not receive the 3Commas key, secret, profile code, live acknowledgement, or alert webhook.
+- When Vibe is started with `WARP_MANAGE_VIBE=1`, its environment does not receive the 3Commas key, secret, profile code, live acknowledgement, alert webhook, dashboard password, session secret, or LLM keys. The default image does not start Vibe.
 - AI output cannot skip risk, and it cannot set the quote size.
 - Unknown POSTs stay blocking across restarts. Definite 4xx marks the row rejected. POST is not retried.
 - Terminal strategies opened by hand are invisible to the Open API. Use a dedicated profile.

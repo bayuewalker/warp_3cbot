@@ -98,6 +98,21 @@ class Settings:
     correlation: tuple[tuple[str, str], ...] = ()
     alert_webhook: str = field(default="", repr=False)
     live_ack: str = field(default="", repr=False)
+    analysis: str = "auto"
+    require_backtest: bool = False
+    blend_confidence: bool = False
+    backtest_min_trades: int = 3
+    screener_url: str = "https://scanner.tradingview.com"
+    nvidia_model: str = "nvidia/nemotron-3-nano-30b-a3b"
+    openrouter_model: str = "deepseek/deepseek-v4-pro"
+    llm_timeout: int = 40
+    llm_daily_calls: int = 48
+    llm_daily_usd: Decimal = Decimal("2")
+    llm_usd_per_call: Decimal = Decimal("0.02")
+    nvidia_api_key: str = field(default="", repr=False)
+    openrouter_api_key: str = field(default="", repr=False)
+    dashboard_password: str = field(default="", repr=False)
+    session_secret: str = field(default="", repr=False)
 
     def __post_init__(self) -> None:
         if self.mode not in {"observe", "paper", "live"}:
@@ -108,8 +123,21 @@ class Settings:
             raise ValueError("3Commas credentials and API profile are required")
         if self.cycle_seconds < 60 or self.max_signal_age < 1 or self.max_account_age < 30:
             raise ValueError("Invalid cadence or freshness window")
-        if self.discovery not in {"static", "auto"}:
+        if self.discovery not in {"static", "auto", "screener"}:
             raise ValueError("Invalid WARP_DISCOVERY")
+        if self.analysis not in {"vibe", "llm", "auto"}:
+            raise ValueError("Invalid WARP_ANALYSIS")
+        if not 5 <= self.llm_timeout <= 120 or self.llm_daily_calls < 1 or self.backtest_min_trades < 1:
+            raise ValueError("Invalid analysis limits")
+        if self.llm_daily_usd <= 0 or self.llm_usd_per_call <= 0:
+            raise ValueError("Invalid LLM budget")
+        if self.dashboard_password and len(self.dashboard_password) < 12:
+            raise ValueError("Dashboard password must be at least 12 characters")
+        if self.session_secret and len(self.session_secret) < 16:
+            raise ValueError("Session secret must be at least 16 characters")
+        scanner = urlparse(self.screener_url)
+        if scanner.scheme != "https" or not scanner.netloc:
+            raise ValueError("Screener URL must be https")
         if not self.symbols or len(set(self.symbols)) != len(self.symbols):
             raise ValueError("Symbol universe empty or duplicated")
         if any(not (s.isalnum() and s.endswith("USDT")) for s in self.symbols):
@@ -172,7 +200,7 @@ class Settings:
             if parsed.scheme != "https" or not parsed.netloc:
                 raise ValueError("Alert webhook must be an https URL")
         known = {symbol for symbol, _group in self.correlation}
-        if self.discovery == "auto" and not self.discovery_allow:
+        if self.discovery in {"auto", "screener"} and not self.discovery_allow:
             invalid = [symbol for symbol in known if not (symbol.isalnum() and symbol.endswith("USDT"))]
             if invalid:
                 raise ValueError("Correlation group contains a symbol that is not a USDT pair")
@@ -257,4 +285,19 @@ class Settings:
             correlation=parse_groups(os.getenv("WARP_CORRELATION_GROUPS", "")),
             alert_webhook=os.getenv("WARP_ALERT_WEBHOOK_URL", ""),
             live_ack=os.getenv("WARP_LIVE_EXECUTION_ACK", ""),
+            analysis=os.getenv("WARP_ANALYSIS", "auto").strip().lower(),
+            require_backtest=os.getenv("WARP_REQUIRE_BACKTEST", "0") == "1",
+            blend_confidence=os.getenv("WARP_BLEND_CONFIDENCE", "0") == "1",
+            backtest_min_trades=int(os.getenv("WARP_BACKTEST_MIN_TRADES", "3")),
+            screener_url=os.getenv("WARP_SCREENER_URL", "https://scanner.tradingview.com"),
+            nvidia_model=os.getenv("NVIDIA_MODEL", "nvidia/nemotron-3-nano-30b-a3b"),
+            openrouter_model=os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-v4-pro"),
+            llm_timeout=int(os.getenv("WARP_LLM_TIMEOUT_SECONDS", "40")),
+            llm_daily_calls=int(os.getenv("WARP_LLM_DAILY_CALLS", "48")),
+            llm_daily_usd=dec("WARP_LLM_DAILY_USD", "2"),
+            llm_usd_per_call=dec("WARP_LLM_USD_PER_CALL", "0.02"),
+            nvidia_api_key=os.getenv("NVIDIA_API_KEY", ""),
+            openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
+            dashboard_password=os.getenv("WARP_DASHBOARD_PASSWORD", ""),
+            session_secret=os.getenv("WARP_SESSION_SECRET", ""),
         )
