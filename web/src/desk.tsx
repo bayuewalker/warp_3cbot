@@ -99,7 +99,10 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
             <Badge tone={row.demo ? "warn" : "bad"}>{row.demo ? t(lang, "demo") : t(lang, "real")}</Badge>
           </div>
           <p className="mt-3 text-sm text-zinc-200">
-            {t(lang, "balance")} {row.total} {row.quote}
+            {t(lang, "balance")}{" "}
+            {row.total == null
+              ? `${t(lang, "unavailable")} · ${row.error || row.reason || t(lang, "noSnapshot")}`
+              : `${row.total} ${row.quote}`}
           </p>
           {row.assets?.length ? (
             <ul className="event-log">

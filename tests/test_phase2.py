@@ -13,6 +13,7 @@ from test_failures import ExplodingBroker, Markets, Research
 from warp3c.accounts import (
     LIVE_ACK,
     BrokerAccount,
+    UnavailableAccount,
     account_allowed,
     budget_decision,
     budget_for,
@@ -22,7 +23,7 @@ from warp3c.config import Settings
 from warp3c.engine import Engine
 from warp3c.forward import evaluate_due, is_hit, summary
 from warp3c.httpapi import dispatch
-from warp3c.operator import RUNTIME
+from warp3c.operator import RUNTIME, _sleeve_view
 from warp3c.ownership import NotOwned, apply_action
 from warp3c.papercheck import run_roundtrip
 from warp3c.state import OrderJournal
@@ -150,6 +151,148 @@ class AccountTests(unittest.TestCase):
                 RUNTIME["engine"] = None
                 journal.close()
 
+    def test_mixed_profiles_keep_valid_balances_and_flag_unavailable(self):
+        broken = {
+            "code": "cuannone",
+            "name": "CuanRakyat",
+            "status": "error",
+            "demo": False,
+            "exchange": {"code": "BINANCE", "name": "BINANCE-SPOT"},
+            "balance": {"assets": None},
+        }
+        skipped = {
+            "code": "nodemo1",
+            "name": "NoDemoFlag",
+            "status": "active",
+            "exchange": {"code": "BINANCE", "name": "BINANCE-SPOT"},
+            "balance": {"assets": {"USDT": {"free": "50", "used": "0", "total": "50"}}},
+        }
+        rows = [
+            profile("demo1xxx", name="DemoSpot", demo=True, exchange_code="BINANCE", exchange_name="BINANCE-SPOT"),
+            broken,
+            profile("real1xxx", name="RealSpot", demo=False, exchange_code="BINANCE", exchange_name="BINANCE-SPOT"),
+            skipped,
+        ]
+
+        def handler(req):
+            if req.url.path.endswith("api_profiles"):
+                return httpx.Response(200, json=envelope(rows))
+            raise AssertionError(req.url.path)
+
+        api = ThreeCommas("https://trade.3commas.io", "key", "secret", transport=httpx.MockTransport(handler))
+        listed = api.list_accounts()
+        found = {row.code: row for row in listed}
+        self.assertIsNone(listed.error)
+        self.assertEqual(set(found), {"demo1xxx", "cuannone", "real1xxx"})
+        self.assertNotIn("nodemo1", found)
+        self.assertEqual(found["demo1xxx"].total, Decimal("100"))
+        self.assertEqual(found["demo1xxx"].free, Decimal("100"))
+        self.assertEqual(found["real1xxx"].total, Decimal("100"))
+        self.assertIsInstance(found["cuannone"], UnavailableAccount)
+        self.assertEqual(found["cuannone"].error, "balance unavailable")
+        self.assertEqual(found["cuannone"].name, "CuanRakyat")
+        self.assertFalse(found["cuannone"].demo)
+        self.assertEqual(found["cuannone"].status, "error")
+        self.assertEqual(found["cuannone"].exchange_code, "BINANCE")
+        self.assertEqual(found["cuannone"].market, "spot")
+        public = found["cuannone"].to_public(selectable=True, reason="ok")
+        self.assertIsNone(public["total"])
+        self.assertIsNone(public["free"])
+        self.assertIsNone(public["used"])
+        self.assertIsNone(public["quote"])
+        self.assertEqual(public["assets"], [])
+        self.assertFalse(public["selectable"])
+        self.assertEqual(public["error"], "balance unavailable")
+        self.assertEqual(account_allowed(found["cuannone"], mode="paper", live_ack="")[0], False)
+        self.assertEqual(account_allowed(found["cuannone"], mode="live", live_ack=LIVE_ACK)[0], False)
+        public_rows = [
+            row.to_public(
+                selectable=False,
+                reason=getattr(row, "error", None) or "ok",
+            )
+            for row in listed
+        ]
+        sleeve = _sleeve_view(
+            Settings(sleeve_pct=Decimal("1")),
+            public_rows,
+            {"code": "cuannone"},
+        )
+        self.assertIsNone(sleeve["eligible"])
+        self.assertIsNone(sleeve["sleeve"])
+        self.assertEqual(sleeve["reason"], "balance unavailable")
+        api.close()
+
+    def test_select_refuses_an_unavailable_account(self):
+        os.environ["WARP_OPERATOR_TOKEN"] = "operator-token-16"
+        unavailable = UnavailableAccount(
+            "cuannone",
+            "CuanRakyat",
+            False,
+            "error",
+            "BINANCE",
+            "BINANCE-SPOT",
+            "spot",
+            "balance unavailable",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Settings(
+                mode="paper", db_path=os.path.join(tmp, "warp.db"),
+                api_key="k", api_secret="s", profile_code="p123",
+            )
+            journal = OrderJournal(cfg.db_path)
+            engine = Engine(cfg, ExplodingBroker(), Research(), journal, Markets())
+            engine.last_accounts = [
+                unavailable,
+                account(code="demo1xxx", market="spot", exchange_code="BINANCE", exchange_name="BINANCE-SPOT"),
+            ]
+            RUNTIME["journal"] = journal
+            RUNTIME["cfg"] = cfg
+            RUNTIME["engine"] = engine
+            try:
+                headers = {"Authorization": "Bearer operator-token-16"}
+                refused = dispatch(
+                    "POST", "/api/accounts/select", headers, json.dumps({"code": "cuannone"}).encode()
+                )
+                self.assertEqual(refused[0], 403)
+                self.assertIn("balance unavailable", refused[2].decode())
+                self.assertIsNone(journal.get_setting("target_account"))
+            finally:
+                RUNTIME["journal"] = None
+                RUNTIME["cfg"] = None
+                RUNTIME["engine"] = None
+                journal.close()
+
+    def test_all_unparseable_profiles_set_list_error(self):
+        rows = [
+            {
+                "code": "cuannone",
+                "name": "CuanRakyat",
+                "status": "error",
+                "demo": False,
+                "exchange": {"code": "BINANCE", "name": "BINANCE-SPOT"},
+                "balance": {"assets": None},
+            },
+            {
+                "code": "nodemo1x",
+                "name": "NoDemoFlag",
+                "status": "active",
+                "exchange": {"code": "BINANCE", "name": "BINANCE-SPOT"},
+                "balance": {"assets": {"USDT": {"free": "50", "used": "0", "total": "50"}}},
+            },
+        ]
+
+        def handler(req):
+            if req.url.path.endswith("api_profiles"):
+                return httpx.Response(200, json=envelope(rows))
+            raise AssertionError(req.url.path)
+
+        api = ThreeCommas("https://trade.3commas.io", "key", "secret", transport=httpx.MockTransport(handler))
+        listed = api.list_accounts()
+        self.assertEqual(listed.error, "Account balance unavailable")
+        self.assertEqual(len(listed), 1)
+        self.assertIsInstance(listed[0], UnavailableAccount)
+        self.assertEqual(listed[0].error, "balance unavailable")
+        api.close()
 
 
 class OwnershipTests(unittest.TestCase):

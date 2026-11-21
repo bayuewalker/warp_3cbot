@@ -229,9 +229,9 @@ class ThreeCommas:
         return self._pages("/open_api/api_profiles", identity="code")
 
     def list_accounts(self) -> list:
-        from .accounts import parse_profile
+        from .accounts import collect_profiles
 
-        return [parse_profile(row) for row in self.get_profiles()]
+        return collect_profiles(self.get_profiles())
 
     def get_account(self, profile_code: str, exchange_code: str = "BINANCE", *, market: str = "spot") -> Account:
         matches = [row for row in self.get_profiles() if row.get("code") == profile_code]

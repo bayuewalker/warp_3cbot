@@ -77,6 +77,59 @@ class BrokerAccount:
         )
 
 
+@dataclass(frozen=True)
+class UnavailableAccount:
+    """A profile with a known identity whose balance could not be parsed.
+
+    Balances are omitted rather than invented. The row is never selectable and
+    must not be used for sleeve or budget math.
+    """
+
+    code: str
+    name: str
+    demo: bool
+    status: str
+    exchange_code: str
+    exchange_name: str
+    market: str
+    error: str
+
+    def to_public(self, *, selectable: bool, reason: str) -> dict:
+        del selectable
+        shown = reason if reason and reason != "ok" else self.error
+        return {
+            "code": self.code,
+            "name": self.name,
+            "demo": self.demo,
+            "badge": "DEMO" if self.demo else "REAL",
+            "status": self.status,
+            "exchange_code": self.exchange_code,
+            "exchange_name": self.exchange_name,
+            "market": self.market,
+            "quote": None,
+            "free": None,
+            "used": None,
+            "total": None,
+            "assets": [],
+            "selectable": False,
+            "reason": shown,
+            "error": self.error,
+        }
+
+
+class ListedAccounts(list):
+    """Profiles from one list call. error is set only when every source row failed."""
+
+    def __init__(self, accounts: list, *, error: str | None = None, source_rows: int = 0):
+        super().__init__(accounts)
+        self.error = error
+        self.source_rows = source_rows
+
+
+def is_complete_account(account: object) -> bool:
+    return isinstance(account, BrokerAccount)
+
+
 def classify_market(exchange_code: str, exchange_name: str) -> str:
     blob = f"{exchange_code} {exchange_name}".upper()
     if "FUTURE" in blob:
@@ -120,6 +173,70 @@ def parse_profile(row: dict) -> BrokerAccount:
     )
 
 
+def try_parse_profile(row: object) -> BrokerAccount | UnavailableAccount | None:
+    """Parse one profile without failing the rest of the list.
+
+    A missing code or demo flag is excluded rather than guessed. A profile
+    whose identity is known but whose balance cannot be parsed is returned as
+    an unavailable row with no invented totals.
+    """
+    if not isinstance(row, dict):
+        return None
+    code = row.get("code")
+    if not isinstance(code, str) or len(code) < 4:
+        return None
+    if not isinstance(row.get("demo"), bool):
+        return None
+    exchange = row.get("exchange") if isinstance(row.get("exchange"), dict) else {}
+    exchange_code = str(exchange.get("code") or "")
+    exchange_name = str(exchange.get("name") or "")
+    identity = UnavailableAccount(
+        code,
+        str(row.get("name") or code),
+        row["demo"],
+        str(row.get("status") or "unknown"),
+        exchange_code,
+        exchange_name,
+        classify_market(exchange_code, exchange_name),
+        "balance unavailable",
+    )
+    try:
+        return parse_profile(row)
+    except IntegrationError as exc:
+        message = str(exc).lower()
+        if "balance" in message or "asset" in message:
+            error = "balance unavailable"
+        elif "exchange" in message:
+            error = "exchange code missing"
+        else:
+            error = str(exc)[:160]
+        return UnavailableAccount(
+            identity.code,
+            identity.name,
+            identity.demo,
+            identity.status,
+            identity.exchange_code,
+            identity.exchange_name,
+            identity.market,
+            error,
+        )
+
+
+def collect_profiles(rows: list) -> ListedAccounts:
+    """Parse every profile in isolation. The list error is set only if all rows fail."""
+    accounts: list[BrokerAccount | UnavailableAccount] = []
+    complete = 0
+    for row in rows:
+        parsed = try_parse_profile(row)
+        if parsed is None:
+            continue
+        accounts.append(parsed)
+        if is_complete_account(parsed):
+            complete += 1
+    error = "Account balance unavailable" if rows and complete == 0 else None
+    return ListedAccounts(accounts, error=error, source_rows=len(rows))
+
+
 def _quote_balance(balance: object) -> tuple[str, Decimal, Decimal, Decimal, tuple[tuple[str, str], ...]]:
     assets = balance.get("assets") if isinstance(balance, dict) else None
     if not isinstance(assets, dict) or not assets:
@@ -153,6 +270,8 @@ def account_allowed(
     Paper accepts only demo. Live accepts only a real account, and only when
     the acknowledgement matches the string required to start live mode.
     """
+    if not is_complete_account(account):
+        return False, getattr(account, "error", None) or "balance unavailable"
     if account.status != "active":
         return False, "inactive"
     if account.quote != "USDT":

@@ -398,8 +398,12 @@ def _sleeve_view(cfg, accounts: list[dict], selected: dict | None, engine=None, 
 
     code = (selected or {}).get("code")
     account = next((row for row in accounts if row.get("code") == code), None)
-    if account is None:
-        return {"eligible": None, "sleeve": None, "reason": "account_unavailable"}
+    if account is None or account.get("error") or account.get("total") is None or account.get("free") is None:
+        return {
+            "eligible": None,
+            "sleeve": None,
+            "reason": (account or {}).get("error") or "account_unavailable",
+        }
     if account.get("quote") not in ("USDT", "USDC"):
         return {"eligible": None, "sleeve": None, "reason": "quote_unavailable"}
     reserved = getattr(engine, "non_warp_future_so", None) if engine is not None else Decimal("0")
