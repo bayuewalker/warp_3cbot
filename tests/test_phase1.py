@@ -560,6 +560,44 @@ class LlmTests(unittest.TestCase):
             analyst.research(("BTCUSDT",), {"BTCUSDT": item}, 30)
         analyst.close()
 
+    def test_openrouter_reasoning_channel_still_publishes_a_signal(self):
+        item = evidence()
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content.decode())
+            seen["reasoning"] = body.get("reasoning")
+            self.assertNotIn("reasoning_effort", body)
+            answer = json.dumps(
+                {
+                    "decisions": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "action": "WAIT",
+                            "confidence": 0.42,
+                            "source": "llm evidence snapshot",
+                            "thesis": "Evidence is thin on the supplied snapshot",
+                        }
+                    ]
+                }
+            )
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": None, "reasoning_content": answer}}]},
+            )
+
+        analyst = LlmAnalyst(
+            openrouter_key="or-test",
+            timeout=5,
+            daily_calls=4,
+            transport=httpx.MockTransport(handler),
+        )
+        signals = analyst.research(("BTCUSDT",), {"BTCUSDT": item}, 30)
+        self.assertEqual(seen["reasoning"], {"effort": "none"})
+        self.assertEqual(signals[0].action, "WAIT")
+        self.assertEqual(signals[0].symbol, "BTCUSDT")
+        analyst.close()
+
     def test_gone_model_cools_down_and_is_not_retried(self):
         item = evidence()
         now = datetime(2026, 11, 21, tzinfo=timezone.utc)

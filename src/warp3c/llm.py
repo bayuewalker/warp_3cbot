@@ -49,20 +49,49 @@ def strip_price_fields(raw: dict) -> dict:
     return {key: value for key, value in raw.items() if key not in PRICE_KEYS}
 
 
-def _content(payload: object) -> str:
+def _piece(value: object) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        chunks = [_piece(part) for part in value]
+        return "\n".join(chunk for chunk in chunks if chunk)
+    if isinstance(value, dict):
+        for key in ("text", "content", "reasoning", "reasoning_content"):
+            found = _piece(value.get(key))
+            if found:
+                return found
+    return ""
+
+
+def _response_texts(payload: object) -> list[str]:
+    """Visible answer first, then DeepSeek thinking text.
+
+    deepseek/deepseek-v4-pro thinks by default. OpenRouter can return HTTP 200
+    with message.content null and the JSON only in reasoning or reasoning_content.
+    Reading content alone turns that 200 into ResearchError and publishes no signals.
+    """
     if not isinstance(payload, dict):
         raise LlmError("LLM response is not an object")
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
         raise LlmError("LLM response has no choices")
     message = choices[0].get("message") or {}
-    content = message.get("content") if isinstance(message, dict) else None
-    if isinstance(content, list):
-        texts = [part.get("text", "") for part in content if isinstance(part, dict)]
-        content = "".join(texts)
-    if not isinstance(content, str) or not content.strip():
+    if not isinstance(message, dict):
         raise LlmError("LLM response content is empty")
-    return content
+    ordered = [
+        _piece(message.get("content")),
+        _piece(message.get("reasoning_content")),
+        _piece(message.get("reasoning")),
+        _piece(choices[0].get("reasoning_content")),
+        _piece(choices[0].get("reasoning")),
+    ]
+    texts: list[str] = []
+    for text in ordered:
+        if text and text not in texts:
+            texts.append(text)
+    if not texts:
+        raise LlmError("LLM response content is empty")
+    return texts
 
 
 class _Budget:
@@ -205,7 +234,7 @@ class LlmAnalyst:
             ordered = [router, nvidia]
         return [item for item in ordered if item is not None]
 
-    def _complete(self, purpose: str, messages: list[dict]) -> str:
+    def _complete(self, purpose: str, messages: list[dict]) -> list[str]:
         last: Exception | None = None
         now = self.clock()
         for name, url, model in self._providers(purpose):
@@ -224,6 +253,9 @@ class LlmAnalyst:
             if name == "nvidia":
                 # Lightning is a reasoning model. Screening needs the JSON in content.
                 body["chat_template_kwargs"] = {"enable_thinking": False}
+            else:
+                # DeepSeek V4 thinks by default and can spend this whole budget before content.
+                body["reasoning"] = {"effort": "none"}
             try:
                 response = self.http.post(url, headers=headers, json=body)
             except httpx.TimeoutException as exc:
@@ -242,11 +274,20 @@ class LlmAnalyst:
                 last = LlmError(f"{name} HTTP {response.status_code}")
                 continue
             try:
-                return _content(response.json())
+                return _response_texts(response.json())
             except (LlmError, ValueError) as exc:
                 last = exc
                 continue
         raise ResearchError("LLM providers failed") from last
+
+    def _parsed(self, purpose: str, messages: list[dict], parse):
+        last: Exception | None = None
+        for text in self._complete(purpose, messages):
+            try:
+                return parse(text)
+            except ResearchError as exc:
+                last = exc
+        raise ResearchError("LLM response was not the expected JSON") from last
 
     def _screen(self, symbols: list[str], evidence: dict) -> list[str]:
         if not symbols or not self.nvidia_key:
@@ -260,7 +301,7 @@ class LlmAnalyst:
             + _evidence_lines(symbols, evidence)
         )
         try:
-            raw = extract_symbols(self._complete("screen", _messages(prompt)))
+            raw = self._parsed("screen", _messages(prompt), extract_symbols)
         except (ResearchError, ValueError):
             return symbols[:8]
         allowed = set(symbols)
@@ -277,7 +318,7 @@ class LlmAnalyst:
             + ". Evidence: "
             + _evidence_lines(symbols, evidence)
         )
-        parsed = extract_decisions(self._complete("final", _messages(prompt)))
+        parsed = self._parsed("final", _messages(prompt), extract_decisions)
         decisions = parsed.get("decisions")
         if not isinstance(decisions, list) or len(decisions) > len(symbols):
             raise ResearchError("LLM decisions are not a bounded list")
