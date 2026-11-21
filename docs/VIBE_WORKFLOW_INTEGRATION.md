@@ -18,7 +18,7 @@ TradingView's Terms of Use explicitly restrict non-display automated use of Trad
 - https://www.tradingview.com/policies/
 - https://www.tradingview.com/mcp/docs
 
-TradingView charts are **manual visual references only**. The autonomous market data is from Binance's documented public Spot market-data host (https://data-api.binance.vision), with only GET requests.
+The dashboard screener reads `scanner.tradingview.com/crypto/scan` for Binance spot and shows an error when that read fails. It does not place orders and it does not silently replace a failed scan with another table. Entry discovery, candles, and spreads stay on Binance's public Spot host (https://data-api.binance.vision), with only GET requests.
 
 The legacy `WARP_DISCOVERY=screener` setting remains backward compatible but uses the Binance public screener. Recommended deployment uses `WARP_DISCOVERY=auto` because it additionally validates trading status, spot eligibility, spread, precision, notional and the global denylist. Static discovery also respects the denylist. Both modes fail closed when required exchange/mark information is unavailable.
 
@@ -72,4 +72,4 @@ python -m ruff check src tests
 cd web && npm ci && npx tsc --noEmit && npm run build
 ```
 
-Additional static and mocked tests cover the TradingView transport prohibition, Binance discovery, age gating, denylist, and held-asset price refresh. To call the implementation **deployed**, also verify the actual Fly WARP app, Binance egress from its Machine, authenticated Vibe sessions, 3Commas observe-only reads, and persistent journal replay after restart.
+Additional static and mocked tests cover the TradingView screener (including a failed scan that does not call Binance), Binance discovery, age gating, denylist, and held-asset price refresh. To call the implementation **deployed**, also verify the actual Fly WARP app, Binance egress from its Machine, authenticated Vibe sessions, 3Commas observe-only reads, and persistent journal replay after restart.

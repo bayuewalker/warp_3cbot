@@ -31,6 +31,7 @@ class BrokerAccount:
     free: Decimal
     used: Decimal
     total: Decimal
+    holdings: tuple[tuple[str, str], ...] = ()
 
     def to_public(self, *, selectable: bool, reason: str) -> dict:
         return {
@@ -46,6 +47,7 @@ class BrokerAccount:
             "free": format(self.free, "f"),
             "used": format(self.used, "f"),
             "total": format(self.total, "f"),
+            "assets": [{"asset": asset, "total": total} for asset, total in self.holdings],
             "selectable": selectable,
             "reason": reason,
         }
@@ -100,7 +102,7 @@ def parse_profile(row: dict) -> BrokerAccount:
         raise IntegrationError("Account exchange code missing", uncertain=True)
     market = classify_market(exchange_code, exchange_name)
     status = str(row.get("status") or "unknown")
-    quote, free, used, total = _quote_balance(row.get("balance"))
+    quote, free, used, total, holdings = _quote_balance(row.get("balance"))
     name = str(row.get("name") or code)
     return BrokerAccount(
         code,
@@ -114,10 +116,11 @@ def parse_profile(row: dict) -> BrokerAccount:
         free,
         used,
         total,
+        holdings,
     )
 
 
-def _quote_balance(balance: object) -> tuple[str, Decimal, Decimal, Decimal]:
+def _quote_balance(balance: object) -> tuple[str, Decimal, Decimal, Decimal, tuple[tuple[str, str], ...]]:
     assets = balance.get("assets") if isinstance(balance, dict) else None
     if not isinstance(assets, dict) or not assets:
         raise IntegrationError("Account balance unavailable", uncertain=True)
@@ -127,13 +130,14 @@ def _quote_balance(balance: object) -> tuple[str, Decimal, Decimal, Decimal]:
             raise IntegrationError("Asset balance row is incomplete", uncertain=True)
         free, used, total = (positive(item.get(key), key) for key in ("free", "used", "total"))
         parsed[str(asset)] = (free, used, total)
+    holdings = tuple((asset, format(parsed[asset][2], "f")) for asset in sorted(parsed))
     for preferred in ("USDT", "USDC"):
         if preferred in parsed:
             free, used, total = parsed[preferred]
-            return preferred, free, used, total
+            return preferred, free, used, total, holdings
     asset = max(parsed, key=lambda key: parsed[key][2])
     free, used, total = parsed[asset]
-    return asset, free, used, total
+    return asset, free, used, total, holdings
 
 
 def account_allowed(

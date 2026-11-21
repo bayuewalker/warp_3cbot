@@ -740,3 +740,36 @@ thead th {
 .stage-facts dt {
   color: var(--muted);
 }
+.age.good {
+  color: var(--success);
+}
+.age.warn {
+  color: var(--warning);
+}
+.age.bad {
+  color: var(--danger);
+}
+.tape {
+  display: flex;
+  gap: 16px;
+  overflow: auto;
+  margin-top: 12px;
+}
+.tape div {
+  display: grid;
+  min-width: 7rem;
+}
+.tape b {
+  font-variant-numeric: tabular-nums;
+}
+.event-log {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font: 12px/1.6 var(--mono);
+}
+.event-log li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}

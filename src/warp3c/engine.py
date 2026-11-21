@@ -100,6 +100,12 @@ class Engine:
         self.screener_hits: list = []
         self.screener_error: str | None = None
         self.screener_source = ""
+        self.screener_fetched_at = ""
+        self.non_warp_future_so: Decimal | None = None
+        self.accounts_at = ""
+        self.accounts_error: str | None = None
+        self.positions_at = ""
+        self.positions_error: str | None = None
         self.last_positions: list[dict] = []
         self.last_decision = None
         self.last_opportunities: list[dict] = []
@@ -165,10 +171,9 @@ class Engine:
         try:
             self.screener_hits = self.screener.scan(self._filters())
             self.screener_source = getattr(self.screener, "source", "")
+            self.screener_fetched_at = getattr(self.screener, "fetched_at", "")
             self.screener_error = None
         except (ScreenerError, ValueError) as exc:
-            self.screener_hits = []
-            self.screener_source = ""
             self.screener_error = str(exc)[:200]
 
     def _filters(self) -> ScreenerFilters:
@@ -817,6 +822,28 @@ class Engine:
             stale=bool(gate and (gate.get("quote_age") is None or gate["quote_age"] > 30 or (evidence is not None and (now - evidence.as_of.astimezone(timezone.utc)).total_seconds() > 300))),
         )
 
+    def _read_non_warp_future_so(self) -> Decimal | None:
+        """Read-only reserve for the sleeve display. None means the read failed."""
+        if not self.cfg.api_key or not self.cfg.api_secret:
+            return Decimal("0")
+        if not hasattr(self.broker, "list_dca_bots"):
+            return None
+        try:
+            rows = self.broker.list_dca_bots()
+        except IntegrationError:
+            return None
+        if not isinstance(rows, list):
+            return None
+        total = Decimal("0")
+        for row in rows:
+            if not isinstance(row, dict) or str(row.get("name") or "").startswith("WARP-"):
+                continue
+            text = str(row.get("maxRequiredAmount") or "")
+            number = "".join(ch for ch in text if ch.isdigit() or ch == ".")
+            if number:
+                total += Decimal(number)
+        return total
+
     def _foreign_future_so(self) -> Decimal:
         if not hasattr(self.broker, "list_dca_bots"):
             return Decimal("0")
@@ -845,11 +872,32 @@ class Engine:
 
     def _remember_accounts(self) -> None:
         if not self.cfg.api_key or not self.cfg.api_secret or not hasattr(self.broker, "list_accounts"):
+            self.accounts_error = "3Commas credentials are not configured"
+            self.accounts_at = datetime.now(timezone.utc).isoformat()
             return
         try:
             self.last_accounts = self.broker.list_accounts()
-        except IntegrationError:
+            self.accounts_at = datetime.now(timezone.utc).isoformat()
+            self.accounts_error = None
+        except IntegrationError as exc:
+            self.accounts_error = str(exc)[:200]
+            self.accounts_at = datetime.now(timezone.utc).isoformat()
+
+    def refresh_readonly(self) -> None:
+        """GET account profiles and live strategies. No create, update, or delete."""
+        self._remember_accounts()
+        if not self.cfg.api_key or not self.cfg.api_secret or not hasattr(self.broker, "get_live"):
+            self.positions_error = "3Commas credentials are not configured"
+            self.positions_at = datetime.now(timezone.utc).isoformat()
             return
+        try:
+            self.last_positions = self.broker.get_live()
+            self.positions_at = datetime.now(timezone.utc).isoformat()
+            self.positions_error = None
+        except IntegrationError as exc:
+            self.positions_error = str(exc)[:200]
+            self.positions_at = datetime.now(timezone.utc).isoformat()
+        self.non_warp_future_so = self._read_non_warp_future_so()
 
     def _evaluate(self, now: datetime) -> None:
         price_at = getattr(self.market, "price_at", None)

@@ -15,6 +15,7 @@ import { useState } from "react";
 import { api, type Status, type Position, type WarpBot } from "./api";
 import { t, type Lang, type Key } from "./i18n";
 import { Badge, Button, Card, Field, Loading, Problem, inputClass } from "./ui";
+import { Age } from "./age";
 import { useLoad } from "./snapshot";
 
 type StatusRead = ReturnType<typeof useLoad<Status>>;
@@ -228,9 +229,13 @@ function Pipeline({ lang, row }: { lang: Lang; row: Status }) {
                     : t(lang, "unknown")}
                 </dd>
                 <dt>{t(lang, "inputCount")}</dt>
-                <dd>—</dd>
+                <dd>
+                  {t(lang, "unavailable")} · {t(lang, "notInSnapshot")}
+                </dd>
                 <dt>{t(lang, "outputs")}</dt>
-                <dd>{stage && "count" in stage ? stage.count : "—"}</dd>
+                <dd>
+                  {stage && "count" in stage ? stage.count : `${t(lang, "unavailable")} · ${t(lang, "notInSnapshot")}`}
+                </dd>
               </dl>
             </details>
           </li>
@@ -273,7 +278,8 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
               <m.icon size={16} />
             </div>
             <strong>
-              {m.value ?? "—"} {"unit" in m && <small>{m.unit}</small>}
+              {m.value == null ? t(lang, "unavailable") : m.value}{" "}
+              {m.value != null && "unit" in m && <small>{m.unit}</small>}
             </strong>
             <small>{t(lang, m.detail)}</small>
           </Card>
@@ -329,9 +335,73 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
             ))}
             <Providers lang={lang} data={row} />
           </Card>
+          <PriceTape lang={lang} />
+          <EventLog lang={lang} />
           <RiskControls lang={lang} row={row} reload={status.reload} />
         </div>
       </div>
     </div>
+  );
+}
+
+function PriceTape({ lang }: { lang: Lang }) {
+  const loaded = useLoad<{
+    symbols: Record<string, { last: string; change_pct: string | null }>;
+    as_of: string | null;
+    error: string | null;
+    limit_seconds?: number;
+  }>("/api/prices", true);
+  const row = loaded.data;
+  const symbols = Object.entries(row?.symbols || {});
+  return (
+    <Card>
+      <div className="panel-heading">
+        <h2 className="panel-title">{t(lang, "priceTape")}</h2>
+        <Age at={row?.as_of} limit={row?.limit_seconds || 30} lang={lang} reason={row?.error} />
+      </div>
+      {loaded.error ? <Problem lang={lang} retry={loaded.reload} /> : null}
+      {symbols.length ? (
+        <div className="tape">
+          {symbols.map(([symbol, quote]) => (
+            <div key={symbol}>
+              <span>{symbol}</span>
+              <b>{quote.last}</b>
+              <small>{quote.change_pct == null ? t(lang, "unavailable") : `${quote.change_pct}%`}</small>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="panel-note">
+          {t(lang, "unavailable")} · {row?.error || t(lang, "noPrices")}
+        </p>
+      )}
+    </Card>
+  );
+}
+
+function EventLog({ lang }: { lang: Lang }) {
+  const loaded = useLoad<{ events: { event?: string; ts?: string }[]; as_of?: string | null }>("/api/events", true);
+  const events = loaded.data?.events || [];
+  return (
+    <Card>
+      <div className="panel-heading">
+        <h2 className="panel-title">{t(lang, "events")}</h2>
+        <Age at={loaded.data?.as_of} limit={60} lang={lang} />
+      </div>
+      {events.length ? (
+        <ul className="event-log">
+          {events.slice(-8).map((row, index) => (
+            <li key={`${row.ts}-${index}`}>
+              <time>{row.ts || t(lang, "noTimestamp")}</time>
+              <span>{row.event || t(lang, "unavailable")}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="panel-note">
+          {t(lang, "unavailable")} · {t(lang, "noSnapshot")}
+        </p>
+      )}
+    </Card>
   );
 }

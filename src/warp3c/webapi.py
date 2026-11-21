@@ -6,6 +6,36 @@ def create_app():
 
     app = FastAPI(title="WARP 3C", docs_url=None, redoc_url=None, openapi_url=None)
 
+    @app.get("/api/stream")
+    async def stream(request: Request):
+        import threading
+
+        from fastapi.responses import JSONResponse, StreamingResponse
+
+        from .httpapi import authorized
+        from .live import BUS, iter_server_events
+
+        header = request.headers.get("authorization")
+        cookie = request.headers.get("cookie")
+        if not authorized(header, cookie):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        inbox = BUS.subscribe()
+        if inbox is None:
+            return JSONResponse({"error": "too_many_streams"}, status_code=503)
+        stop = threading.Event()
+
+        def chunks():
+            try:
+                yield from iter_server_events(inbox, BUS, stop, lambda: authorized(header, cookie))
+            finally:
+                BUS.unsubscribe(inbox)
+
+        return StreamingResponse(
+            chunks(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     @app.api_route("/", methods=["GET", "POST"])
     async def root(request: Request):
         return await _respond(request, "/")

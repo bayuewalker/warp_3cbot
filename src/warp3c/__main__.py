@@ -33,7 +33,47 @@ STOP = threading.Event()
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path.split("?", 1)[0] == "/api/stream":
+            self._stream()
+            return
         self._serve("GET", b"")
+
+    def _stream(self) -> None:
+        from .httpapi import authorized
+        from .live import BUS, iter_server_events
+
+        header = self.headers.get("Authorization")
+        cookie = self.headers.get("Cookie")
+        if not authorized(header, cookie):
+            payload = b'{"error":"unauthorized"}'
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        inbox = BUS.subscribe()
+        if inbox is None:
+            payload = b'{"error":"too_many_streams"}'
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        stop = threading.Event()
+        try:
+            for chunk in iter_server_events(inbox, BUS, stop, lambda: authorized(header, cookie)):
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            return
+        finally:
+            BUS.unsubscribe(inbox)
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
@@ -55,6 +95,28 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def run_health(server: ThreadingHTTPServer):
     server.serve_forever()
+
+
+def _refresh_live(engine, market, cfg: Settings, live_at: dict) -> None:
+    """Price and screener refresh on the worker thread. Account reads stay off this thread."""
+    from .live import BUS, PRICE_SECONDS, SCREEN_SECONDS, poll_prices
+
+    now = time.monotonic()
+    if market is not None and now - live_at["price"] >= PRICE_SECONDS:
+        symbols = list(dict.fromkeys([*(getattr(engine, "universe", ()) or ()), *cfg.symbols]))[:12]
+        try:
+            rows = poll_prices(market.http, symbols)
+            BUS.note_prices(rows, None if rows or not symbols else "price_feed_unavailable")
+        except Exception as exc:
+            BUS.note_prices({}, type(exc).__name__)
+        live_at["price"] = now
+    if engine is not None and engine.screener is not None and now - live_at["screen"] >= SCREEN_SECONDS:
+        engine._refresh_screener()
+        publish(cfg, engine.journal, engine)
+        live_at["screen"] = now
+    if engine is not None and getattr(engine, "accounts_at", "") not in {"", live_at.get("accounts_at")}:
+        publish(cfg, engine.journal, engine)
+        live_at["accounts_at"] = engine.accounts_at
 
 
 def _build_research(cfg: Settings):
@@ -183,8 +245,14 @@ def main():
         journal = OrderJournal(cfg.db_path)
         screener, analyst = _build_research(cfg)
         engine = Engine(cfg, broker, research, journal, market, screener=screener, analyst=analyst)
+        from .live import ACCOUNT_SECONDS, DashboardReads
+
+        accounts = DashboardReads(engine.refresh_readonly, ACCOUNT_SECONDS)
+        accounts.start()
+        publish(cfg, journal, engine)
         gate = ResearchGate()
         clocks = Clocks()
+        live_at = {"price": 0.0, "screen": time.monotonic(), "accounts_at": ""}
         log_event("worker_started", mode=cfg.mode, symbols=",".join(cfg.symbols), discovery=cfg.discovery)
         while not STOP.is_set():
             if vibe_process and vibe_process.poll() is not None:
@@ -214,10 +282,13 @@ def main():
             finally:
                 if journal is not None:
                     _flush(cfg, journal)
-            STOP.wait(cfg.monitor_seconds)
+                _refresh_live(engine, market, cfg, live_at)
+            STOP.wait(min(3, cfg.monitor_seconds))
     finally:
         HEALTH["alive"] = False
         HEALTH["execution_permitted"] = False
+        if "accounts" in locals():
+            accounts.stop()
         _stop_http(server)
         if journal:
             journal.close()

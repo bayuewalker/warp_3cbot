@@ -20,6 +20,9 @@ def log_event(event: str, level: int = logging.INFO, **fields: object) -> None:
         **{key: value for key, value in fields.items() if key.lower() not in _HIDDEN},
     }
     LOG.log(level, "%s", json.dumps(payload, default=str, separators=(",", ":")))
+    from .live import remember_event
+
+    remember_event(payload)
 
 
 def send_telegram(token: str, chat_id: str, event: str, detail: str, *, transport=None) -> bool:
