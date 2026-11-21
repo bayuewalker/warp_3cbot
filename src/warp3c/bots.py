@@ -73,9 +73,19 @@ class BotTemplate:
     kind: str = "dca"
     product: str = "strategy"
     preset: str = "moderate"
+    market: str = "spot"
+    leverage: int = 1
+    account_code: str = ""
 
     def to_dict(self) -> dict:
-        return {"kind": self.kind, "product": self.product, "preset": self.preset}
+        return {
+            "kind": self.kind,
+            "product": self.product,
+            "preset": self.preset,
+            "market": self.market,
+            "leverage": self.leverage,
+            "account_code": self.account_code,
+        }
 
     @classmethod
     def from_mapping(cls, raw: dict | None) -> BotTemplate:
@@ -86,13 +96,22 @@ class BotTemplate:
         kind = str(raw.get("kind", "dca"))
         preset = str(raw.get("preset", "moderate"))
         product = str(raw.get("product", "strategy" if kind == "dca" else "grid_bot"))
+        market = str(raw.get("market", "spot"))
         if kind not in {"dca", "grid"} or preset not in PRESETS:
             raise ValueError("Unknown bot kind or preset")
-        if kind == "grid":
+        if market not in {"spot", "futures"}:
+            raise ValueError("Unknown market")
+        from .accounts import clamp_leverage
+
+        leverage = clamp_leverage(int(raw.get("leverage", 1)), 3)
+        account_code = str(raw.get("account_code") or "")
+        if market == "futures":
+            product = "grid_bot" if kind == "grid" else "dca_bot"
+        elif kind == "grid":
             product = "grid_bot"
         elif product not in {"strategy", "dca_bot"}:
             raise ValueError("Unknown DCA product")
-        return cls(kind, product, preset)
+        return cls(kind, product, preset, market, leverage, account_code)
 
 
 def execution_fractions(cfg, template: BotTemplate) -> tuple[Decimal, Decimal]:
@@ -156,7 +175,16 @@ def build_strategy_dca_payload(cfg, plan: PlannedOrder, client_id: str, template
     return payload
 
 
-def build_dca_bot_payload(cfg, plan: PlannedOrder, client_id: str, template: BotTemplate) -> dict:
+def build_dca_bot_payload(
+    cfg,
+    plan: PlannedOrder,
+    client_id: str,
+    template: BotTemplate,
+    *,
+    name: str | None = None,
+    profile_code: str | None = None,
+    exchange_code: str | None = None,
+) -> dict:
     """Cabinet DCA bot. The create response may omit the bot code; the caller must halt then."""
     preset = PRESETS[template.preset]
     orders = min(max(preset.dca_orders, 1), cfg.dca_orders)
@@ -165,10 +193,10 @@ def build_dca_bot_payload(cfg, plan: PlannedOrder, client_id: str, template: Bot
     if base <= 0:
         raise ValueError("DCA base rounds to zero")
     return {
-        "name": f"warp3c-{client_id}",
-        "exchangeCode": cfg.exchange_code,
+        "name": name or f"warp3c-{client_id}",
+        "exchangeCode": exchange_code or cfg.exchange_code,
         "pairsCodes": [plan.symbol],
-        "profilesCodes": [cfg.profile_code],
+        "profilesCodes": [profile_code or cfg.profile_code],
         "dcaTradingType": "long",
         "amountPerTrade": base,
         "amountPerTradeType": "quote",
@@ -190,8 +218,78 @@ def build_dca_bot_payload(cfg, plan: PlannedOrder, client_id: str, template: Bot
     }
 
 
+def futures_pair_code(symbol: str) -> str:
+    """USDT-M perpetual. Dated contracts such as BTCUSDT_270326 are refused."""
+    if not symbol.isalnum() or not symbol.endswith("USDT") or "_" in symbol:
+        raise ValueError("Futures pair must be the non-expiring USDT-M symbol")
+    return symbol
+
+
+def build_futures_dca_payload(
+    cfg,
+    plan: PlannedOrder,
+    client_id: str,
+    template: BotTemplate,
+    *,
+    exchange_code: str,
+    profile_code: str,
+    name: str,
+) -> dict:
+    """USDT-M long DCA. Leverage is capped. Short is not representable here."""
+    from .accounts import clamp_leverage
+
+    if template.market != "futures":
+        raise ValueError("Futures payload requires a futures template")
+    if not str(name).startswith("WARP-"):
+        raise ValueError("Futures bots must use a WARP- name")
+    if not exchange_code or "FUTURE" not in exchange_code.upper():
+        raise ValueError("Futures bots require the futures exchange code")
+    leverage = clamp_leverage(template.leverage, cfg.max_leverage)
+    preset = PRESETS[template.preset]
+    orders = min(max(preset.dca_orders, 1), cfg.dca_orders)
+    multiplier = min(preset.dca_multiplier, cfg.dca_multiplier)
+    base = _fit_base(cfg, plan, orders, multiplier)
+    if base <= 0:
+        raise ValueError("DCA base rounds to zero")
+    return {
+        "name": name,
+        "exchangeCode": exchange_code,
+        "pairsCodes": [futures_pair_code(plan.symbol)],
+        "profilesCodes": [profile_code],
+        "dcaTradingType": "long",
+        "marginMode": "isolated",
+        "leverage": leverage,
+        "exchangeLeverage": leverage,
+        "amountPerTrade": base,
+        "amountPerTradeType": "quote",
+        "amountPerTradeMultiplier": 1,
+        "orderType": "market",
+        "entrySignalCondition": "immediate",
+        "extraOrderCount": orders,
+        "extraOrderDeviation": min(max(preset.dca_deviation, Decimal("0.001")), cfg.dca_deviation),
+        "extraOrderVolumeMultiplier": multiplier,
+        "extraOrderDeviationMultiplier": min(preset.dca_step_multiplier, cfg.dca_step_multiplier),
+        "extraOrderCostAveraging": "quote",
+        "applyDcaForFirstSafetyOrder": False,
+        "takeProfits": [{"priceDeviation": min(preset.take_profit, cfg.take_profit), "portfolio": Decimal("1")}],
+        "takeProfitBaseOn": "average_price",
+        "stopLoss": min(preset.stop_loss, cfg.stop_loss),
+        "stopLossBaseOn": "average_price",
+        "maxOpenPositions": 1,
+        "clientId": client_id,
+    }
+
+
 def build_grid_payload(
-    cfg, plan: PlannedOrder, levels: TradeLevels, client_id: str, template: BotTemplate
+    cfg,
+    plan: PlannedOrder,
+    levels: TradeLevels,
+    client_id: str,
+    template: BotTemplate,
+    *,
+    name: str | None = None,
+    profile_code: str | None = None,
+    exchange_code: str | None = None,
 ) -> tuple[dict, Decimal]:
     """Interval long grid. Stop and target are absolute USD amounts, not model prices."""
     if levels.symbol != plan.symbol:
@@ -219,10 +317,10 @@ def build_grid_payload(
     stop_usd = total * min(preset.stop_loss, cfg.stop_loss)
     take_usd = total * min(preset.take_profit, cfg.take_profit)
     payload = {
-        "name": f"warp3c-{client_id}",
-        "exchangeCode": cfg.exchange_code,
-        "pairCode": plan.symbol,
-        "profilesCodes": [cfg.profile_code],
+        "name": name or f"warp3c-{client_id}",
+        "exchangeCode": exchange_code or cfg.exchange_code,
+        "pairCode": futures_pair_code(plan.symbol) if template.market == "futures" else plan.symbol,
+        "profilesCodes": [profile_code or cfg.profile_code],
         "gridType": "interval",
         "gridMethod": "classic",
         "gridTradingType": "long",
@@ -239,6 +337,17 @@ def build_grid_payload(
         "takeProfit": take_usd,
         "stopLoss": stop_usd,
     }
+    if template.market == "futures":
+        from .accounts import clamp_leverage
+
+        leverage = clamp_leverage(template.leverage, cfg.max_leverage)
+        if not str(payload["name"]).startswith("WARP-"):
+            raise ValueError("Futures bots must use a WARP- name")
+        if "FUTURE" not in str(payload["exchangeCode"]).upper():
+            raise ValueError("Futures bots require the futures exchange code")
+        payload["leverage"] = leverage
+        payload["exchangeLeverage"] = leverage
+        payload["marginMode"] = "isolated"
     return payload, total
 
 

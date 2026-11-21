@@ -155,6 +155,8 @@ class ThreeCommas:
                     uncertain=uncertain,
                     status_code=response.status_code,
                 )
+            if response.status_code == 204 or not response.content:
+                return {}
             try:
                 return response.json()
             except ValueError as exc:
@@ -226,7 +228,12 @@ class ThreeCommas:
     def get_profiles(self) -> list[dict]:
         return self._pages("/open_api/api_profiles", identity="code")
 
-    def get_account(self, profile_code: str, exchange_code: str = "BINANCE") -> Account:
+    def list_accounts(self) -> list:
+        from .accounts import parse_profile
+
+        return [parse_profile(row) for row in self.get_profiles()]
+
+    def get_account(self, profile_code: str, exchange_code: str = "BINANCE", *, market: str = "spot") -> Account:
         matches = [row for row in self.get_profiles() if row.get("code") == profile_code]
         if len(matches) != 1:
             raise IntegrationError("Expected exactly one configured 3Commas API profile", uncertain=True)
@@ -235,8 +242,15 @@ class ThreeCommas:
             raise IntegrationError("3Commas API profile is not active", uncertain=False)
         exchange = profile.get("exchange") or {}
         name = str(exchange.get("name", "")).upper()
-        if exchange.get("code") != exchange_code or "SPOT" not in name:
-            raise IntegrationError("3Commas profile is not the expected spot exchange", uncertain=False)
+        code = str(exchange.get("code") or "")
+        if market == "spot":
+            if code != exchange_code or "SPOT" not in name:
+                raise IntegrationError("3Commas profile is not the expected spot exchange", uncertain=False)
+        elif market == "futures":
+            if code != exchange_code or ("FUTURE" not in name and "FUTURE" not in code):
+                raise IntegrationError("3Commas profile is not the expected futures exchange", uncertain=False)
+        else:
+            raise IntegrationError("Unsupported account market", uncertain=False)
         if not isinstance(profile.get("demo"), bool):
             raise IntegrationError("Account demo/live classification absent", uncertain=True)
         assets_raw = (profile.get("balance") or {}).get("assets") if isinstance(profile.get("balance"), dict) else None
@@ -252,7 +266,23 @@ class ThreeCommas:
                 raise IntegrationError("Account balances are inconsistent", uncertain=True)
             assets[str(asset)] = AssetBalance(free, used, total)
         usdt = assets["USDT"]
-        return Account(profile_code, profile["demo"], usdt.free, usdt.used, usdt.total, assets)
+        margin = profile.get("marginMode")
+        margin_mode = str(margin or "")
+        return Account(
+            profile_code,
+            profile["demo"],
+            usdt.free,
+            usdt.used,
+            usdt.total,
+            assets,
+            name=str(profile.get("name") or ""),
+            exchange_code=code,
+            exchange_name=str(exchange.get("name") or ""),
+            market=market,
+            quote_asset="USDT",
+            margin_mode=margin_mode,
+            status=str(profile.get("status") or ""),
+        )
 
     def get_live(self) -> list[dict]:
         return self._pages("/open_api/strategies/live", identity="strategyId")
@@ -276,9 +306,121 @@ class ThreeCommas:
         result = self.request("POST", "/open_api/dca_bots/create", payload)
         return _confirmed_bot(result)
 
-    def create_grid_bot(self, payload: dict) -> dict:
-        result = self.request("POST", "/open_api/grid_bots/create", payload, query={"gridMarket": "spot"})
+    def post_dca_bot(self, payload: dict) -> dict:
+        """Create call that may omit the new code. The caller resolves the bot by its WARP- name."""
+        result = self.request("POST", "/open_api/dca_bots/create", payload)
+        if not isinstance(result, dict):
+            raise IntegrationError("3Commas returned no DCA bot body", uncertain=True)
+        return result
+
+    def create_grid_bot(self, payload: dict, *, market: str = "spot") -> dict:
+        query_market = "derivative" if market in {"futures", "derivative"} else "spot"
+        if market not in {"spot", "futures", "derivative"}:
+            raise ValueError("Unsupported grid market")
+        result = self.request("POST", "/open_api/grid_bots/create", payload, query={"gridMarket": query_market})
         return _confirmed_bot(result)
+
+    def post_grid_bot(self, payload: dict, *, market: str = "spot") -> dict:
+        query_market = "derivative" if market in {"futures", "derivative"} else "spot"
+        if market not in {"spot", "futures", "derivative"}:
+            raise ValueError("Unsupported grid market")
+        result = self.request("POST", "/open_api/grid_bots/create", payload, query={"gridMarket": query_market})
+        if not isinstance(result, dict):
+            raise IntegrationError("3Commas returned no grid bot body", uncertain=True)
+        return result
+
+    def list_dca_bots(self) -> list[dict]:
+        return self._named_pages("/open_api/dca_bots", identity="code")
+
+    def list_grid_bots(self) -> list[dict]:
+        return self._named_pages("/open_api/grid_bots", identity="code")
+
+    def get_dca_bot(self, code: str) -> dict:
+        return self._one_bot("/open_api/dca_bots/" + quote(code, safe=""))
+
+    def get_grid_bot(self, code: str) -> dict:
+        return self._one_bot("/open_api/grid_bots/" + quote(code, safe=""))
+
+    def pause_dca_bot(self, code: str) -> dict:
+        return self._bot_write("POST", f"/open_api/dca_bots/{quote(code, safe='')}/switch-pause", {"stopCondition": "stop_only"})
+
+    def resume_dca_bot(self, code: str) -> dict:
+        return self._bot_write("POST", f"/open_api/dca_bots/{quote(code, safe='')}/switch-pause", {})
+
+    def close_dca_positions(self, code: str) -> dict:
+        return self._bot_write("POST", f"/open_api/dca_bots/{quote(code, safe='')}/close-all", {})
+
+    def delete_dca_bot(self, code: str) -> dict:
+        return self._bot_write("DELETE", f"/open_api/dca_bots/{quote(code, safe='')}/delete", None)
+
+    def stop_grid_bot(self, code: str, *, close: bool) -> dict:
+        condition = "stop_and_close_all" if close else "stop_only"
+        return self._bot_write(
+            "POST", f"/open_api/grid_bots/{quote(code, safe='')}/stop", {"stopCondition": condition}
+        )
+
+    def restart_grid_bot(self, code: str) -> dict:
+        return self._bot_write("POST", f"/open_api/grid_bots/{quote(code, safe='')}/restart", {})
+
+    def delete_grid_bot(self, code: str) -> dict:
+        return self._bot_write("DELETE", f"/open_api/grid_bots/{quote(code, safe='')}/delete", None)
+
+    def _one_bot(self, path: str) -> dict:
+        result = self.request("GET", path)
+        if not isinstance(result, dict) or not result.get("code"):
+            raise IntegrationError("Bot lookup returned no code", uncertain=True)
+        return result
+
+    def _bot_write(self, method: str, path: str, payload: dict | None) -> dict:
+        result = self.request(method, path, payload)
+        return result if isinstance(result, dict) else {}
+
+    def _named_pages(self, path: str, *, identity: str) -> list[dict]:
+        """Cabinet lists use the official page envelope, or a bots/has_more page."""
+        collected: list[dict] = []
+        seen: set[str] = set()
+        expected_total: int | None = None
+        page = 1
+        while page <= _MAX_PAGES:
+            raw = self.request("GET", path, query={"page": page, "limit": _PAGE_LIMIT})
+            items, more, total = _read_named_page(raw, identity=identity, page=page)
+            if total is not None:
+                if expected_total is None:
+                    expected_total = total
+                elif total != expected_total:
+                    raise IntegrationError("Pagination metadata changed between pages", uncertain=True)
+            for item in items:
+                key = item.get(identity)
+                if not isinstance(key, str) or not key or key in seen:
+                    raise IntegrationError("Invalid bot page", uncertain=True)
+                seen.add(key)
+                collected.append(item)
+            if not more:
+                if expected_total is not None and len(collected) != expected_total:
+                    raise IntegrationError("Incomplete bot list", uncertain=True)
+                return collected
+            page += 1
+        raise IntegrationError("Bot list exceeded the safety cap", uncertain=True)
+
+
+def _read_named_page(raw: object, *, identity: str, page: int) -> tuple[list[dict], bool, int | None]:
+    """Official items/pagination page, or a cabinet bots/has_more page."""
+    if not isinstance(raw, dict):
+        raise IntegrationError("Unrecognized bot list", uncertain=True)
+    if isinstance(raw.get("items"), list) and isinstance(raw.get("pagination"), dict):
+        items, meta = _parse_page(raw, requested_page=page, requested_limit=_PAGE_LIMIT)
+        if page == 1:
+            _check_page_math(meta["total"], meta["pages"], _PAGE_LIMIT)
+        more = meta["pages"] > page
+        return items, more, meta["total"]
+    items = raw.get("bots")
+    if not isinstance(items, list):
+        items = raw.get("items") if isinstance(raw.get("items"), list) else None
+    if not isinstance(items, list) or not isinstance(raw.get("has_more"), bool):
+        raise IntegrationError("Unrecognized bot list", uncertain=True)
+    if any(not isinstance(item, dict) or not item.get(identity) for item in items):
+        raise IntegrationError("Invalid bot page", uncertain=True)
+    return items, bool(raw["has_more"]), None
 
 
 def _confirmed_bot(result: object) -> dict:

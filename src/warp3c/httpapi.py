@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 
+from .accounts import account_allowed
 from .auth import (
     cookie_header,
     issue_session,
@@ -16,6 +17,7 @@ from .auth import (
     password_matches,
 )
 from .bots import BotTemplate, preview_capital
+from .models import positive
 from .operator import (
     DASHBOARD_HTML,
     HEALTH,
@@ -24,9 +26,25 @@ from .operator import (
     SNAPSHOT,
     authorized,
     pause_new_entries,
+    publish,
     resume_new_entries,
 )
+from .ownership import ACTIONS, NotOwned, apply_action
+from .papercheck import run_roundtrip
 from .screener import ScreenerFilters
+from .threecommas import IntegrationError
+
+_ACTIONS = {
+    "/api/pause",
+    "/api/resume",
+    "/api/screener/filters",
+    "/api/bots/template",
+    "/api/bots/preview",
+    "/api/accounts/select",
+    "/api/accounts/budget",
+    "/api/warp-bots/action",
+    "/api/paper/roundtrip",
+}
 
 _TYPES = {
     ".css": "text/css; charset=utf-8",
@@ -71,9 +89,12 @@ def dispatch(method: str, path: str, headers, body: bytes) -> tuple[int, list[tu
         return _login(body)
     if method == "POST" and clean == "/api/logout":
         return _json(200, {"ok": True}, extra=[("Set-Cookie", cookie_header("", clear=True))])
-    if clean in ROUTES or clean in {"/api/pause", "/api/resume", "/api/screener/filters", "/api/bots/template", "/api/bots/preview"}:
+    if clean in ROUTES or clean in _ACTIONS:
         if not authorized(headers.get("Authorization"), headers.get("Cookie")):
             return _json(401, {"error": "unauthorized"})
+        if method == "GET" and clean == "/api/accounts":
+            _refresh_accounts()
+            return _json(200, SNAPSHOT.get(clean, {"accounts": [], "selected": None, "places_orders": False}))
         if method == "GET" and clean in ROUTES:
             return _json(200, SNAPSHOT.get(clean, {}))
         if method == "POST" and clean == "/api/pause":
@@ -86,6 +107,14 @@ def dispatch(method: str, path: str, headers, body: bytes) -> tuple[int, list[tu
             return _save_template(body)
         if method == "POST" and clean == "/api/bots/preview":
             return _preview(body)
+        if method == "POST" and clean == "/api/accounts/select":
+            return _select_account(body)
+        if method == "POST" and clean == "/api/accounts/budget":
+            return _save_budget(body)
+        if method == "POST" and clean == "/api/warp-bots/action":
+            return _bot_action(body)
+        if method == "POST" and clean == "/api/paper/roundtrip":
+            return _paper_roundtrip(body)
     return _json(404, {"error": "not_found"})
 
 
@@ -172,15 +201,151 @@ def _save_filters(body: bytes) -> tuple[int, list[tuple[str, str]], bytes]:
 
 
 def _save_template(body: bytes) -> tuple[int, list[tuple[str, str]], bytes]:
-    journal, _cfg = _journal()
-    if journal is None:
+    journal, cfg = _journal()
+    if journal is None or cfg is None:
         return _json(503, {"error": "journal_unavailable"})
     try:
         template = BotTemplate.from_mapping(_body(body))
     except (ValueError, TypeError):
         return _json(400, {"error": "invalid_template"})
+    if template.leverage > cfg.max_leverage:
+        return _json(400, {"error": "invalid_template"})
     journal.set_setting("bot_template", json.dumps(template.to_dict()))
     return _json(200, {"saved": True, "template": template.to_dict(), "places_orders": False})
+
+
+def _refresh_accounts() -> None:
+    cfg = RUNTIME.get("cfg")
+    engine = RUNTIME.get("engine")
+    journal = RUNTIME.get("journal")
+    if cfg is None or engine is None or journal is None:
+        return
+    broker = getattr(engine, "broker", None)
+    if broker is None or not getattr(cfg, "api_key", "") or not hasattr(broker, "list_accounts"):
+        return
+    try:
+        engine.last_accounts = broker.list_accounts()
+    except IntegrationError:
+        return
+    publish(cfg, journal, engine)
+
+
+def _select_account(body: bytes) -> tuple[int, list[tuple[str, str]], bytes]:
+    journal, cfg = _journal()
+    engine = RUNTIME.get("engine")
+    if journal is None or cfg is None or engine is None:
+        return _json(503, {"error": "journal_unavailable"})
+    try:
+        payload = _body(body)
+        code = str(payload.get("code") or "")
+    except (ValueError, TypeError):
+        return _json(400, {"error": "invalid_json"})
+    _refresh_accounts()
+    match = [row for row in getattr(engine, "last_accounts", []) if getattr(row, "code", None) == code]
+    if len(match) != 1:
+        return _json(404, {"error": "account_not_found", "places_orders": False})
+    account = match[0]
+    allowed, reason = account_allowed(account, mode=cfg.mode, live_ack=cfg.live_ack)
+    if not allowed:
+        return _json(403, {"error": reason, "places_orders": False})
+    journal.set_setting(
+        "target_account",
+        json.dumps(
+            {
+                "code": account.code,
+                "name": account.name,
+                "market": account.market,
+                "exchange_code": account.exchange_code,
+                "demo": account.demo,
+            }
+        ),
+    )
+    publish(cfg, journal, engine)
+    return _json(200, {"saved": True, "places_orders": False, "reason": reason, "account": account.to_public(selectable=True, reason=reason)})
+
+
+def _save_budget(body: bytes) -> tuple[int, list[tuple[str, str]], bytes]:
+    journal, cfg = _journal()
+    if journal is None or cfg is None:
+        return _json(503, {"error": "journal_unavailable"})
+    try:
+        payload = _body(body)
+        code = str(payload.get("code") or "")
+        absolute = positive(payload.get("budget_usdt"), "budget", allow_zero=False)
+        fraction = positive(payload.get("budget_fraction"), "budget fraction", allow_zero=False)
+        max_bots = payload.get("max_bots")
+        if fraction > 1 or type(max_bots) is not int or max_bots < 1 or len(code) < 4:
+            raise ValueError("invalid budget")
+    except (ValueError, TypeError):
+        return _json(400, {"error": "invalid_budget", "places_orders": False})
+    current = {}
+    raw = journal.get_setting("account_budgets")
+    if raw:
+        try:
+            loaded = json.loads(raw)
+        except json.JSONDecodeError:
+            loaded = {}
+        if isinstance(loaded, dict):
+            current = loaded
+    current[code] = {
+        "budget_usdt": format(absolute, "f"),
+        "budget_fraction": format(fraction, "f"),
+        "max_bots": max_bots,
+    }
+    journal.set_setting("account_budgets", json.dumps(current))
+    engine = RUNTIME.get("engine")
+    if engine is not None:
+        publish(cfg, journal, engine)
+    return _json(200, {"saved": True, "places_orders": False, "code": code})
+
+
+def _bot_action(body: bytes) -> tuple[int, list[tuple[str, str]], bytes]:
+    journal, cfg = _journal()
+    engine = RUNTIME.get("engine")
+    if journal is None or cfg is None or engine is None:
+        return _json(503, {"error": "journal_unavailable"})
+    try:
+        payload = _body(body)
+    except ValueError:
+        return _json(400, {"error": "invalid_json"})
+    action = str(payload.get("action") or "")
+    warp_id = str(payload.get("warp_id") or "")
+    expected = {"pause": "PAUSE", "resume": "RESUME", "close": "CLOSE", "delete": "DELETE"}.get(action)
+    if action not in ACTIONS or payload.get("confirm") != expected:
+        return _json(400, {"error": "confirmation_required", "places_orders": False})
+    if action == "resume" and PathHalt(cfg):
+        return _json(409, {"error": "halt", "places_orders": False})
+    try:
+        result = apply_action(engine.broker, journal, warp_id, action)
+    except NotOwned as exc:
+        return _json(403, {"error": exc.reason, "places_orders": False})
+    except IntegrationError:
+        return _json(502, {"error": "broker_error", "places_orders": False})
+    publish(cfg, journal, engine)
+    return _json(200, {"ok": True, "places_orders": False, **result})
+
+
+def PathHalt(cfg) -> bool:
+    from pathlib import Path
+
+    return Path(cfg.db_path).parent.joinpath("HALT").exists()
+
+
+def _paper_roundtrip(body: bytes) -> tuple[int, list[tuple[str, str]], bytes]:
+    journal, cfg = _journal()
+    engine = RUNTIME.get("engine")
+    if journal is None or cfg is None or engine is None:
+        return _json(503, {"error": "journal_unavailable"})
+    try:
+        payload = _body(body)
+    except ValueError:
+        return _json(400, {"error": "invalid_json"})
+    if payload.get("confirm") != "PAPERCHECK":
+        return _json(400, {"error": "confirmation_required", "places_orders": False})
+    report = run_roundtrip(cfg, engine.broker, journal)
+    publish(cfg, journal, engine)
+    code = 200 if report["ok"] else 409
+    return _json(code, report)
 
 
 def _preview(body: bytes) -> tuple[int, list[tuple[str, str]], bytes]:

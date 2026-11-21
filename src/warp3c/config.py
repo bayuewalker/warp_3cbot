@@ -113,6 +113,10 @@ class Settings:
     openrouter_api_key: str = field(default="", repr=False)
     dashboard_password: str = field(default="", repr=False)
     session_secret: str = field(default="", repr=False)
+    max_leverage: int = 3
+    budget_usdt: Decimal = Decimal("100")
+    budget_fraction: Decimal = Decimal("0.10")
+    max_warp_bots: int = 2
 
     def __post_init__(self) -> None:
         if self.mode not in {"observe", "paper", "live"}:
@@ -121,6 +125,13 @@ class Settings:
             raise ValueError("Live trading requires WARP_LIVE_EXECUTION_ACK")
         if self.mode != "observe" and not all((self.api_key, self.api_secret, self.profile_code)):
             raise ValueError("3Commas credentials and API profile are required")
+        if type(self.max_leverage) is not int or not 1 <= self.max_leverage <= 3:
+            raise ValueError("WARP_MAX_LEVERAGE must be 1, 2, or 3")
+        if self.budget_usdt <= 0 or not self.budget_usdt.is_finite():
+            raise ValueError("Invalid WARP_BUDGET_USDT")
+        _fraction("budget_fraction", self.budget_fraction)
+        if type(self.max_warp_bots) is not int or self.max_warp_bots < 1:
+            raise ValueError("Invalid WARP_MAX_WARP_BOTS")
         if self.cycle_seconds < 60 or self.max_signal_age < 1 or self.max_account_age < 30:
             raise ValueError("Invalid cadence or freshness window")
         if self.discovery not in {"static", "auto", "screener"}:
@@ -300,4 +311,8 @@ class Settings:
             openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
             dashboard_password=os.getenv("WARP_DASHBOARD_PASSWORD", ""),
             session_secret=os.getenv("WARP_SESSION_SECRET", ""),
+            max_leverage=int(os.getenv("WARP_MAX_LEVERAGE", "3")),
+            budget_usdt=dec("WARP_BUDGET_USDT", "100"),
+            budget_fraction=dec("WARP_BUDGET_FRACTION", "0.10"),
+            max_warp_bots=int(os.getenv("WARP_MAX_WARP_BOTS", "2")),
         )

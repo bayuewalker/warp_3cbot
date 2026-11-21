@@ -18,6 +18,10 @@ kill_timeout = 30
   WARP_BLEND_CONFIDENCE = "1"
   WARP_COOKIE_SECURE = "1"
   WARP_MONITOR_SECONDS = "60"
+  WARP_BUDGET_USDT = "100"
+  WARP_BUDGET_FRACTION = "0.10"
+  WARP_MAX_WARP_BOTS = "2"
+  WARP_MAX_LEVERAGE = "3"
 
 [http_service]
   internal_port = 8080

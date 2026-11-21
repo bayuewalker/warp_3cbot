@@ -9,8 +9,10 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+from .accounts import budget_for, effective_budget, parse_budget_override
 from .auth import parse_cookies, session_valid
 from .bots import PRESETS, BotTemplate, preview_capital
+from .forward import summary
 from .screener import ScreenerFilters
 
 SNAPSHOT: dict[str, dict] = {}
@@ -77,6 +79,9 @@ ROUTES = (
     "/api/opportunities",
     "/api/screener",
     "/api/bots",
+    "/api/accounts",
+    "/api/forward",
+    "/api/warp-bots",
 )
 
 
@@ -113,6 +118,10 @@ def public_config(cfg) -> dict:
         "require_backtest": cfg.require_backtest,
         "blend_confidence": cfg.blend_confidence,
         "password_login": len(os.getenv("WARP_DASHBOARD_PASSWORD", "")) >= 12,
+        "max_leverage": cfg.max_leverage,
+        "budget_usdt": _text(cfg.budget_usdt),
+        "budget_fraction": _text(cfg.budget_fraction),
+        "max_warp_bots": cfg.max_warp_bots,
     }
 
 
@@ -208,14 +217,68 @@ def publish(cfg, journal, engine) -> None:
         "error": getattr(engine, "screener_error", None),
         "source": getattr(engine, "screener_source", ""),
     }
+    accounts = []
+    for row in getattr(engine, "last_accounts", []) or []:
+        if hasattr(row, "to_public"):
+            allowed, reason = _account_reason(cfg, row)
+            accounts.append(row.to_public(selectable=allowed, reason=reason))
+    selected = _selected(journal)
+    SNAPSHOT["/api/accounts"] = {"accounts": accounts, "selected": selected, "places_orders": False}
+    SNAPSHOT["/api/forward"] = summary(journal)
+    bots = journal.warp_bots()
+    SNAPSHOT["/api/warp-bots"] = {"bots": bots, "budget": _budget_view(cfg, journal, selected, accounts)}
     SNAPSHOT["/api/bots"] = {
         "template": template.to_dict(),
         "presets": list(PRESETS),
         "preview": preview_capital(cfg, template, equity=equity),
+        "max_leverage": cfg.max_leverage,
     }
     RUNTIME["journal"] = journal
     RUNTIME["cfg"] = cfg
     RUNTIME["engine"] = engine
+
+
+def _selected(journal) -> dict | None:
+    raw = journal.get_setting("target_account")
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _account_reason(cfg, account) -> tuple[bool, str]:
+    from .accounts import account_allowed
+
+    return account_allowed(account, mode=cfg.mode, live_ack=cfg.live_ack)
+
+
+def _budget_view(cfg, journal, selected, accounts) -> dict | None:
+    code = (selected or {}).get("code") or cfg.profile_code
+    if not code:
+        return None
+    balance = None
+    for row in accounts:
+        if row.get("code") == code:
+            balance = Decimal(row["total"])
+            break
+    if balance is None:
+        balance = Decimal("0")
+    try:
+        absolute, fraction, max_bots = effective_budget(
+            cfg, parse_budget_override(journal.get_setting("account_budgets"), code)
+        )
+    except ValueError:
+        return None
+    return budget_for(
+        balance=balance,
+        absolute=absolute,
+        fraction=fraction,
+        max_bots=max_bots,
+        bots=journal.warp_bots(code),
+    ).to_public()
 
 
 def bearer_authorized(header: str | None) -> bool:

@@ -83,6 +83,43 @@ class OrderJournal:
             )
             """
         )
+        self.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS warp_bots (
+                warp_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                client_id TEXT,
+                external_code TEXT,
+                kind TEXT NOT NULL,
+                product TEXT NOT NULL,
+                account_code TEXT NOT NULL,
+                market TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                status TEXT NOT NULL,
+                commitment TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS verdicts (
+                id INTEGER PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                verdict TEXT NOT NULL,
+                confidence TEXT NOT NULL,
+                price TEXT NOT NULL,
+                recorded_at TEXT NOT NULL,
+                price_4h TEXT,
+                move_4h TEXT,
+                price_24h TEXT,
+                move_24h TEXT,
+                price_72h TEXT,
+                move_72h TEXT
+            )
+            """
+        )
 
     def close(self) -> None:
         self.db.close()
@@ -328,6 +365,103 @@ class OrderJournal:
             found.append({"client_id": client_id, "symbol": symbol, "payload": parsed})
         return found
 
+    def insert_warp_bot(self, row: dict) -> None:
+        self.db.execute(
+            """
+            INSERT INTO warp_bots(
+                warp_id, name, client_id, external_code, kind, product, account_code,
+                market, symbol, status, commitment, created_at, updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                row["warp_id"],
+                row["name"],
+                row.get("client_id"),
+                row.get("external_code"),
+                row["kind"],
+                row["product"],
+                row["account_code"],
+                row["market"],
+                row["symbol"],
+                row["status"],
+                row["commitment"],
+                row["created_at"],
+                row["updated_at"],
+            ),
+        )
+
+    def warp_bot(self, warp_id: str) -> dict | None:
+        row = self.db.execute("SELECT * FROM warp_bots WHERE warp_id=?", (warp_id,)).fetchone()
+        return None if row is None else _warp_row(row)
+
+    def warp_bots(self, account_code: str | None = None) -> list[dict]:
+        if account_code:
+            rows = self.db.execute(
+                "SELECT * FROM warp_bots WHERE account_code=? ORDER BY created_at DESC",
+                (account_code,),
+            )
+        else:
+            rows = self.db.execute("SELECT * FROM warp_bots ORDER BY created_at DESC")
+        return [_warp_row(row) for row in rows]
+
+    def update_warp_bot(self, warp_id: str, **fields: str) -> None:
+        allowed = {"status", "external_code", "updated_at"}
+        if not fields or any(key not in allowed for key in fields):
+            raise ValueError("Unexpected bot field")
+        assignments = ", ".join(f"{key}=?" for key in fields)
+        self.db.execute(
+            f"UPDATE warp_bots SET {assignments} WHERE warp_id=?",
+            (*fields.values(), warp_id),
+        )
+
+    def record_verdict(
+        self, symbol: str, verdict: str, confidence: Decimal, price: Decimal, now: datetime
+    ) -> None:
+        moment = now.astimezone(timezone.utc).isoformat()
+        self.db.execute(
+            """
+            INSERT INTO verdicts(symbol, verdict, confidence, price, recorded_at)
+            VALUES(?,?,?,?,?)
+            """,
+            (symbol, verdict, format(confidence, "f"), format(price, "f"), moment),
+        )
+
+    def verdict_rows(self) -> list[dict]:
+        rows = self.db.execute(
+            """
+            SELECT id, symbol, verdict, confidence, price, recorded_at,
+                   price_4h, move_4h, price_24h, move_24h, price_72h, move_72h
+              FROM verdicts ORDER BY id
+            """
+        )
+        found = []
+        for row in rows:
+            found.append(
+                {
+                    "id": row[0],
+                    "symbol": row[1],
+                    "verdict": row[2],
+                    "confidence": row[3],
+                    "price": row[4],
+                    "recorded_at": row[5],
+                    "price_4h": row[6],
+                    "move_4h": row[7],
+                    "price_24h": row[8],
+                    "move_24h": row[9],
+                    "price_72h": row[10],
+                    "move_72h": row[11],
+                }
+            )
+        return found
+
+    def set_verdict_horizon(self, verdict_id: int, horizon: str, price: Decimal, move: Decimal) -> None:
+        if horizon not in {"4h", "24h", "72h"}:
+            raise ValueError("Unknown horizon")
+        self.db.execute(
+            f"UPDATE verdicts SET price_{horizon}=?, move_{horizon}=? WHERE id=? AND move_{horizon} IS NULL",
+            (format(price, "f"), format(move, "f"), verdict_id),
+        )
+
     def backup(self, dest: str) -> None:
         Path(dest).parent.mkdir(parents=True, exist_ok=True)
         target = sqlite3.connect(dest)
@@ -342,6 +476,24 @@ class OrderJournal:
             source.backup(self.db)
         finally:
             source.close()
+
+
+def _warp_row(row) -> dict:
+    return {
+        "warp_id": row[0],
+        "name": row[1],
+        "client_id": row[2],
+        "external_code": row[3],
+        "kind": row[4],
+        "product": row[5],
+        "account_code": row[6],
+        "market": row[7],
+        "symbol": row[8],
+        "status": row[9],
+        "commitment": row[10],
+        "created_at": row[11],
+        "updated_at": row[12],
+    }
 
 
 def _json(value: object) -> str:

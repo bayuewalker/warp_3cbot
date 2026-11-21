@@ -20,11 +20,12 @@ import {
   type Status,
 } from "./api";
 import { Key, Lang, t } from "./i18n";
+import { AccountsPanel, BudgetForm, ForwardPanel, PaperCheck, WarpBotsPanel } from "./desk";
 import { Badge, Button, Card, Field, inputClass } from "./ui";
 
 type Page = "overview" | "signals" | "bots" | "positions" | "screener" | "settings";
 
-const nav: { id: Key; icon: typeof Activity }[] = [
+const nav: { id: Page; icon: typeof Activity }[] = [
   { id: "overview", icon: LayoutDashboard },
   { id: "signals", icon: Activity },
   { id: "bots", icon: Bot },
@@ -194,7 +195,12 @@ function Workspace({
         </Button>
       </div>
       {page === "overview" ? <Overview lang={lang} /> : null}
-      {page === "signals" ? <Signals lang={lang} /> : null}
+      {page === "signals" ? (
+        <div className="space-y-4">
+          <ForwardPanel lang={lang} />
+          <Signals lang={lang} />
+        </div>
+      ) : null}
       {page === "bots" ? <Bots lang={lang} /> : null}
       {page === "positions" ? <Positions lang={lang} /> : null}
       {page === "screener" ? <ScreenerPage lang={lang} /> : null}
@@ -416,9 +422,16 @@ function helpKey(preset: "conservative" | "moderate" | "aggressive"): Key {
 }
 
 function Bots({ lang }: { lang: Lang }) {
-  const loaded = useLoad<{ template: { kind: string; preset: string }; preview: Preview }>("/api/bots");
+  const loaded = useLoad<{
+    template: { kind: string; preset: string; market?: string; leverage?: number; account_code?: string };
+    preview: Preview;
+    max_leverage?: number;
+  }>("/api/bots");
   const [kind, setKind] = useState("dca");
   const [preset, setPreset] = useState("moderate");
+  const [market, setMarket] = useState("spot");
+  const [leverage, setLeverage] = useState(1);
+  const [accountCode, setAccountCode] = useState("");
   const [preview, setPreview] = useState<Preview | null>(null);
   const [note, setNote] = useState("");
   const [ask, setAsk] = useState(false);
@@ -426,14 +439,19 @@ function Bots({ lang }: { lang: Lang }) {
     if (!loaded.data) return;
     setKind(loaded.data.template.kind);
     setPreset(loaded.data.template.preset);
+    setMarket(loaded.data.template.market || "spot");
+    setLeverage(loaded.data.template.leverage || 1);
+    setAccountCode(loaded.data.template.account_code || "");
     setPreview(loaded.data.preview);
   }, [loaded.data]);
-  async function refresh(nextKind: string, nextPreset: string) {
+  async function refresh(nextKind: string, nextPreset: string, nextMarket = market, nextLeverage = leverage) {
     setKind(nextKind);
     setPreset(nextPreset);
+    setMarket(nextMarket);
+    setLeverage(nextLeverage);
     const row = await api<{ preview: Preview }>("/api/bots/preview", {
       method: "POST",
-      body: JSON.stringify({ kind: nextKind, preset: nextPreset }),
+      body: JSON.stringify({ kind: nextKind, preset: nextPreset, market: nextMarket, leverage: nextLeverage }),
     });
     setPreview(row.preview);
   }
@@ -442,17 +460,51 @@ function Bots({ lang }: { lang: Lang }) {
       setAsk(true);
       return;
     }
-    await api("/api/bots/template", { method: "POST", body: JSON.stringify({ kind, preset }) });
+    await api("/api/bots/template", {
+      method: "POST",
+      body: JSON.stringify({ kind, preset, market, leverage, account_code: accountCode }),
+    });
     setAsk(false);
     setNote(t(lang, "saved"));
   }
   if (loaded.error) return <Empty lang={lang} text={t(lang, "error")} />;
   if (!preview) return <p className="text-sm text-zinc-400">{t(lang, "loading")}</p>;
+  const cap = loaded.data?.max_leverage || 3;
   return (
     <div className="space-y-4">
+      <AccountsPanel lang={lang} />
+      <BudgetForm lang={lang} code={accountCode} />
       <Card>
         <h2 className="font-semibold">{t(lang, "bots")}</h2>
         <p className="mt-1 text-xs text-zinc-500">{t(lang, "places")}</p>
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          {(["spot", "futures"] as const).map((item) => (
+            <button
+              key={item}
+              className={`rounded-xl border p-3 text-left ${market === item ? "border-emerald-400" : "border-white/10"}`}
+              onClick={() => refresh(kind, preset, item, leverage)}
+              type="button"
+            >
+              <p className="font-medium">{t(lang, item)}</p>
+              <p className="text-xs text-zinc-500">{item === "futures" ? t(lang, "longOnly") : t(lang, "dcaHelp")}</p>
+            </button>
+          ))}
+        </div>
+        {market === "futures" ? (
+          <div className="mt-3">
+            <Field label={t(lang, "leverage")} hint={t(lang, "leverageHelp")}>
+              <select
+                className={inputClass}
+                value={leverage}
+                onChange={(event) => refresh(kind, preset, market, Number(event.target.value))}
+              >
+                {Array.from({ length: cap }, (_, index) => index + 1).map((value) => (
+                  <option key={value} value={value}>{value}x</option>
+                ))}
+              </select>
+            </Field>
+          </div>
+        ) : null}
         <div className="mt-4 grid grid-cols-2 gap-2">
           {(["dca", "grid"] as const).map((item) => (
             <button
@@ -500,6 +552,7 @@ function Bots({ lang }: { lang: Lang }) {
         {ask ? <p className="mt-3 text-sm text-amber-200">{t(lang, "aggressiveConfirm")}</p> : null}
         {note ? <p className="mt-3 text-sm text-zinc-400">{note}</p> : null}
       </Card>
+      <WarpBotsPanel lang={lang} />
     </div>
   );
 }
@@ -594,6 +647,8 @@ function Settings({ lang }: { lang: Lang }) {
   if (!loaded.data) return <p className="text-sm text-zinc-400">{t(lang, "loading")}</p>;
   const rows = Object.entries(loaded.data);
   return (
+    <div className="space-y-4">
+    <PaperCheck lang={lang} />
     <Card>
       <h2 className="font-semibold">{t(lang, "settings")}</h2>
       <p className="mt-1 text-sm text-zinc-400">{t(lang, "modeHelp")}</p>
@@ -606,5 +661,6 @@ function Settings({ lang }: { lang: Lang }) {
         ))}
       </dl>
     </Card>
+    </div>
   );
 }

@@ -3,23 +3,35 @@
 from __future__ import annotations
 
 import json
+import secrets
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+from .accounts import (
+    budget_decision,
+    budget_for,
+    effective_budget,
+    execution_allowed,
+    futures_entry_allowed,
+    parse_budget_override,
+)
 from .bots import (
     BotTemplate,
     allocate_client_id,
     build_dca_bot_payload,
+    build_futures_dca_payload,
     build_grid_payload,
     build_strategy_dca_payload,
     execution_fractions,
 )
 from .config import Settings
+from .forward import evaluate_due
 from .levels import derive_levels
 from .market import MarketData, MarketDataError
 from .models import Signal
+from .ownership import warp_name
 from .qualify import qualify
 from .risk import GlobalRisk, pair_symbols
 from .screener import ScreenerError, ScreenerFilters, select_symbols
@@ -39,11 +51,20 @@ class CycleStatus:
     reason: str = "not_run"
 
 
-def _broker_id(result: dict) -> str:
+def _broker_id_or_none(result: dict) -> str | None:
+    if not isinstance(result, dict):
+        return None
     for key in ("strategyId", "code", "botCode", "id"):
         value = result.get(key)
         if isinstance(value, str) and value:
             return value
+    return None
+
+
+def _broker_id(result: dict) -> str:
+    found = _broker_id_or_none(result)
+    if found:
+        return found
     raise IntegrationError("3Commas returned no confirmed bot id", uncertain=True)
 
 
@@ -76,16 +97,19 @@ class Engine:
         self.last_positions: list[dict] = []
         self.last_decision = None
         self.last_opportunities: list[dict] = []
+        self.last_accounts: list = []
         self._discovery_block: str | None = None
 
     def cycle(self) -> int:
         self.status = CycleStatus()
         try:
             now = datetime.now(timezone.utc)
+            self._remember_accounts()
             account, positions = self._load_account()
             self.refresh_market(now)
             signals = self._research()
             opened = self._submit(account, positions, signals, now, submit=True)
+            self._evaluate(now)
         except (IntegrationError, MarketDataError, ResearchError) as exc:
             self._mark_blocked(exc)
             raise
@@ -211,6 +235,10 @@ class Engine:
             candles = getattr(self.market, "last_candles", {}).get(signal.symbol)
             gated, card = qualify(enriched, enriched.evidence, candles, self.cfg, template)
             self.last_opportunities.append(card)
+            if enriched.evidence is not None and enriched.evidence.last_price > 0:
+                self.journal.record_verdict(
+                    gated.symbol, gated.action, gated.confidence, enriched.evidence.last_price, now
+                )
             deduped.append(gated)
             notes.append((stamp, signal.symbol, "research", gated.action, "accepted"))
             if gated.action != signal.action:
@@ -304,21 +332,49 @@ class Engine:
                 opened += 1
                 continue
             template = self._template()
+            allowed, why = execution_allowed(self.cfg.mode, account.demo, self.cfg.live_ack)
+            if not allowed:
+                notes.append((stamp, plan.symbol, "broker", why, "not_submitted"))
+                self.status.execution_permitted = False
+                continue
+            futures_ok, futures_why = futures_entry_allowed(account, self.cfg.mode)
+            if not futures_ok:
+                notes.append((stamp, plan.symbol, "broker", futures_why, "not_submitted"))
+                self.status.execution_permitted = False
+                continue
+            room, room_why = self._budget(account, plan.full_commitment)
+            if not room:
+                notes.append((stamp, plan.symbol, "broker", room_why, "not_submitted"))
+                self.status.execution_permitted = False
+                continue
             client_id = allocate_client_id(self.journal, plan.symbol, template, now)
             if client_id is None:
                 notes.append((stamp, plan.symbol, "broker", "duplicate_client", "skipped"))
                 log_event("duplicate_skipped", symbol=plan.symbol)
                 continue
             try:
-                result = self._place(plan, client_id, template)
+                result = self._place(plan, client_id, template, account)
             except IntegrationError as exc:
                 notes.append((stamp, plan.symbol, "broker", "rejected" if not exc.uncertain else "unknown", "halted"))
                 self._record(notes)
                 if not exc.uncertain:
                     self.journal.reject(client_id)
+                if getattr(self, "_pending_warp", None):
+                    self.journal.update_warp_bot(
+                        self._pending_warp,
+                        status="rejected" if not exc.uncertain else "unknown",
+                        updated_at=datetime.now(timezone.utc).isoformat(),
+                    )
                 raise
             broker_id = _broker_id(result)
             self.journal.confirm(client_id, broker_id)
+            if getattr(self, "_pending_warp", None):
+                self.journal.update_warp_bot(
+                    self._pending_warp,
+                    status="confirmed",
+                    external_code=broker_id,
+                    updated_at=datetime.now(timezone.utc).isoformat(),
+                )
             self.journal.enqueue_alert(
                 f"order:{plan.symbol}:{client_id}",
                 f"{self.cfg.mode} {template.kind} {plan.symbol} {broker_id}",
@@ -337,7 +393,14 @@ class Engine:
             return BotTemplate()
         return BotTemplate.from_mapping(json.loads(raw))
 
-    def _build(self, plan, client_id: str, template: BotTemplate) -> tuple[dict, dict]:
+    def _build(self, plan, client_id: str, template: BotTemplate, account, name: str) -> tuple[dict, dict]:
+        futures = getattr(account, "market", "spot") == "futures"
+        if futures and template.market != "futures":
+            template = replace(template, market="futures", product="grid_bot" if template.kind == "grid" else "dca_bot")
+        if template.market == "futures" and getattr(account, "market", "spot") != "futures":
+            raise IntegrationError("Futures template requires a futures account", uncertain=False)
+        profile = account.code or self.cfg.profile_code
+        exchange = account.exchange_code or self.cfg.exchange_code
         if template.kind == "grid":
             stop_fraction, take_fraction = execution_fractions(self.cfg, template)
             levels = derive_levels(
@@ -348,10 +411,32 @@ class Engine:
             )
             if levels is None:
                 raise IntegrationError("Grid levels unavailable", uncertain=False)
-            request, total = build_grid_payload(self.cfg, plan, levels, client_id, template)
+            request, total = build_grid_payload(
+                self.cfg,
+                plan,
+                levels,
+                client_id,
+                template,
+                name=name if futures else None,
+                profile_code=profile,
+                exchange_code=exchange,
+            )
             return request, {"product": "grid_bot", "commitment": format(total, "f"), "request": request}
-        if template.product == "dca_bot":
-            request = build_dca_bot_payload(self.cfg, plan, client_id, template)
+        if futures or template.product == "dca_bot":
+            if futures:
+                request = build_futures_dca_payload(
+                    self.cfg,
+                    plan,
+                    client_id,
+                    template,
+                    exchange_code=exchange,
+                    profile_code=profile,
+                    name=name,
+                )
+            else:
+                request = build_dca_bot_payload(
+                    self.cfg, plan, client_id, template, name=name, profile_code=profile, exchange_code=exchange
+                )
             return request, {
                 "product": "dca_bot",
                 "commitment": format(plan.full_commitment, "f"),
@@ -360,13 +445,39 @@ class Engine:
         request = build_strategy_dca_payload(self.cfg, plan, client_id, template)
         return request, request
 
-    def _place(self, plan, client_id: str, template: BotTemplate) -> dict:
-        request, envelope = self._build(plan, client_id, template)
-        self.journal.reserve(client_id, plan.symbol, envelope)
-        if template.kind == "grid":
+    def _place(self, plan, client_id: str, template: BotTemplate, account) -> dict:
+        warp_id = secrets.token_hex(4)
+        name = warp_name(warp_id)
+        self._pending_warp = warp_id
+        request, envelope = self._build(plan, client_id, template, account, name)
+        stamp = datetime.now(timezone.utc).isoformat()
+        self.journal.insert_warp_bot(
+            {
+                "warp_id": warp_id,
+                "name": name,
+                "client_id": client_id,
+                "external_code": None,
+                "kind": template.kind if getattr(account, "market", "spot") != "futures" else template.kind,
+                "product": envelope["product"] if isinstance(envelope, dict) and envelope.get("product") else template.product,
+                "account_code": account.code,
+                "market": getattr(account, "market", "spot") or "spot",
+                "symbol": plan.symbol,
+                "status": "pending",
+                "commitment": format(plan.full_commitment, "f"),
+                "created_at": stamp,
+                "updated_at": stamp,
+            }
+        )
+        self.journal.reserve(client_id, plan.symbol, envelope if isinstance(envelope, dict) else request)
+        futures = getattr(account, "market", "spot") == "futures"
+        product = envelope.get("product") if isinstance(envelope, dict) else template.product
+        if futures and product == "grid_bot":
+            return self._resolve_bot(self.broker.post_grid_bot(request, market="futures"), name, "grid")
+        if futures or product == "dca_bot":
+            poster = self.broker.post_dca_bot if futures else self.broker.create_dca_bot
+            return self._resolve_bot(poster(request), name, "dca") if futures else poster(request)
+        if product == "grid_bot":
             return self.broker.create_grid_bot(request)
-        if template.product == "dca_bot":
-            return self.broker.create_dca_bot(request)
         return self.broker.create_strategy(request)
 
     def _untracked(self, positions) -> tuple[tuple[str, Decimal], ...]:
@@ -386,8 +497,15 @@ class Engine:
         return tuple(rows)
 
     def _load_account(self):
-        if self.cfg.api_key and self.cfg.api_secret and self.cfg.profile_code:
-            account = self.broker.get_account(self.cfg.profile_code, self.cfg.exchange_code)
+        target = self._target()
+        code = str(target.get("code")) if target and target.get("code") else self.cfg.profile_code
+        if self.cfg.api_key and self.cfg.api_secret and code:
+            market = str(target.get("market") or "spot") if target else "spot"
+            exchange = str(target.get("exchange_code") or self.cfg.exchange_code) if target else self.cfg.exchange_code
+            if market == "futures":
+                account = self.broker.get_account(code, exchange, market="futures")
+            else:
+                account = self.broker.get_account(code, exchange)
             self._require_mode_matches(account.demo)
             positions = self.broker.get_live()
             self.last_positions = positions
@@ -491,3 +609,52 @@ class Engine:
 
     def _halted(self) -> bool:
         return Path(self.cfg.db_path).parent.joinpath("HALT").exists()
+
+    def _target(self) -> dict | None:
+        raw = self.journal.get_setting("target_account")
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _budget(self, account, commitment: Decimal) -> tuple[bool, str]:
+        try:
+            absolute, fraction, max_bots = effective_budget(
+                self.cfg, parse_budget_override(self.journal.get_setting("account_budgets"), account.code)
+            )
+        except ValueError:
+            return False, "budget"
+        room = budget_for(
+            balance=account.total_usdt,
+            absolute=absolute,
+            fraction=fraction,
+            max_bots=max_bots,
+            bots=self.journal.warp_bots(account.code),
+        )
+        return budget_decision(room, commitment)
+
+    def _resolve_bot(self, result: dict, name: str, kind: str) -> dict:
+        if _broker_id_or_none(result):
+            return result
+        listed = self.broker.list_dca_bots() if kind == "dca" else self.broker.list_grid_bots()
+        matches = [row for row in listed if isinstance(row, dict) and row.get("name") == name]
+        if len(matches) != 1 or not matches[0].get("code"):
+            raise IntegrationError("3Commas returned no confirmed bot id", uncertain=True)
+        return {"code": str(matches[0]["code"]), "name": name}
+
+    def _remember_accounts(self) -> None:
+        if not self.cfg.api_key or not self.cfg.api_secret or not hasattr(self.broker, "list_accounts"):
+            return
+        try:
+            self.last_accounts = self.broker.list_accounts()
+        except IntegrationError:
+            return
+
+    def _evaluate(self, now: datetime) -> None:
+        price_at = getattr(self.market, "price_at", None)
+        if price_at is None:
+            return
+        evaluate_due(self.journal, price_at, now, limit=20)

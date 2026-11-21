@@ -103,7 +103,9 @@ class PipelineTests(unittest.TestCase):
             wide = {"max_group": Decimal("0.90"), "max_committed": Decimal("0.70"), "min_reserve": Decimal("0.20")}
             observe_cfg = Settings(db_path=path, api_key="k", api_secret="s", profile_code="p123", **wide)
             paper_cfg = Settings(
-                mode="paper", db_path=path, api_key="k", api_secret="s", profile_code="p123", **wide
+                mode="paper", db_path=path, api_key="k", api_secret="s", profile_code="p123",
+                budget_usdt=Decimal("100000"), budget_fraction=Decimal("1"), max_warp_bots=8,
+                **wide,
             )
 
             observe = Engine(observe_cfg, broker, vibe, journal, market)

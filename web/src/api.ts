@@ -78,6 +78,63 @@ export type Filters = {
   limit: number;
 };
 
+export type BrokerAccount = {
+  code: string;
+  name: string;
+  demo: boolean;
+  badge: "DEMO" | "REAL";
+  status: string;
+  exchange_code: string;
+  exchange_name: string;
+  market: string;
+  quote: string;
+  free: string;
+  used: string;
+  total: string;
+  margin_mode: string;
+  selectable: boolean;
+  reason: string;
+};
+
+export type WarpBot = {
+  warp_id: string;
+  name: string;
+  external_code: string | null;
+  kind: string;
+  product: string;
+  account_code: string;
+  market: string;
+  symbol: string;
+  status: string;
+  commitment: string;
+  created_at: string;
+};
+
+export type BudgetView = {
+  cap: string;
+  used: string;
+  remaining: string;
+  open_bots: number;
+  max_bots: number;
+  absolute: string;
+  fraction: string;
+};
+
+export type HorizonStat = {
+  n: number;
+  hits: number;
+  hit_rate: string | null;
+  avg_move: string | null;
+};
+
+export type ForwardStats = {
+  hit_rule: string;
+  horizons: string[];
+  by_verdict: Record<string, Record<string, HorizonStat>>;
+  scored: number;
+  pending: number;
+};
+
 export type Preview = {
   full_commitment: string;
   share_of_equity: string;

@@ -13,6 +13,10 @@ One worker for spot crypto: a scheduled screener, a bounded analysis step, a det
 
 Modes: `observe` (no writes), `paper` (demo profile only), `live` (real profile plus `WARP_LIVE_EXECUTION_ACK=I_UNDERSTAND_LIVE_ORDERS`). Live is not enabled by this repository.
 
+The dashboard lists 3Commas accounts with a DEMO or REAL badge. Paper mode can select only a demo account. A real account can be selected only while the process is already in live mode, which still requires the acknowledgement above. Futures USDT-M bots are long-only, isolated, and capped at `WARP_MAX_LEVERAGE` (1 to 3, default 1x). WARP names every cabinet bot `WARP-` plus an id stored in its database, and pause, resume, close, and delete refuse any bot that is not in that table. `WARP_BUDGET_USDT` and `WARP_BUDGET_FRACTION` cap how much of an account WARP may use.
+
+`python -m warp3c.papercheck` creates a 15 USDT bot on a demo account, reads it back, pauses it, and deletes it. It refuses observe mode, live mode, a real account, and a HALT file. The same check is `POST /api/paper/roundtrip` with `{"confirm":"PAPERCHECK"}`.
+
 ## Dashboard
 
 `/dashboard` is a dark, mobile-first page (React, Vite, Tailwind). English is the default. The EN/ID control is in the header. Sign in with `WARP_DASHBOARD_PASSWORD` (at least 12 characters). The session cookie is HttpOnly. `WARP_OPERATOR_TOKEN` (at least 16 characters) still authorizes `Authorization: Bearer` for automation, and it signs the cookie when `WARP_SESSION_SECRET` is unset.

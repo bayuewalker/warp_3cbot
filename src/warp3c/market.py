@@ -306,6 +306,20 @@ class MarketData:
                 item = replace(item, passed=False, reason="spread_too_wide")
         return item
 
+    def price_at(self, symbol: str, moment: datetime) -> Decimal | None:
+        """Close of the 1h candle that contains this time. Missing data stays unresolved."""
+        start = int(moment.astimezone(timezone.utc).timestamp() * 1000)
+        try:
+            rows = self._get("/api/v3/klines", {"symbol": symbol, "interval": "1h", "startTime": start, "limit": 1})
+        except MarketDataError:
+            return None
+        if not isinstance(rows, list) or not rows or not isinstance(rows[0], list) or len(rows[0]) < 5:
+            return None
+        try:
+            return positive(rows[0][4], "close", allow_zero=False)
+        except ValueError:
+            return None
+
     def last_price(self, symbol: str) -> Decimal:
         """Last trade for a held asset that is outside the entry universe."""
         ticker = self._get("/api/v3/ticker/24hr", {"symbol": symbol})
