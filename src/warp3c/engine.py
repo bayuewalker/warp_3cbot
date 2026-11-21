@@ -287,7 +287,7 @@ class Engine:
             log_event("halt" if paused else "observe", signals=len(deduped), fresh=self.status.market_data_fresh)
             return 0
 
-        prices, price_problem = self._price_map(account, positions)
+        prices, price_problem = self._price_map(account, positions, now)
         if price_problem:
             self.status.dependencies_healthy = True
             self.status.execution_permitted = False
@@ -572,17 +572,33 @@ class Engine:
                     needed.add(f"{asset}USDT")
         return needed
 
-    def _price_map(self, account, positions) -> tuple[dict, str | None]:
+    def _price_map(self, account, positions, now: datetime) -> tuple[dict, str | None]:
+        """Never mark a held asset from a stale candle snapshot.
+
+        Active positions and wallet assets need fresher quote marks than signal
+        research. Fetch a new public quote if their cached market snapshot is
+        older than the account freshness ceiling; fail closed on lookup errors.
+        """
         prices = {symbol: item.last_price for symbol, item in self.evidence.items()}
-        missing = [symbol for symbol in sorted(self._needed_symbols(account, positions)) if symbol not in prices]
+        required = sorted(self._needed_symbols(account, positions))
         quote = getattr(self.market, "last_price", None)
-        for symbol in missing:
+        for symbol in required:
+            item = self.evidence.get(symbol)
+            age = None if item is None or item.as_of.tzinfo is None else (
+                now - item.as_of.astimezone(timezone.utc)
+            ).total_seconds()
+            if (age is not None and -60 <= age <= self.cfg.max_account_age
+                    and item.last_price.is_finite() and item.last_price > 0):
+                continue
             if quote is None:
                 return prices, "mark_unavailable"
             try:
-                prices[symbol] = quote(symbol)
-            except MarketDataError:
+                fresh = Decimal(str(quote(symbol)))
+            except (MarketDataError, ValueError, TypeError):
                 return prices, "mark_unavailable"
+            if not fresh.is_finite() or fresh <= 0:
+                return prices, "mark_unavailable"
+            prices[symbol] = fresh
         return prices, None
 
     def _fresh(self, now: datetime) -> bool:
