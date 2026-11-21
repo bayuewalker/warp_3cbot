@@ -1,4 +1,4 @@
-"""Scheduled crypto screener. TradingView first, public Binance tickers if it fails."""
+"""Read-only spot screener. Automated discovery uses Binance public data only."""
 
 from __future__ import annotations
 
@@ -258,13 +258,14 @@ def select_symbols(hits: list[ScreenerHit], *, allow: set[str], deny: set[str], 
 
 
 class Screener:
+    """Read-only Binance screener; TradingView automation is deliberately disabled.
+
+    The constructor keeps its legacy positional arguments for backwards
+    compatibility, but does not open or call a TradingView HTTP client.
+    Unofficial TradingView scanner endpoints are not a licensed bot feed.
+    """
+
     def __init__(self, scanner_url: str, market_url: str, *, scanner_transport=None, market_transport=None):
-        self.scanner = httpx.Client(
-            base_url=scanner_url.rstrip("/"),
-            timeout=12,
-            transport=scanner_transport,
-            headers={"User-Agent": "warp3c", "Accept": "application/json"},
-        )
         self.market = httpx.Client(
             base_url=market_url.rstrip("/"),
             timeout=12,
@@ -274,25 +275,19 @@ class Screener:
         self.source = ""
 
     def close(self) -> None:
-        self.scanner.close()
         self.market.close()
 
     def scan(self, filters: ScreenerFilters) -> list[ScreenerHit]:
-        try:
-            hits = self._tradingview(filters)
-            self.source = "tradingview"
-        except ScreenerError:
-            hits = self._binance()
-            self.source = "binance"
-        return apply_filters(hits, filters)
+        """Return Binance-sourced ranking or raise; never use an unofficial TV API."""
+        self.source = ""
+        hits = self._binance()
+        selected = apply_filters(hits, filters)
+        self.source = "binance"
+        return selected
 
     def _tradingview(self, filters: ScreenerFilters) -> list[ScreenerHit]:
-        try:
-            response = self.scanner.post("/crypto/scan", json=scan_body(filters))
-            response.raise_for_status()
-            return parse_tradingview(response.json())
-        except (httpx.HTTPError, ValueError) as exc:
-            raise ScreenerError("TradingView screener unavailable") from exc
+        """Legacy method fails closed; cannot be used to bypass licensed data access."""
+        raise ScreenerError("Automated TradingView scanner access is disabled")
 
     def _binance(self) -> list[ScreenerHit]:
         try:
@@ -300,4 +295,4 @@ class Screener:
             response.raise_for_status()
             return parse_binance_tickers(response.json())
         except (httpx.HTTPError, ValueError) as exc:
-            raise ScreenerError("Binance screener fallback unavailable") from exc
+            raise ScreenerError("Binance public spot screener unavailable") from exc
