@@ -18,6 +18,7 @@ from warp3c.config import Settings
 from warp3c.engine import Engine
 from warp3c.market import MarketDataError
 from warp3c.models import Account, AssetBalance
+from warp3c.operator import _card_fresh
 from warp3c.risk import signal_executable
 from warp3c.screener import Screener, ScreenerError, ScreenerFilters
 from warp3c.state import OrderJournal
@@ -25,6 +26,23 @@ from warp3c.universe import Candidate, classify
 
 
 class SafeVibePipelineTests(unittest.TestCase):
+    def test_retained_card_requires_both_fresh_signal_and_candle(self):
+        now = datetime.now(timezone.utc)
+        signal_time = (now - timedelta(minutes=20)).isoformat()
+        stale_candle = (now - timedelta(minutes=35)).isoformat()
+        recent_candle = (now - timedelta(minutes=10)).isoformat()
+        card = {"as_of": signal_time, "evidence_as_of": stale_candle}
+        self.assertFalse(_card_fresh(card, now, 30))
+        self.assertFalse(_card_fresh({"as_of": signal_time}, now, 30))
+        self.assertTrue(_card_fresh({**card, "evidence_as_of": recent_candle}, now, 30))
+
+    def test_unsupported_legacy_tradingview_filters_fail_closed(self):
+        values = ScreenerFilters.from_mapping({"rsi_min": "50", "rsi_max": "65"})
+        with self.assertRaisesRegex(ScreenerError, "Unsupported Binance"):
+            Screener("", "https://data-api.binance.vision").scan(values)
+        normalized = ScreenerFilters.from_mapping({"min_quote_volume": "2500000", "limit": 5})
+        normalized.require_binance_filters()
+
     def test_stale_signal_rejected_even_if_market_snapshot_is_fresh(self):
         now = datetime.now(timezone.utc)
         current = evidence("BTCUSDT")
