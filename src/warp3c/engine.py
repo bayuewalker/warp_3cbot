@@ -251,6 +251,11 @@ class Engine:
             # Timestamp/provenance let the dashboard flag old research instead of
             # presenting a retained card as an actionable live opportunity.
             card["as_of"] = gated.as_of.astimezone(timezone.utc).isoformat()
+            card["evidence_as_of"] = (
+                enriched.evidence.as_of.astimezone(timezone.utc).isoformat()
+                if enriched.evidence is not None and enriched.evidence.as_of.tzinfo is not None
+                else None
+            )
             card["source"] = gated.source
             if enriched.evidence is not None:
                 card["score"] = score_candidate(
