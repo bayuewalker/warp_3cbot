@@ -97,7 +97,10 @@ def dispatch(method: str, path: str, headers, body: bytes) -> tuple[int, list[tu
             _refresh_accounts()
             return _json(200, SNAPSHOT.get(clean, {"accounts": [], "selected": None, "places_orders": False}))
         if method == "GET" and clean in ROUTES:
-            return _json(200, SNAPSHOT.get(clean, {}))
+            payload = SNAPSHOT.get(clean, {})
+            if clean in {"/api/status", "/api/breakers"}:
+                payload = _authoritative_halt(payload)
+            return _json(200, payload)
         if method == "POST" and clean == "/api/pause":
             return _pause()
         if method == "POST" and clean == "/api/resume":
@@ -173,16 +176,74 @@ def _login(body: bytes) -> tuple[int, list[tuple[str, str]], bytes]:
     return _json(200, {"ok": True}, extra=[("Set-Cookie", cookie_header(issue_session()))])
 
 
+def _file_halt() -> bool | None:
+    """The HALT file is the live entry gate. A missing path means it cannot be known."""
+    path = HEALTH.get("halt_path")
+    if not isinstance(path, str) or not path:
+        return None
+    return Path(path).is_file()
+
+
+def _published_under_halt(payload: dict) -> bool:
+    if payload.get("halt") is True or payload.get("reason") == "halt":
+        return True
+    pipeline = payload.get("pipeline")
+    risk = pipeline.get("risk") if isinstance(pipeline, dict) else None
+    return isinstance(risk, dict) and risk.get("reason") == "halt"
+
+
+def _authoritative_halt(payload: object) -> object:
+    """Serve the HALT file on top of the last worker snapshot.
+
+    publish() refreshes the snapshot on a later cycle. Pause and resume must
+    not wait for that cycle before the dashboard tells the truth. Removing the
+    file does not reopen entries: a snapshot taken under HALT stays blocked
+    until the worker publishes a new evaluation.
+    """
+    halted = _file_halt()
+    if halted is None or not isinstance(payload, dict) or not payload:
+        return payload
+    view = dict(payload)
+    view["halt"] = halted
+    if halted:
+        view["execution_permitted"] = False
+        view["gating"] = "halt"
+        _set_risk(view, state="blocked", reason="halt")
+        return view
+    if _published_under_halt(payload):
+        view["gating"] = "awaiting_worker"
+        if view.get("reason") == "halt":
+            view["reason"] = "awaiting_worker"
+        _set_risk(view, reason="awaiting_worker")
+    else:
+        view["gating"] = "current"
+    return view
+
+
+def _set_risk(view: dict, *, state: str | None = None, reason: str | None = None) -> None:
+    pipeline = view.get("pipeline")
+    if not isinstance(pipeline, dict):
+        return
+    pipeline = dict(pipeline)
+    risk = dict(pipeline.get("risk") or {})
+    if state is not None:
+        risk["state"] = state
+    if reason is not None:
+        risk["reason"] = reason
+    pipeline["risk"] = risk
+    view["pipeline"] = pipeline
+
+
 def _pause() -> tuple[int, list[tuple[str, str]], bytes]:
     if not pause_new_entries(HEALTH.get("halt_path")):
         return _json(503, {"error": "halt_path_unconfigured"})
-    return _json(200, {"paused": True, "closes_positions": False})
+    return _json(200, {"paused": True, "closes_positions": False, "halt": True})
 
 
 def _resume() -> tuple[int, list[tuple[str, str]], bytes]:
     if not resume_new_entries(HEALTH.get("halt_path")):
         return _json(503, {"error": "halt_path_unconfigured"})
-    return _json(200, {"resumed": True, "closes_positions": False})
+    return _json(200, {"resumed": True, "closes_positions": False, "halt": False})
 
 
 def _journal():
@@ -342,7 +403,7 @@ def _rules() -> tuple[int, list[tuple[str, str]], bytes]:
     if journal is None or cfg is None:
         return _json(503, {"error": "journal_unavailable"})
     policy = Policy.from_settings(cfg)
-    raw = journal.get_setting("trade_rules")
+    raw = journal.get_setting("trade_rules", request_local=True)
     if raw:
         try:
             policy = apply_rule_edits(policy, json.loads(raw))

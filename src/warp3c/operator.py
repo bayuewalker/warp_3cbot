@@ -256,6 +256,7 @@ def publish(cfg, journal, engine) -> None:
         "pnl_today": _pnl_today(journal),
         "equity": None if decision is None or decision.equity is None else _text(decision.equity),
         "pipeline": pipeline,
+        "published_at": now.isoformat(),
     }
     SNAPSHOT["/api/risk"] = {
         "reason": status.reason,

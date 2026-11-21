@@ -1,14 +1,15 @@
+import { type Lang, t } from "./i18n";
 import { cva, type VariantProps } from "class-variance-authority";
 import { ButtonHTMLAttributes, ReactNode } from "react";
 import { cn } from "./lib/utils";
 
 const buttonStyles = cva(
-  "inline-flex items-center justify-center rounded-xl text-sm font-medium transition disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400",
+  "inline-flex items-center justify-center rounded-lg text-sm font-medium transition disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400",
   {
     variants: {
       variant: {
-        default: "bg-emerald-500 text-zinc-950 hover:bg-emerald-400",
-        danger: "bg-red-500 text-white hover:bg-red-400",
+        default: "bg-blue-700 text-white hover:bg-blue-600",
+        danger: "border border-red-400/50 bg-red-500/10 text-red-200 hover:bg-red-500/20",
         outline: "border border-white/15 bg-white/5 hover:bg-white/10",
         ghost: "hover:bg-white/10",
       },
@@ -31,7 +32,7 @@ export function Button({
 }
 
 export function Card({ className, children }: { className?: string; children: ReactNode }) {
-  return <section className={cn("rounded-2xl border border-white/10 bg-panel p-4", className)}>{children}</section>;
+  return <section className={cn("surface", className)}>{children}</section>;
 }
 
 export function Badge({
@@ -48,7 +49,7 @@ export function Badge({
     bad: "bg-red-500/15 text-red-200",
     info: "bg-sky-500/15 text-sky-200",
   };
-  return <span className={cn("rounded-full px-2.5 py-1 text-xs font-semibold tracking-wide", tones[tone])}>{children}</span>;
+  return <span className={cn("badge", tones[tone])}>{children}</span>;
 }
 
 export function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
@@ -62,4 +63,25 @@ export function Field({ label, hint, children }: { label: string; hint?: string;
 }
 
 export const inputClass =
-  "h-11 w-full rounded-xl border border-white/10 bg-black/30 px-3 text-sm outline-none focus:ring-2 focus:ring-emerald-400";
+  "h-11 w-full rounded-lg border border-white/10 bg-black/30 px-3 text-sm outline-none focus:ring-2 focus:ring-blue-400";
+
+export function Loading({ lang }: { lang: Lang }) {
+  return (
+    <div className="skeleton" role="status" aria-busy="true">
+      <span className="sr-only">{t(lang, "loading")}</span>
+      <i />
+      <i />
+      <i />
+    </div>
+  );
+}
+export function Problem({ lang, retry }: { lang: Lang; retry: () => void }) {
+  return (
+    <Card className="problem">
+      <p role="alert">{t(lang, "noSnapshot")}</p>
+      <Button variant="outline" onClick={retry}>
+        {t(lang, "retry")}
+      </Button>
+    </Card>
+  );
+}
