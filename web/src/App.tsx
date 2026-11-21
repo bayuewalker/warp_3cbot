@@ -891,6 +891,29 @@ function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean
               />
             </Field>
           </div>
+          <div className="grid grid-cols-2 gap-2">
+            <Field label={t(lang, "rsi")}>
+              <input
+                className={inputClass}
+                value={form.rsi_min}
+                onChange={(event) => setForm({ ...form, rsi_min: event.target.value })}
+              />
+            </Field>
+            <Field label={t(lang, "rsiMax")}>
+              <input
+                className={inputClass}
+                value={form.rsi_max}
+                onChange={(event) => setForm({ ...form, rsi_max: event.target.value })}
+              />
+            </Field>
+          </div>
+          <Field label={t(lang, "recommend")}>
+            <input
+              className={inputClass}
+              value={form.min_recommendation}
+              onChange={(event) => setForm({ ...form, min_recommendation: event.target.value })}
+            />
+          </Field>
           <Field label={t(lang, "limit")}>
             <input
               className={inputClass}

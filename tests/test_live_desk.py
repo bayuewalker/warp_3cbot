@@ -7,6 +7,7 @@ import os
 import threading
 import time
 import unittest
+from decimal import Decimal
 from pathlib import Path
 
 from warp3c.config import Settings
@@ -51,6 +52,59 @@ class LiveDeskTests(unittest.TestCase):
             self.assertIsNone(accounts[0]["assets"][0]["usd_reason"])
         finally:
             BUS.prices, BUS.prices_at, BUS.prices_error = saved
+
+    def test_tradingview_filters_save_and_sleeve_reserves_other_bots(self):
+        from warp3c.httpapi import _save_filters
+        from warp3c.operator import RUNTIME, _sleeve_view
+
+        with __import__("tempfile").TemporaryDirectory() as tmp:
+            journal = OrderJournal(os.path.join(tmp, "warp.db"))
+            RUNTIME["journal"] = journal
+            RUNTIME["cfg"] = Settings()
+            try:
+                status, _headers, body = _save_filters(
+                    json.dumps(
+                        {
+                            "rsi_min": "40",
+                            "rsi_max": "70",
+                            "min_recommendation": "0.2",
+                            "min_quote_volume": "2500000",
+                        }
+                    ).encode()
+                )
+                self.assertEqual(status, 200)
+                saved = json.loads(body)["filters"]
+                self.assertEqual(saved["rsi_min"], "40")
+                self.assertEqual(saved["min_recommendation"], "0.2")
+            finally:
+                journal.close()
+                RUNTIME["journal"] = None
+                RUNTIME["cfg"] = None
+        accounts = [{"code": "a", "quote": "USDT", "total": "1000", "free": "1000"}]
+        selected = {"code": "a"}
+
+        class Known:
+            non_warp_future_so = Decimal("400")
+
+        reserved = _sleeve_view(
+            Settings(sleeve_pct=Decimal("1"), api_key="k", api_secret="s"),
+            accounts,
+            selected,
+            Known(),
+        )
+        self.assertEqual(reserved["eligible"], "600")
+
+        class Unknown:
+            non_warp_future_so = None
+
+        missing = _sleeve_view(
+            Settings(sleeve_pct=Decimal("1"), api_key="k", api_secret="s"),
+            accounts,
+            selected,
+            Unknown(),
+        )
+        self.assertIsNone(missing["eligible"])
+        self.assertEqual(missing["reason"], "reserves_unknown")
 
     def test_missing_account_sleeve_is_unavailable(self):
         view = _sleeve_view(Settings(), [], None)

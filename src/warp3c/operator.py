@@ -322,7 +322,7 @@ def publish(cfg, journal, engine) -> None:
         "places_orders": False,
         "as_of": getattr(engine, "accounts_at", "") or None,
         "error": getattr(engine, "accounts_error", None),
-        "sleeve": _sleeve_view(cfg, accounts, selected),
+        "sleeve": _sleeve_view(cfg, accounts, selected, engine),
         "readonly": True,
     }
     from .live import recent_events
@@ -381,7 +381,7 @@ def _mark_assets(accounts: list[dict]) -> None:
         account["assets"] = marked
 
 
-def _sleeve_view(cfg, accounts: list[dict], selected: dict | None) -> dict:
+def _sleeve_view(cfg, accounts: list[dict], selected: dict | None, engine=None) -> dict:
     from .capital import Policy, sleeve_nav
 
     code = (selected or {}).get("code")
@@ -390,13 +390,18 @@ def _sleeve_view(cfg, accounts: list[dict], selected: dict | None) -> dict:
         return {"eligible": None, "sleeve": None, "reason": "account_unavailable"}
     if account.get("quote") not in ("USDT", "USDC"):
         return {"eligible": None, "sleeve": None, "reason": "quote_unavailable"}
+    reserved = getattr(engine, "non_warp_future_so", None) if engine is not None else Decimal("0")
+    if cfg.api_key and cfg.api_secret and reserved is None:
+        return {"eligible": None, "sleeve": None, "reason": "reserves_unknown"}
+    if reserved is None:
+        reserved = Decimal("0")
     try:
         view = sleeve_nav(
             account_usdt=Decimal(str(account["total"])),
             free_usdt=Decimal(str(account["free"])),
             warp_owned=Decimal("0"),
             non_warp_spent=Decimal("0"),
-            non_warp_future_so=Decimal("0"),
+            non_warp_future_so=Decimal(str(reserved)),
             policy=Policy.from_settings(cfg),
         )
     except (ArithmeticError, ValueError) as exc:
@@ -406,7 +411,7 @@ def _sleeve_view(cfg, accounts: list[dict], selected: dict | None) -> dict:
         "sleeve": format(view.sleeve, "f"),
         "account_usdt": format(view.account_usdt, "f"),
         "reason": None,
-        "basis": "min(configured sleeve, free quote). Unpriced coins are not added.",
+        "basis": "min(configured sleeve, free quote minus other bots' future safety orders). Unpriced coins are not added.",
     }
 
 
