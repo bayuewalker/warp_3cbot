@@ -322,7 +322,7 @@ def publish(cfg, journal, engine) -> None:
         "places_orders": False,
         "as_of": getattr(engine, "accounts_at", "") or None,
         "error": getattr(engine, "accounts_error", None),
-        "sleeve": _sleeve_view(cfg, accounts, selected, engine),
+        "sleeve": _sleeve_view(cfg, accounts, selected, engine, journal),
         "readonly": True,
     }
     from .live import recent_events
@@ -381,8 +381,20 @@ def _mark_assets(accounts: list[dict]) -> None:
         account["assets"] = marked
 
 
-def _sleeve_view(cfg, accounts: list[dict], selected: dict | None, engine=None) -> dict:
-    from .capital import Policy, sleeve_nav
+def _active_policy(cfg, journal):
+    from .capital import Policy, apply_rule_edits
+
+    policy = Policy.from_settings(cfg)
+    if journal is None:
+        return policy
+    saved = journal.get_setting("trade_rules")
+    if not saved:
+        return policy
+    return apply_rule_edits(policy, json.loads(saved))
+
+
+def _sleeve_view(cfg, accounts: list[dict], selected: dict | None, engine=None, journal=None) -> dict:
+    from .capital import sleeve_nav
 
     code = (selected or {}).get("code")
     account = next((row for row in accounts if row.get("code") == code), None)
@@ -396,15 +408,16 @@ def _sleeve_view(cfg, accounts: list[dict], selected: dict | None, engine=None) 
     if reserved is None:
         reserved = Decimal("0")
     try:
+        policy = _active_policy(cfg, journal)
         view = sleeve_nav(
             account_usdt=Decimal(str(account["total"])),
             free_usdt=Decimal(str(account["free"])),
             warp_owned=Decimal("0"),
             non_warp_spent=Decimal("0"),
             non_warp_future_so=Decimal(str(reserved)),
-            policy=Policy.from_settings(cfg),
+            policy=policy,
         )
-    except (ArithmeticError, ValueError) as exc:
+    except (ArithmeticError, ValueError, json.JSONDecodeError) as exc:
         return {"eligible": None, "sleeve": None, "reason": str(exc)[:160]}
     return {
         "eligible": format(view.eligible, "f"),

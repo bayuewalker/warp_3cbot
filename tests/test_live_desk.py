@@ -106,6 +106,21 @@ class LiveDeskTests(unittest.TestCase):
         self.assertIsNone(missing["eligible"])
         self.assertEqual(missing["reason"], "reserves_unknown")
 
+        class SavedRules:
+            def get_setting(self, key):
+                if key == "trade_rules":
+                    return json.dumps({"sleeve_pct": "0.05"})
+                return None
+
+        overridden = _sleeve_view(
+            Settings(sleeve_pct=Decimal("0.10")),
+            accounts,
+            selected,
+            None,
+            SavedRules(),
+        )
+        self.assertEqual(Decimal(overridden["eligible"]), Decimal("50"))
+
     def test_missing_account_sleeve_is_unavailable(self):
         view = _sleeve_view(Settings(), [], None)
         self.assertIsNone(view["eligible"])
