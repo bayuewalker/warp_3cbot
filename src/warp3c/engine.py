@@ -39,6 +39,7 @@ from .screener import ScreenerError, ScreenerFilters, select_symbols
 from .state import OrderJournal
 from .telemetry import log_event
 from .threecommas import IntegrationError, StrategyNotFound, ThreeCommas
+from .universe import excluded_symbol
 from .vibe import ResearchError, VibeResearch
 
 
@@ -201,7 +202,11 @@ class Engine:
         if self.cfg.discovery != "auto":
             # The global denylist is a safety policy, not an auto-discovery option.
             # Static mode must never bypass it (including through old saved presets).
-            chosen = tuple(symbol for symbol in self.cfg.symbols if symbol not in self.cfg.deny_symbols)
+            chosen = tuple(
+                symbol
+                for symbol in self.cfg.symbols
+                if symbol not in self.cfg.deny_symbols and not excluded_symbol(symbol)
+            )
             if not chosen:
                 self._discovery_block = "no_eligible_market"
                 self._record([(now.isoformat(), "*", "universe", "no_eligible_market", "fail_closed")])
