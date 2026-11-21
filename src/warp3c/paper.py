@@ -175,6 +175,22 @@ class PaperBook:
             total += _d(deal["cost"])
         return total
 
+    def commitment(self) -> Decimal:
+        """Full ladder quote, including safety orders that have not filled."""
+        total = Decimal("0")
+        for deal in self.open_deals():
+            for leg in deal["legs"]:
+                total += _d(leg["quote"])
+        return total
+
+    def pending_safety(self) -> Decimal:
+        total = Decimal("0")
+        for deal in self.open_deals():
+            for leg in deal["legs"]:
+                if not leg["filled"]:
+                    total += _d(leg["quote"])
+        return total
+
     def stop_risk(self) -> Decimal:
         total = Decimal("0")
         for deal in self.open_deals():
@@ -194,6 +210,25 @@ class PaperBook:
         average = None if not durations else Decimal(str(sum(durations) / len(durations)))
         first = min((_moment(row["opened_at"]) for row in opened), default=None)
         paper_days = 0 if first is None else (now.astimezone(timezone.utc) - first).days
+        if sleeve is None or sleeve <= 0:
+            return {
+                "switches_live": False,
+                "open": [self._public(row) for row in self.open_deals()],
+                "closed": [self._public(row) for row in closed[-30:]],
+                "closed_deals": len(closed),
+                "win_rate": None if not closed else _text(Decimal(len(wins)) / Decimal(len(closed))),
+                "net_pnl": _text(net) if closed else None,
+                "net_pnl_pct": None,
+                "net_pnl_reason": "sleeve_unset",
+                "expectancy": None if expectancy is None else _text(expectancy),
+                "max_drawdown": None,
+                "average_duration_seconds": None if average is None else _text(average),
+                "open_exposure": _text(self.exposure()),
+                "paper_days": paper_days,
+                "gate_pass": False,
+                "gate_reasons": ["sleeve_unset"],
+                "as_of": _stamp(now),
+            }
         drawdown = self._max_drawdown(closed, sleeve)
         passed, reasons = go_no_go(
             paper_days=paper_days,

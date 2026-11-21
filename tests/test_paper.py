@@ -174,48 +174,94 @@ class PaperBookTests(unittest.TestCase):
         self.assertGreaterEqual(Decimal(failed["max_drawdown"]), Decimal("0.08"))
         self.assertFalse(failed["switches_live"])
 
+    def test_unknown_sleeve_fails_the_gate_instead_of_reporting_zero_drawdown(self):
+        view = self.book.metrics(policy(), self.now, None)
+        self.assertFalse(view["gate_pass"])
+        self.assertEqual(view["gate_reasons"], ["sleeve_unset"])
+        self.assertIsNone(view["max_drawdown"])
+
+    def test_open_deal_reserves_unfilled_safety_orders(self):
+        deal = self._open()
+        filled = sum(Decimal(leg["quote"]) for leg in deal["legs"] if leg["filled"])
+        pending = sum(Decimal(leg["quote"]) for leg in deal["legs"] if not leg["filled"])
+        self.assertEqual(self.book.exposure(), filled)
+        self.assertEqual(self.book.pending_safety(), pending)
+        self.assertGreater(self.book.commitment(), self.book.exposure())
+        self.assertGreater(pending, 0)
+        blocked = approve(
+            policy=policy(),
+            account_usdt=self.book.commitment(),
+            free_usdt=self.book.commitment(),
+            warp_owned=Decimal("0"),
+            warp_committed=self.book.commitment(),
+            warp_pending_so=self.book.pending_safety(),
+            non_warp_spent=Decimal("0"),
+            non_warp_future_so=Decimal("0"),
+            open_deals=1,
+            open_stop_risk=self.book.stop_risk(),
+            open_symbols=["SOLUSDT"],
+            price=Decimal("100"),
+            minimum=Decimal("5"),
+            model_buy=True,
+            score=score_candidate(
+                regime="trend_up", rsi=Decimal("55"), quote_volume=Decimal("20000000"),
+                spread=Decimal("0.001"), change_24h=Decimal("0.02"), tradable=True,
+                volatility=Decimal("0.02"), policy=policy(),
+            ),
+            symbol="ETHUSDT",
+            quote_volume=Decimal("20000000"),
+            spread=Decimal("0.001"),
+            change_24h=Decimal("0.02"),
+            now=self.now,
+        )
+        self.assertNotEqual(blocked.decision, "APPROVED")
+
+
+def _gate(symbol: str) -> dict:
+    return {
+        "tradable": True,
+        "on_binance_spot": True,
+        "quote_volume": Decimal("20000000"),
+        "spread": Decimal("0.001"),
+        "change_24h": Decimal("0.02"),
+        "listed_days": 400,
+        "min_notional": Decimal("5"),
+        "atr_1h_pct": Decimal("0.01"),
+        "quote_age": 1,
+        "price": Decimal("100"),
+    }
+
 
 class ShadowEngineTests(unittest.TestCase):
+    def _engine(self, tmp: str, *, research, market, sleeve: Decimal = Decimal("1000")):
+        cfg = Settings(
+            db_path=os.path.join(tmp, "warp.db"),
+            mode="observe",
+            sleeve_usdt=sleeve,
+            sleeve_pct=Decimal("1"),
+            symbols=("SOLUSDT",),
+        )
+        journal = OrderJournal(cfg.db_path)
+        engine = Engine(cfg, _Broker(), research, journal, market)
+        return engine, journal
+
     def test_observe_without_an_account_opens_a_paper_deal_and_not_a_broker_order(self):
-        class Broker:
-            def create_strategy(self, _payload):
-                raise AssertionError("paper shadow must not place an order")
-
-            def list_accounts(self):
-                raise AssertionError("paper shadow must not read a write endpoint")
-
         class Research:
             def research(self, symbols, _age):
                 now = datetime.now(timezone.utc)
-                evidence = MarketEvidence(
-                    symbols[0], now, Decimal("100"), Decimal("20000000"),
-                    "up", Decimal("0.02"), Decimal("55"), Decimal("0.02"), "trend_up",
-                    Decimal("5"), 2, True, True, "ok",
-                )
-                return [Signal(symbols[0], "BUY", Decimal("0.9"), now, "verified feed at timestamp", "Fresh momentum with volume confirmation", evidence)]
+                row = _evidence(symbols[0], now)
+                return [Signal(symbols[0], "BUY", Decimal("0.9"), now, "verified feed at timestamp", "Fresh momentum with volume confirmation", row)]
 
         class Markets:
             def scan(self, symbols, now=None):
                 moment = now or datetime.now(timezone.utc)
-                return {
-                    symbol: MarketEvidence(
-                        symbol, moment, Decimal("100"), Decimal("20000000"),
-                        "up", Decimal("0.02"), Decimal("55"), Decimal("0.02"), "trend_up",
-                        Decimal("5"), 2, True, True, "ok",
-                    )
-                    for symbol in symbols
-                }
+                return {symbol: _evidence(symbol, moment) for symbol in symbols}
+
+            def tradebook_context(self, symbols, now=None):
+                return {"tape": None, "correlation": {}, "gates": {symbol: _gate(symbol) for symbol in symbols}}
 
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = Settings(
-                db_path=os.path.join(tmp, "warp.db"),
-                mode="observe",
-                sleeve_usdt=Decimal("1000"),
-                sleeve_pct=Decimal("1"),
-                symbols=("SOLUSDT",),
-            )
-            journal = OrderJournal(cfg.db_path)
-            engine = Engine(cfg, Broker(), Research(), journal, Markets())
+            engine, journal = self._engine(tmp, research=Research(), market=Markets())
             try:
                 engine.cycle()
                 self.assertFalse(engine.status.execution_permitted)
@@ -225,6 +271,86 @@ class ShadowEngineTests(unittest.TestCase):
             finally:
                 engine._paper().close()
                 journal.close()
+
+    def test_missing_trade_book_and_stale_signal_do_not_open(self):
+        now = datetime.now(timezone.utc)
+
+        class Research:
+            def research(self, symbols, _age):
+                row = _evidence(symbols[0], now)
+                return [Signal(symbols[0], "BUY", Decimal("0.9"), now, "verified feed at timestamp", "Fresh momentum with volume confirmation", row)]
+
+        class Markets:
+            def scan(self, symbols, now=None):
+                moment = now or datetime.now(timezone.utc)
+                return {symbol: _evidence(symbol, moment) for symbol in symbols}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, journal = self._engine(tmp, research=Research(), market=Markets())
+            try:
+                engine.cycle()
+                self.assertEqual(engine._paper().open_deals(), [])
+                self.assertEqual(engine.paper_error, "market_data")
+            finally:
+                engine._paper().close()
+                journal.close()
+
+        class StaleResearch:
+            def research(self, symbols, _age):
+                old = now - timedelta(hours=3)
+                row = _evidence(symbols[0], old)
+                return [Signal(symbols[0], "BUY", Decimal("0.9"), old, "verified feed at timestamp", "Fresh momentum with volume confirmation", row)]
+
+        class GatedMarkets(Markets):
+            scanned: list[tuple[str, ...]]
+
+            def __init__(self):
+                self.scanned = []
+
+            def scan(self, symbols, now=None):
+                self.scanned.append(tuple(symbols))
+                return super().scan(symbols, now=now)
+
+            def tradebook_context(self, symbols, now=None):
+                return {"tape": None, "correlation": {}, "gates": {symbol: _gate(symbol) for symbol in symbols}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            market = GatedMarkets()
+            engine, journal = self._engine(tmp, research=StaleResearch(), market=market)
+            try:
+                engine.cycle()
+                self.assertEqual(engine._paper().open_deals(), [])
+            finally:
+                book = engine._paper()
+                book.open_ladder(
+                    symbol="ETHUSDT",
+                    ladder=ladder().ladder,
+                    entry=Decimal("100"),
+                    exits=Exits(),
+                    policy=policy(),
+                    now=now,
+                    sleeve=Decimal("1000"),
+                )
+                engine.refresh_market(now)
+                self.assertIn("ETHUSDT", market.scanned[-1])
+                book.close()
+                journal.close()
+
+
+def _evidence(symbol: str, moment: datetime) -> MarketEvidence:
+    return MarketEvidence(
+        symbol, moment, Decimal("100"), Decimal("20000000"),
+        "up", Decimal("0.02"), Decimal("55"), Decimal("0.02"), "trend_up",
+        Decimal("5"), 2, True, True, "ok",
+    )
+
+
+class _Broker:
+    def create_strategy(self, _payload):
+        raise AssertionError("paper shadow must not place an order")
+
+    def list_accounts(self):
+        raise AssertionError("paper shadow must not read a write endpoint")
 
 
 if __name__ == "__main__":
