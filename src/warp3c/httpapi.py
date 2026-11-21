@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from .auth import (
@@ -38,7 +39,16 @@ _TYPES = {
 
 
 def web_root() -> Path:
-    return Path(__file__).resolve().parents[2] / "web" / "dist"
+    """Built dashboard. Docker sets WARP_WEB_DIST because pip install moves this module."""
+    configured = os.getenv("WARP_WEB_DIST", "").strip()
+    if configured:
+        return Path(configured)
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "web" / "dist"
+        if (candidate / "index.html").is_file():
+            return candidate
+    return here.parents[2] / "web" / "dist"
 
 
 def dispatch(method: str, path: str, headers, body: bytes) -> tuple[int, list[tuple[str, str]], bytes]:

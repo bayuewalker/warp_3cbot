@@ -11,7 +11,8 @@ ENV PYTHONUNBUFFERED=1 \
     WARP_DB_PATH=/data/warp.db \
     WARP_MANAGE_VIBE=0 \
     WARP_HTTP=fastapi \
-    WARP_ANALYSIS=auto
+    WARP_ANALYSIS=auto \
+    WARP_WEB_DIST=/app/web/dist
 
 WORKDIR /app
 COPY pyproject.toml README.md ./

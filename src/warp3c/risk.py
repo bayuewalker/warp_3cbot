@@ -248,8 +248,7 @@ class GlobalRisk:
         marks: list[EquityMark],
         now: datetime | None = None,
         evidence: dict[str, MarketEvidence] | None = None,
-        extra_symbols: tuple[str, ...] = (),
-        extra_committed: Decimal = Decimal("0"),
+        extra_commitments: tuple[tuple[str, Decimal], ...] = (),
     ) -> RiskDecision:
         moment = now or datetime.now(timezone.utc)
         self._require_fresh(account, moment)
@@ -257,7 +256,11 @@ class GlobalRisk:
             positions, account.code, demo=account.demo, exchange_code=self.cfg.exchange_code
         )
         active_names = {str(strategy.get("pair") or "") for strategy in active}
-        extra = tuple(symbol for symbol in extra_symbols if symbol and symbol not in active_names)
+        extra = tuple(
+            (symbol, amount)
+            for symbol, amount in extra_commitments
+            if symbol and symbol not in active_names and amount >= 0
+        )
         if len(active) + len(extra) > self.cfg.max_positions:
             raise IntegrationError("Active position count already exceeds configured limit")
         assert_balances_explained(account, active, prices)
@@ -273,8 +276,7 @@ class GlobalRisk:
             signals,
             equity=equity,
             now=moment,
-            extra_symbols=extra,
-            extra_committed=extra_committed,
+            extra_commitments=extra,
         )
         return RiskDecision(orders, True, "ok", equity, True)
 
@@ -286,8 +288,7 @@ class GlobalRisk:
         *,
         equity: Decimal,
         now: datetime | None = None,
-        extra_symbols: tuple[str, ...] = (),
-        extra_committed: Decimal = Decimal("0"),
+        extra_commitments: tuple[tuple[str, Decimal], ...] = (),
     ) -> list[PlannedOrder]:
         moment = now or datetime.now(timezone.utc)
         active = managed_strategies(
@@ -307,20 +308,20 @@ class GlobalRisk:
             if account.demo
             else sum((unfilled_quote(strategy, self.cfg.fee_rate) for strategy in active), Decimal("0"))
         )
-        committed += extra_committed
-        locked += extra_committed
+        extra_total = sum((amount for _symbol, amount in extra_commitments), Decimal("0"))
+        committed += extra_total
+        locked += extra_total
         group_committed: dict[str, Decimal] = {}
         for strategy, pair in zip(active, active_pairs, strict=True):
             group = self.cfg.group_for(pair)
             group_committed[group] = group_committed.get(group, Decimal("0")) + reserved_quote(
                 strategy, self.cfg.fee_rate
             )
-        share = extra_committed / Decimal(len(extra_symbols)) if extra_symbols else Decimal("0")
-        for symbol in extra_symbols:
+        for symbol, amount in extra_commitments:
             if symbol not in active_pairs:
                 active_pairs.append(symbol)
             group = self.cfg.group_for(symbol)
-            group_committed[group] = group_committed.get(group, Decimal("0")) + share
+            group_committed[group] = group_committed.get(group, Decimal("0")) + amount
         factor = dca_ladder_factor(self.cfg.dca_orders, self.cfg.dca_multiplier)
         gross = factor * (Decimal("1") + self.cfg.fee_rate + self.cfg.slippage_rate)
         proposals = []

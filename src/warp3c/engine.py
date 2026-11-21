@@ -14,6 +14,7 @@ from .bots import (
     build_dca_bot_payload,
     build_grid_payload,
     build_strategy_dca_payload,
+    execution_fractions,
 )
 from .config import Settings
 from .levels import derive_levels
@@ -196,7 +197,10 @@ class Engine:
         deduped: list[Signal] = []
         seen: set[str] = set()
         notes: list[tuple[str, str, str, str, str]] = []
-        self.last_opportunities = []
+        replace_cards = submit or bool(signals)
+        if replace_cards:
+            self.last_opportunities = []
+        template = self._template()
         stamp = now.astimezone(timezone.utc).isoformat()
         for signal in signals:
             if signal.symbol in seen:
@@ -205,13 +209,14 @@ class Engine:
             seen.add(signal.symbol)
             enriched = replace(signal, evidence=self.evidence.get(signal.symbol))
             candles = getattr(self.market, "last_candles", {}).get(signal.symbol)
-            gated, card = qualify(enriched, enriched.evidence, candles, self.cfg)
+            gated, card = qualify(enriched, enriched.evidence, candles, self.cfg, template)
             self.last_opportunities.append(card)
             deduped.append(gated)
             notes.append((stamp, signal.symbol, "research", gated.action, "accepted"))
             if gated.action != signal.action:
                 notes.append((stamp, signal.symbol, "backtest", card.get("backtest_reason", ""), "rejected"))
-        self.last_opportunities.sort(key=lambda card: Decimal(card.get("blended") or "0"), reverse=True)
+        if replace_cards:
+            self.last_opportunities.sort(key=lambda card: Decimal(card.get("blended") or "0"), reverse=True)
         for symbol, item in self.evidence.items():
             notes.append((stamp, symbol, "market", item.reason, "passed" if item.passed else "rejected"))
         self._mark_fresh(now)
@@ -235,7 +240,6 @@ class Engine:
             log_event("entries_paused", mode=self.cfg.mode, reason=self.status.reason)
             return 0
 
-        extra_symbols, extra_committed = self._untracked(positions)
         decision = self.guard.assess(
             account,
             positions,
@@ -244,8 +248,7 @@ class Engine:
             marks=self.journal.equity_marks(),
             now=now,
             evidence=self.evidence,
-            extra_symbols=extra_symbols,
-            extra_committed=extra_committed,
+            extra_commitments=self._untracked(positions),
         )
         self.last_decision = decision
         if decision.equity is not None:
@@ -336,7 +339,13 @@ class Engine:
 
     def _build(self, plan, client_id: str, template: BotTemplate) -> tuple[dict, dict]:
         if template.kind == "grid":
-            levels = derive_levels(self.evidence.get(plan.symbol), self.cfg)
+            stop_fraction, take_fraction = execution_fractions(self.cfg, template)
+            levels = derive_levels(
+                self.evidence.get(plan.symbol),
+                self.cfg,
+                stop_fraction=stop_fraction,
+                take_fraction=take_fraction,
+            )
             if levels is None:
                 raise IntegrationError("Grid levels unavailable", uncertain=False)
             request, total = build_grid_payload(self.cfg, plan, levels, client_id, template)
@@ -360,23 +369,21 @@ class Engine:
             return self.broker.create_dca_bot(request)
         return self.broker.create_strategy(request)
 
-    def _untracked(self, positions) -> tuple[tuple[str, ...], Decimal]:
+    def _untracked(self, positions) -> tuple[tuple[str, Decimal], ...]:
         live = {
             str(row.get("clientId"))
             for row in positions
             if isinstance(row, dict) and row.get("clientId")
         }
-        symbols: list[str] = []
-        committed = Decimal("0")
+        rows: list[tuple[str, Decimal]] = []
         for row in self.journal.confirmed_submissions():
             if row["client_id"] in live:
                 continue
             payload = row["payload"]
             if payload.get("product") not in {"grid_bot", "dca_bot"}:
                 continue
-            symbols.append(str(row["symbol"]))
-            committed += Decimal(str(payload.get("commitment") or "0"))
-        return tuple(symbols), committed
+            rows.append((str(row["symbol"]), Decimal(str(payload.get("commitment") or "0"))))
+        return tuple(rows)
 
     def _load_account(self):
         if self.cfg.api_key and self.cfg.api_secret and self.cfg.profile_code:

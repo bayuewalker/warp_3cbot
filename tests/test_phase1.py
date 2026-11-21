@@ -2,31 +2,36 @@
 
 import json
 import os
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 
 import httpx
-from test_core import evidence
+from test_core import evidence, sig
 
 from warp3c.auth import note_login_success
 from warp3c.backtest import run_backtest
 from warp3c.bots import (
+    PRESETS,
     BotTemplate,
     allocate_client_id,
     build_dca_bot_payload,
     build_grid_payload,
     build_strategy_dca_payload,
     client_id_for,
+    execution_fractions,
 )
-from warp3c.config import Settings
+from warp3c.config import Settings, parse_groups
 from warp3c.engine import Engine
+from warp3c.httpapi import web_root
 from warp3c.levels import derive_levels
 from warp3c.llm import LlmAnalyst, strip_price_fields
-from warp3c.models import PlannedOrder
+from warp3c.models import Account, PlannedOrder
 from warp3c.operator import publish
-from warp3c.qualify import blend_confidence
-from warp3c.risk import make_trade_payload
+from warp3c.qualify import blend_confidence, qualify
+from warp3c.risk import GlobalRisk, make_trade_payload
 from warp3c.screener import (
     Screener,
     ScreenerFilters,
@@ -150,6 +155,41 @@ class RiskGateTests(unittest.TestCase):
         self.assertGreater(levels.take, levels.entry)
         self.assertLess(blend_confidence(Decimal("0.9"), None), Decimal("0.9"))
         self.assertEqual(blend_confidence(Decimal("0.9"), item), Decimal("0.9"))
+        self.assertEqual(levels.stop_fraction, Settings().stop_loss)
+        payload = make_trade_payload(Settings(profile_code="p123"), PlannedOrder("BTCUSDT", Decimal("20"), Decimal("120"), Decimal("0.9")), "warp3c-" + "ab" * 16)
+        self.assertEqual(payload["stopLoss"], levels.stop_fraction)
+        aggressive = BotTemplate("dca", "strategy", "aggressive")
+        _gated, card = qualify(sig(), item, None, Settings(), aggressive)
+        self.assertEqual(Decimal(card["stop_fraction"]), execution_fractions(Settings(), aggressive)[0])
+        self.assertEqual(Decimal(card["stop_fraction"]), min(PRESETS["aggressive"].stop_loss, Settings().stop_loss))
+
+    def test_each_untracked_bot_counts_in_its_own_group(self):
+        cfg = Settings(
+            correlation=parse_groups("majors:BTCUSDT|ETHUSDT,alts:SOLUSDT"),
+            max_group=Decimal("0.25"),
+        )
+        account = Account("p123", True, Decimal("1000"), Decimal("0"), Decimal("1000"))
+        plans = GlobalRisk(cfg).plan(
+            account,
+            [],
+            [sig("ETHUSDT")],
+            equity=Decimal("1000"),
+            extra_commitments=(("BTCUSDT", Decimal("150")), ("SOLUSDT", Decimal("60"))),
+        )
+        self.assertEqual(len(plans), 1)
+        self.assertLessEqual(plans[0].full_commitment, Decimal("100"))
+
+    def test_monitor_keeps_the_last_research_cards(self):
+        from test_failures import ExplodingBroker, Markets, Research, paper
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = paper(tmp)
+            journal = OrderJournal(cfg.db_path)
+            engine = Engine(cfg, ExplodingBroker(), Research(), journal, Markets())
+            engine.last_opportunities = [{"symbol": "BTCUSDT", "blended": "0.9"}]
+            engine.monitor()
+            self.assertEqual(engine.last_opportunities[0]["symbol"], "BTCUSDT")
+            journal.close()
 
     def test_failed_backtest_blocks_a_paper_entry(self):
         from test_failures import ExplodingBroker, Markets, Research, paper
@@ -365,6 +405,23 @@ class LlmTests(unittest.TestCase):
             analyst.budget.calls = 0
             analyst.research(("BTCUSDT",), {"BTCUSDT": item}, 30)
         analyst.close()
+
+
+class DashboardPathTests(unittest.TestCase):
+    def test_explicit_asset_directory_wins(self):
+        previous = os.environ.get("WARP_WEB_DIST")
+        with tempfile.TemporaryDirectory() as tmp:
+            dist = Path(tmp) / "dist"
+            dist.mkdir()
+            (dist / "index.html").write_text("<!doctype html><meta name=viewport>", encoding="utf-8")
+            os.environ["WARP_WEB_DIST"] = str(dist)
+            try:
+                self.assertEqual(web_root(), dist)
+            finally:
+                if previous is None:
+                    os.environ.pop("WARP_WEB_DIST", None)
+                else:
+                    os.environ["WARP_WEB_DIST"] = previous
 
 
 class _Quiet:

@@ -10,6 +10,7 @@ from decimal import Decimal
 from .levels import TradeLevels
 from .market import quantize_quote
 from .models import PlannedOrder
+from .regime import profile_for
 from .risk import dca_ladder_factor, make_trade_payload
 
 
@@ -92,6 +93,15 @@ class BotTemplate:
         elif product not in {"strategy", "dca_bot"}:
             raise ValueError("Unknown DCA product")
         return cls(kind, product, preset)
+
+
+def execution_fractions(cfg, template: BotTemplate) -> tuple[Decimal, Decimal]:
+    """Stop and target fractions that this template actually submits."""
+    if template.preset == "moderate" and template.kind == "dca" and template.product == "strategy":
+        profile = profile_for("trend_up", cfg)
+        return profile.stop_loss, profile.take_profit
+    preset = PRESETS[template.preset]
+    return min(preset.stop_loss, cfg.stop_loss), min(preset.take_profit, cfg.take_profit)
 
 
 def client_id_for(symbol: str, kind: str, preset: str, day: str, attempt: int) -> str:

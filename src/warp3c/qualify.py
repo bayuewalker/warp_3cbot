@@ -6,6 +6,7 @@ from dataclasses import replace
 from decimal import Decimal
 
 from .backtest import run_backtest
+from .bots import BotTemplate, execution_fractions
 from .levels import derive_levels
 from .models import MarketEvidence, Signal
 
@@ -50,18 +51,23 @@ def _why(signal: Signal, evidence: MarketEvidence | None, levels, backtest, *, i
     )
 
 
-def qualify(signal: Signal, evidence: MarketEvidence | None, candles, cfg) -> tuple[Signal, dict]:
-    levels = derive_levels(evidence, cfg)
+def qualify(
+    signal: Signal,
+    evidence: MarketEvidence | None,
+    candles,
+    cfg,
+    template: BotTemplate | None = None,
+) -> tuple[Signal, dict]:
+    chosen = template or BotTemplate()
+    stop_fraction, take_fraction = execution_fractions(cfg, chosen)
+    levels = derive_levels(evidence, cfg, stop_fraction=stop_fraction, take_fraction=take_fraction)
     blended = blend_confidence(signal.confidence, evidence)
-    if cfg.require_backtest or candles:
-        check = run_backtest(
-            candles,
-            levels.stop_fraction if levels else cfg.stop_loss,
-            levels.take_fraction if levels else cfg.take_profit,
-            min_trades=cfg.backtest_min_trades,
-        )
-    else:
-        check = run_backtest(None, cfg.stop_loss, cfg.take_profit, min_trades=cfg.backtest_min_trades)
+    check = run_backtest(
+        candles if (cfg.require_backtest or candles) else None,
+        stop_fraction,
+        take_fraction,
+        min_trades=cfg.backtest_min_trades,
+    )
     updated = signal
     if cfg.blend_confidence and blended != signal.confidence:
         updated = replace(updated, confidence=blended)

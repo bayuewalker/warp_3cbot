@@ -32,13 +32,20 @@ def _price(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
 
 
-def derive_levels(evidence: MarketEvidence | None, cfg) -> TradeLevels | None:
-    """Long spot levels. The stop is at least 1% and at most the configured cap."""
+def derive_levels(
+    evidence: MarketEvidence | None,
+    cfg,
+    *,
+    stop_fraction: Decimal | None = None,
+    take_fraction: Decimal | None = None,
+) -> TradeLevels | None:
+    """Long spot levels from the fractions the selected template will submit."""
     if evidence is None or evidence.last_price <= 0:
         return None
-    volatility = evidence.volatility if evidence.volatility > 0 else Decimal("0.01")
-    stop_fraction = min(cfg.stop_loss, max(volatility * Decimal("2"), Decimal("0.01")))
-    take_fraction = cfg.take_profit
+    if stop_fraction is None:
+        stop_fraction = cfg.stop_loss
+    if take_fraction is None:
+        take_fraction = cfg.take_profit
     if stop_fraction <= 0 or take_fraction <= 0 or stop_fraction >= 1:
         return None
     entry = evidence.last_price
