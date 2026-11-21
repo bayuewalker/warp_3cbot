@@ -150,7 +150,13 @@ class SafeVibePipelineTests(unittest.TestCase):
         }
         self.assertEqual(classify(candidate("USDCUSDT"), **opts), "excluded_spot_instrument")
         self.assertEqual(classify(candidate("BTCUPUSDT"), **opts), "excluded_spot_instrument")
+        self.assertEqual(classify(candidate("JUPUSDT"), **opts), "eligible")
         self.assertEqual(classify(candidate("BTCUSDT"), **opts), "eligible")
+
+    def test_legacy_scanner_config_can_be_omitted(self):
+        self.assertEqual(Settings().screener_url, "")
+        with self.assertRaises(ValueError):
+            Settings(screener_url="http://scanner.tradingview.com")
 
 
 if __name__ == "__main__":
