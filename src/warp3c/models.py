@@ -95,7 +95,6 @@ class Account:
     exchange_name: str = ""
     market: str = "spot"
     quote_asset: str = "USDT"
-    margin_mode: str = ""
     status: str = "active"
 
     def holdings(self) -> dict[str, AssetBalance]:

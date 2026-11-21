@@ -14,8 +14,7 @@ function reasonLabel(reason: string, lang: Lang): string {
     paper_requires_demo: "accountHelp",
     live_ack_required: "accountHelp",
     observe_refuses_real: "accountHelp",
-    futures_requires_isolated: "leverageHelp",
-    margin_unconfirmed: "marginNote",
+    spot_only: "notSpot",
     quote_not_usdt: "accountHelp",
   };
   const key = known[reason];
@@ -81,9 +80,8 @@ export function AccountsPanel({ lang }: { lang: Lang }) {
             {t(lang, "balance")} {row.total} {row.quote}
           </p>
           <p className="mt-1 text-xs text-zinc-500">
-            {row.market === "futures" ? t(lang, "futures") : t(lang, "spot")} · {row.exchange_code} · {row.margin_mode}
+            {row.market === "spot" ? t(lang, "spot") : t(lang, "notSpot")} · {row.exchange_code}
           </p>
-          {row.reason === "margin_unconfirmed" ? <p className="mt-2 text-xs text-amber-200">{t(lang, "marginNote")}</p> : null}
           {!row.selectable ? <p className="mt-2 text-xs text-zinc-400">{reasonLabel(row.reason, lang)}</p> : null}
           <Button
             className="mt-3 w-full"

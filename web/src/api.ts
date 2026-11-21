@@ -94,7 +94,6 @@ export type BrokerAccount = {
   free: string;
   used: string;
   total: string;
-  margin_mode: string;
   selectable: boolean;
   reason: string;
 };

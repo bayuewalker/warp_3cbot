@@ -2,6 +2,8 @@
 
 These settings sit on top of the Grokbot Dynamic Spot DCA Tradebook v1.0. The tradebook values stay the defaults unless this page names a different one. Nothing here authorizes live trading.
 
+WARP has no futures or leverage path. A profile whose exchange is not spot, and a bot preset that asks for another market or for leverage, is rejected. The reason is `spot_only` or "WARP trades Binance spot only".
+
 ## 1. Strategy capital sleeve
 
 `E` is not the whole exchange account. Other bots (VORTEQ, AEGIS, and any bot whose name does not start with `WARP-`) keep their committed funds and unfilled safety orders.

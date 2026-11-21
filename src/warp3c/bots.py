@@ -74,7 +74,6 @@ class BotTemplate:
     product: str = "strategy"
     preset: str = "moderate"
     market: str = "spot"
-    leverage: int = 1
     account_code: str = ""
     stop_enabled: bool = True
     take_profit_enabled: bool = True
@@ -113,7 +112,7 @@ class BotTemplate:
         market = str(raw.get("market", "spot"))
         if kind not in {"dca", "grid"} or preset not in PRESETS:
             raise ValueError("Unknown bot kind or preset")
-        if market != "spot":
+        if market != "spot" or "leverage" in raw:
             raise ValueError("WARP trades Binance spot only")
         from .capital import parse_min_score, parse_weights
 
@@ -131,7 +130,6 @@ class BotTemplate:
             product,
             preset,
             market,
-            1,
             account_code,
             raw.get("stop_enabled", True) is not False,
             raw.get("take_profit_enabled", True) is not False,

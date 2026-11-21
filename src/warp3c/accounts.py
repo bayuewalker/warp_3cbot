@@ -15,7 +15,6 @@ from .models import Account, AssetBalance, positive
 from .threecommas import IntegrationError
 
 LIVE_ACK = "I_UNDERSTAND_LIVE_ORDERS"
-HARD_MAX_LEVERAGE = 3
 OPEN_BOT = {"pending", "unknown", "confirmed", "active", "paused"}
 
 
@@ -32,7 +31,6 @@ class BrokerAccount:
     free: Decimal
     used: Decimal
     total: Decimal
-    margin_mode: str
 
     def to_public(self, *, selectable: bool, reason: str) -> dict:
         return {
@@ -48,7 +46,6 @@ class BrokerAccount:
             "free": format(self.free, "f"),
             "used": format(self.used, "f"),
             "total": format(self.total, "f"),
-            "margin_mode": self.margin_mode or "unconfirmed",
             "selectable": selectable,
             "reason": reason,
         }
@@ -74,7 +71,6 @@ class BrokerAccount:
             exchange_name=self.exchange_name,
             market=self.market,
             quote_asset=self.quote,
-            margin_mode=self.margin_mode,
             status=self.status,
         )
 
@@ -104,12 +100,6 @@ def parse_profile(row: dict) -> BrokerAccount:
         raise IntegrationError("Account exchange code missing", uncertain=True)
     market = classify_market(exchange_code, exchange_name)
     status = str(row.get("status") or "unknown")
-    margin = row.get("marginMode")
-    if margin is None and isinstance(row.get("profile"), dict):
-        margin = row["profile"].get("marginMode")
-    margin_mode = str(margin or "")
-    if margin_mode not in {"", "isolated", "cross"}:
-        raise IntegrationError("Account margin mode is not isolated or cross", uncertain=True)
     quote, free, used, total = _quote_balance(row.get("balance"))
     name = str(row.get("name") or code)
     return BrokerAccount(
@@ -124,7 +114,6 @@ def parse_profile(row: dict) -> BrokerAccount:
         free,
         used,
         total,
-        margin_mode,
     )
 
 
@@ -200,18 +189,6 @@ def execution_allowed(mode: str, demo: bool, live_ack: str) -> tuple[bool, str]:
     return False, "mode"
 
 
-def futures_entry_allowed(account: Account, mode: str) -> tuple[bool, str]:
-    if account.market != "futures":
-        return True, "ok"
-    if account.margin_mode == "cross":
-        return False, "futures_requires_isolated"
-    if mode == "live" and account.margin_mode != "isolated":
-        return False, "futures_requires_isolated"
-    if account.margin_mode == "":
-        return True, "margin_unconfirmed"
-    return True, "ok"
-
-
 @dataclass(frozen=True)
 class Budget:
     cap: Decimal
@@ -261,15 +238,6 @@ def budget_decision(budget: Budget, next_commitment: Decimal) -> tuple[bool, str
     if next_commitment > budget.remaining:
         return False, "budget"
     return True, "ok"
-
-
-def clamp_leverage(value: object, cap: int) -> int:
-    limit = min(int(cap), HARD_MAX_LEVERAGE)
-    if limit < 1:
-        raise ValueError("Invalid leverage cap")
-    if type(value) is not int or not 1 <= value <= limit:
-        raise ValueError("Leverage is outside the hard cap")
-    return value
 
 
 def parse_budget_override(raw: str | None, code: str) -> dict | None:

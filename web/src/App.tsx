@@ -446,11 +446,9 @@ function Bots({ lang }: { lang: Lang }) {
       weights?: { trend: number; reversal: number; liquidity: number; structure: number; event: number };
     };
     preview: Preview;
-    max_leverage?: number;
   }>("/api/bots");
   const [kind, setKind] = useState("dca");
   const [preset, setPreset] = useState("moderate");
-  const [market, setMarket] = useState("spot");
   const [stopOn, setStopOn] = useState(true);
   const [takeOn, setTakeOn] = useState(true);
   const [trailingOn, setTrailingOn] = useState(false);
@@ -464,7 +462,6 @@ function Bots({ lang }: { lang: Lang }) {
     if (!loaded.data) return;
     setKind(loaded.data.template.kind);
     setPreset(loaded.data.template.preset);
-    setMarket(loaded.data.template.market || "spot");
     setStopOn(loaded.data.template.stop_enabled !== false);
     setTakeOn(loaded.data.template.take_profit_enabled !== false);
     setTrailingOn(loaded.data.template.trailing_enabled === true);
@@ -489,7 +486,6 @@ function Bots({ lang }: { lang: Lang }) {
   async function refresh(nextKind: string, nextPreset: string) {
     setKind(nextKind);
     setPreset(nextPreset);
-    setMarket("spot");
     const row = await api<{ preview: Preview }>("/api/bots/preview", {
       method: "POST",
       body: JSON.stringify({ ...templateBody(nextKind, nextPreset), kind: nextKind, preset: nextPreset }),

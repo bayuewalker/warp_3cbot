@@ -24,7 +24,7 @@ Verdict for this pass: **observe and paper paths are implemented and unit-tested
 
 ## Still open before any live use
 
-1. `python -m warp3c.papercheck` is implemented and unit-tested with a mock broker. It has not been run against the owner's demo futures account from this environment.
+1. `python -m warp3c.papercheck` is implemented and unit-tested with a mock broker. It refuses real accounts and any account that is not spot. It has not been run against a live demo spot profile from this environment.
 2. The LLM daily cap resets when the process restarts.
 3. Cabinet DCA and grid bots that WARP created can be paused, resumed, closed, or deleted. The Open API strategy product still has no pause route. HALT still blocks new submissions and also blocks resume.
 4. Terminal strategies are invisible to the Open API. Use a dedicated profile.

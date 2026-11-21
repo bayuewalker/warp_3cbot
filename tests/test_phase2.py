@@ -1,4 +1,4 @@
-"""Account selection, futures payloads, ownership, budget, and the forward journal."""
+"""Account selection, spot-only refusal, ownership, and the forward journal."""
 
 import json
 import os
@@ -17,6 +17,7 @@ from warp3c.accounts import (
     budget_decision,
     budget_for,
 )
+from warp3c.bots import BotTemplate
 from warp3c.config import Settings
 from warp3c.engine import Engine
 from warp3c.forward import evaluate_due, is_hit, summary
@@ -60,7 +61,6 @@ def account(**kwargs):
         free=Decimal("10000"),
         used=Decimal("0"),
         total=Decimal("10000"),
-        margin_mode="",
     )
     base.update(kwargs)
     return BrokerAccount(**base)
@@ -89,8 +89,12 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(found["fut1"].quote, "USDT")
         self.assertEqual(found["fut1"].badge if False else found["fut1"].to_public(selectable=True, reason="ok")["badge"], "DEMO")
         self.assertEqual(found["real1"].to_public(selectable=False, reason="paper_requires_demo")["badge"], "REAL")
-        with self.assertRaises(IntegrationError):
+        with self.assertRaises(IntegrationError) as refused_profile:
             api.get_account("fut1", "BINANCE_FUTURES")
+        self.assertIn("spot only", str(refused_profile.exception).lower())
+        with self.assertRaises(IntegrationError) as refused_market:
+            api.get_account("fut1", "BINANCE_FUTURES", market="futures")
+        self.assertIn("spot only", str(refused_market.exception).lower())
         self.assertEqual(account_allowed(found["fut1"], mode="paper", live_ack="")[1], "spot_only")
         api.close()
 
@@ -108,6 +112,10 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(account_allowed(spot, mode="paper", live_ack="")[0], True)
         usdc = account(quote="USDC", market="spot", exchange_code="BINANCE")
         self.assertEqual(account_allowed(usdc, mode="paper", live_ack="")[1], "quote_not_usdt")
+        with self.assertRaises(ValueError):
+            BotTemplate.from_mapping({"market": "futures"})
+        with self.assertRaises(ValueError):
+            BotTemplate.from_mapping({"leverage": 3})
 
     def test_select_refuses_a_real_account_over_http(self):
         os.environ["WARP_OPERATOR_TOKEN"] = "operator-token-16"
@@ -156,7 +164,7 @@ class OwnershipTests(unittest.TestCase):
                 "kind": "dca",
                 "product": product,
                 "account_code": "demo1",
-                "market": "futures",
+                "market": "spot",
                 "symbol": "BTCUSDT",
                 "status": "confirmed",
                 "commitment": "15",

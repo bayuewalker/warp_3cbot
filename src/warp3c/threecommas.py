@@ -243,14 +243,8 @@ class ThreeCommas:
         exchange = profile.get("exchange") or {}
         name = str(exchange.get("name", "")).upper()
         code = str(exchange.get("code") or "")
-        if market == "spot":
-            if code != exchange_code or "SPOT" not in name:
-                raise IntegrationError("3Commas profile is not the expected spot exchange", uncertain=False)
-        elif market == "futures":
-            if code != exchange_code or ("FUTURE" not in name and "FUTURE" not in code):
-                raise IntegrationError("3Commas profile is not the expected futures exchange", uncertain=False)
-        else:
-            raise IntegrationError("Unsupported account market", uncertain=False)
+        if market != "spot" or code != exchange_code or "SPOT" not in name or "FUTURE" in name or "FUTURE" in code:
+            raise IntegrationError("WARP trades Binance spot only", uncertain=False)
         if not isinstance(profile.get("demo"), bool):
             raise IntegrationError("Account demo/live classification absent", uncertain=True)
         assets_raw = (profile.get("balance") or {}).get("assets") if isinstance(profile.get("balance"), dict) else None
@@ -266,8 +260,6 @@ class ThreeCommas:
                 raise IntegrationError("Account balances are inconsistent", uncertain=True)
             assets[str(asset)] = AssetBalance(free, used, total)
         usdt = assets["USDT"]
-        margin = profile.get("marginMode")
-        margin_mode = str(margin or "")
         return Account(
             profile_code,
             profile["demo"],
@@ -278,9 +270,8 @@ class ThreeCommas:
             name=str(profile.get("name") or ""),
             exchange_code=code,
             exchange_name=str(exchange.get("name") or ""),
-            market=market,
+            market="spot",
             quote_asset="USDT",
-            margin_mode=margin_mode,
             status=str(profile.get("status") or ""),
         )
 
