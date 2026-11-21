@@ -13,3 +13,24 @@ export function liveReadDecision(connected: boolean, hasFrame: boolean, poll: bo
   }
   return { startPoll: false, acceptHttp: !hasFrame, applyCachedFrame: hasFrame };
 }
+
+/** A failed HTTP read is visible unless this panel is already showing data. */
+export function surfaceHttpFailure(aborted: boolean, showing: boolean) {
+  return !aborted && !showing;
+}
+
+/**
+ * Hide a failed read only when the panel has data on screen.
+ * A cached stream frame that policy will not apply is not data.
+ */
+export function failureVisible(
+  connected: boolean,
+  hasFrame: boolean,
+  poll: boolean,
+  aborted: boolean,
+  showing: boolean,
+) {
+  const decision = liveReadDecision(connected, hasFrame, poll);
+  const usable = showing || (decision.applyCachedFrame && hasFrame);
+  return surfaceHttpFailure(aborted, usable);
+}
