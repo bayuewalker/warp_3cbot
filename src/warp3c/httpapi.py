@@ -302,8 +302,10 @@ def _refresh_accounts() -> None:
     if broker is None or not getattr(cfg, "api_key", "") or not hasattr(broker, "list_accounts"):
         return
     try:
-        engine.last_accounts = broker.list_accounts()
-    except IntegrationError:
+        engine.apply_account_list(broker.list_accounts())
+    except IntegrationError as exc:
+        engine.apply_account_error(exc)
+        publish(cfg, journal, engine)
         return
     publish(cfg, journal, engine)
 

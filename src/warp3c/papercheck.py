@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+from .accounts import is_complete_account
 from .capital import Policy, sleeve_nav
 from .ownership import NotOwned, apply_action, warp_name
 from .threecommas import IntegrationError
@@ -27,14 +28,20 @@ def _step(name: str, ok: bool, detail: str) -> dict:
 def choose_demo(accounts, *, requested: str | None, target: str | None):
     demos = [
         row for row in accounts
-        if row.demo and row.status == "active" and row.quote == "USDT" and row.market == "spot"
+        if is_complete_account(row)
+        and row.demo
+        and row.status == "active"
+        and row.quote == "USDT"
+        and row.market == "spot"
     ]
     chosen_code = requested or target
     if chosen_code:
-        matches = [row for row in accounts if row.code == chosen_code]
+        matches = [row for row in accounts if getattr(row, "code", None) == chosen_code]
         if len(matches) != 1:
             return None, "account_not_found"
         account = matches[0]
+        if not is_complete_account(account):
+            return None, "account_not_usable"
         if account.market != "spot":
             return None, "no_demo_spot_account"
         if not account.demo:

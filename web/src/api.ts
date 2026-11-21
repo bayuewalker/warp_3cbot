@@ -129,10 +129,11 @@ export type BrokerAccount = {
   exchange_code: string;
   exchange_name: string;
   market: string;
-  quote: string;
-  free: string;
-  used: string;
-  total: string;
+  quote: string | null;
+  free: string | null;
+  used: string | null;
+  total: string | null;
+  error?: string | null;
   assets?: {
     asset: string;
     total: string;

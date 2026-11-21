@@ -870,18 +870,24 @@ class Engine:
             raise IntegrationError("3Commas returned no confirmed bot id", uncertain=True)
         return {"code": str(matches[0]["code"]), "name": name}
 
+    def apply_account_list(self, listed) -> None:
+        self.last_accounts = list(listed)
+        self.accounts_at = datetime.now(timezone.utc).isoformat()
+        self.accounts_error = getattr(listed, "error", None)
+
+    def apply_account_error(self, exc: IntegrationError) -> None:
+        self.accounts_error = str(exc)[:200]
+        self.accounts_at = datetime.now(timezone.utc).isoformat()
+
     def _remember_accounts(self) -> None:
         if not self.cfg.api_key or not self.cfg.api_secret or not hasattr(self.broker, "list_accounts"):
             self.accounts_error = "3Commas credentials are not configured"
             self.accounts_at = datetime.now(timezone.utc).isoformat()
             return
         try:
-            self.last_accounts = self.broker.list_accounts()
-            self.accounts_at = datetime.now(timezone.utc).isoformat()
-            self.accounts_error = None
+            self.apply_account_list(self.broker.list_accounts())
         except IntegrationError as exc:
-            self.accounts_error = str(exc)[:200]
-            self.accounts_at = datetime.now(timezone.utc).isoformat()
+            self.apply_account_error(exc)
 
     def refresh_readonly(self) -> None:
         """GET account profiles and live strategies. No create, update, or delete."""
