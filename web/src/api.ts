@@ -30,6 +30,12 @@ export type Status = {
   equity: string | null;
   pnl_today: string | null;
   universe: string[];
+  pipeline?: {
+    screening: { state: string; source: string; count: number };
+    analysis: { state: string; count: number; mode: string };
+    risk: { state: string; reason: string };
+    opportunities: { state: string; count: number };
+  };
 };
 
 export type CardRow = {
@@ -46,6 +52,9 @@ export type CardRow = {
   regime: string | null;
   rsi: string | null;
   thesis: string;
+  as_of?: string;
+  source?: string;
+  fresh?: boolean;
   backtest_passed: boolean;
   backtest_reason: string;
   score?: { trend: number; reversal: number; liquidity: number; structure: number; event: number; total: number };
