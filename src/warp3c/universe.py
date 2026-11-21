@@ -5,6 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
+# Conservative exclusions for DCA discovery. These assets have quote-like or
+# leveraged-token behavior inconsistent with the long-only spot playbook.
+_STABLE_BASES = frozenset({
+    "USDC", "FDUSD", "TUSD", "USDP", "DAI", "USD1", "BUSD",
+    "USDE", "USDS", "RLUSD", "PYUSD", "EUR", "AEUR", "EURI",
+})
+_LEVERAGED_SUFFIXES = ("UP", "DOWN", "BULL", "BEAR")
+
 
 @dataclass(frozen=True)
 class Candidate:
@@ -26,6 +34,9 @@ def classify(
 ) -> str:
     if not candidate.symbol.isalnum() or not candidate.symbol.endswith("USDT"):
         return "not_usdt_spot"
+    base = candidate.symbol[:-4]
+    if base in _STABLE_BASES or base.endswith(_LEVERAGED_SUFFIXES):
+        return "excluded_spot_instrument"
     if not candidate.tradable:
         return "market_not_trading"
     if candidate.symbol in deny:
