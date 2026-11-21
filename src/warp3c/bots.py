@@ -73,9 +73,32 @@ class BotTemplate:
     kind: str = "dca"
     product: str = "strategy"
     preset: str = "moderate"
+    market: str = "spot"
+    account_code: str = ""
+    stop_enabled: bool = True
+    take_profit_enabled: bool = True
+    trailing_enabled: bool = False
+    min_score: int = 80
+    weights: tuple[int, int, int, int, int] = (25, 25, 20, 20, 10)
+
+    def weight_map(self) -> dict[str, int]:
+        names = ("trend", "reversal", "liquidity", "structure", "event")
+        return dict(zip(names, self.weights, strict=True))
 
     def to_dict(self) -> dict:
-        return {"kind": self.kind, "product": self.product, "preset": self.preset}
+        return {
+            "kind": self.kind,
+            "product": self.product,
+            "preset": self.preset,
+            "market": self.market,
+            "account_code": self.account_code,
+            "stop_enabled": self.stop_enabled,
+            "take_profit_enabled": self.take_profit_enabled,
+            "trailing_enabled": self.trailing_enabled,
+            "min_score": self.min_score,
+            "weights": self.weight_map(),
+            "score_warning": self.min_score < 80,
+        }
 
     @classmethod
     def from_mapping(cls, raw: dict | None) -> BotTemplate:
@@ -86,13 +109,34 @@ class BotTemplate:
         kind = str(raw.get("kind", "dca"))
         preset = str(raw.get("preset", "moderate"))
         product = str(raw.get("product", "strategy" if kind == "dca" else "grid_bot"))
+        market = str(raw.get("market", "spot"))
         if kind not in {"dca", "grid"} or preset not in PRESETS:
             raise ValueError("Unknown bot kind or preset")
+        if market != "spot" or "leverage" in raw:
+            raise ValueError("WARP trades Binance spot only")
+        from .capital import parse_min_score, parse_weights
+
+        account_code = str(raw.get("account_code") or "")
         if kind == "grid":
             product = "grid_bot"
         elif product not in {"strategy", "dca_bot"}:
             raise ValueError("Unknown DCA product")
-        return cls(kind, product, preset)
+        for flag in ("stop_enabled", "take_profit_enabled", "trailing_enabled"):
+            if flag in raw and type(raw[flag]) is not bool:
+                raise ValueError("Exit toggles must be true or false")
+        weights = parse_weights(raw.get("weights"))
+        return cls(
+            kind,
+            product,
+            preset,
+            market,
+            account_code,
+            raw.get("stop_enabled", True) is not False,
+            raw.get("take_profit_enabled", True) is not False,
+            raw.get("trailing_enabled", False) is True,
+            parse_min_score(raw.get("min_score"), 80),
+            tuple(weights[name] for name in ("trend", "reversal", "liquidity", "structure", "event")),
+        )
 
 
 def execution_fractions(cfg, template: BotTemplate) -> tuple[Decimal, Decimal]:
@@ -156,7 +200,16 @@ def build_strategy_dca_payload(cfg, plan: PlannedOrder, client_id: str, template
     return payload
 
 
-def build_dca_bot_payload(cfg, plan: PlannedOrder, client_id: str, template: BotTemplate) -> dict:
+def build_dca_bot_payload(
+    cfg,
+    plan: PlannedOrder,
+    client_id: str,
+    template: BotTemplate,
+    *,
+    name: str | None = None,
+    profile_code: str | None = None,
+    exchange_code: str | None = None,
+) -> dict:
     """Cabinet DCA bot. The create response may omit the bot code; the caller must halt then."""
     preset = PRESETS[template.preset]
     orders = min(max(preset.dca_orders, 1), cfg.dca_orders)
@@ -165,10 +218,10 @@ def build_dca_bot_payload(cfg, plan: PlannedOrder, client_id: str, template: Bot
     if base <= 0:
         raise ValueError("DCA base rounds to zero")
     return {
-        "name": f"warp3c-{client_id}",
-        "exchangeCode": cfg.exchange_code,
+        "name": name or f"warp3c-{client_id}",
+        "exchangeCode": exchange_code or cfg.exchange_code,
         "pairsCodes": [plan.symbol],
-        "profilesCodes": [cfg.profile_code],
+        "profilesCodes": [profile_code or cfg.profile_code],
         "dcaTradingType": "long",
         "amountPerTrade": base,
         "amountPerTradeType": "quote",
@@ -191,7 +244,15 @@ def build_dca_bot_payload(cfg, plan: PlannedOrder, client_id: str, template: Bot
 
 
 def build_grid_payload(
-    cfg, plan: PlannedOrder, levels: TradeLevels, client_id: str, template: BotTemplate
+    cfg,
+    plan: PlannedOrder,
+    levels: TradeLevels,
+    client_id: str,
+    template: BotTemplate,
+    *,
+    name: str | None = None,
+    profile_code: str | None = None,
+    exchange_code: str | None = None,
 ) -> tuple[dict, Decimal]:
     """Interval long grid. Stop and target are absolute USD amounts, not model prices."""
     if levels.symbol != plan.symbol:
@@ -219,10 +280,10 @@ def build_grid_payload(
     stop_usd = total * min(preset.stop_loss, cfg.stop_loss)
     take_usd = total * min(preset.take_profit, cfg.take_profit)
     payload = {
-        "name": f"warp3c-{client_id}",
-        "exchangeCode": cfg.exchange_code,
+        "name": name or f"warp3c-{client_id}",
+        "exchangeCode": exchange_code or cfg.exchange_code,
         "pairCode": plan.symbol,
-        "profilesCodes": [cfg.profile_code],
+        "profilesCodes": [profile_code or cfg.profile_code],
         "gridType": "interval",
         "gridMethod": "classic",
         "gridTradingType": "long",

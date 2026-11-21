@@ -90,6 +90,12 @@ class Account:
     total_usdt: Decimal
     assets: dict[str, AssetBalance] = field(default_factory=dict)
     fetched_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    name: str = ""
+    exchange_code: str = ""
+    exchange_name: str = ""
+    market: str = "spot"
+    quote_asset: str = "USDT"
+    status: str = "active"
 
     def holdings(self) -> dict[str, AssetBalance]:
         if self.assets:

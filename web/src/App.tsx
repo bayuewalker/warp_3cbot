@@ -20,16 +20,18 @@ import {
   type Status,
 } from "./api";
 import { Key, Lang, t } from "./i18n";
+import { AccountsPanel, BudgetForm, ForwardPanel, PaperCheck, RulesPage, WarpBotsPanel } from "./desk";
 import { Badge, Button, Card, Field, inputClass } from "./ui";
 
-type Page = "overview" | "signals" | "bots" | "positions" | "screener" | "settings";
+type Page = "overview" | "signals" | "bots" | "positions" | "screener" | "rules" | "settings";
 
-const nav: { id: Key; icon: typeof Activity }[] = [
+const nav: { id: Page; icon: typeof Activity }[] = [
   { id: "overview", icon: LayoutDashboard },
   { id: "signals", icon: Activity },
   { id: "bots", icon: Bot },
   { id: "positions", icon: Wallet },
   { id: "screener", icon: ListFilter },
+  { id: "rules", icon: Shield },
 ];
 
 function useLang(): [Lang, (lang: Lang) => void] {
@@ -194,13 +196,19 @@ function Workspace({
         </Button>
       </div>
       {page === "overview" ? <Overview lang={lang} /> : null}
-      {page === "signals" ? <Signals lang={lang} /> : null}
+      {page === "signals" ? (
+        <div className="space-y-4">
+          <ForwardPanel lang={lang} />
+          <Signals lang={lang} />
+        </div>
+      ) : null}
       {page === "bots" ? <Bots lang={lang} /> : null}
       {page === "positions" ? <Positions lang={lang} /> : null}
       {page === "screener" ? <ScreenerPage lang={lang} /> : null}
+      {page === "rules" ? <RulesPage lang={lang} /> : null}
       {page === "settings" ? <Settings lang={lang} /> : null}
       <nav className="fixed inset-x-0 bottom-0 border-t border-white/10 bg-ink/95 backdrop-blur">
-        <div className="mx-auto grid max-w-3xl grid-cols-5">
+        <div className="mx-auto grid max-w-3xl grid-cols-3">
           {nav.map((item) => {
             const Icon = item.icon;
             const active = page === item.id;
@@ -386,6 +394,15 @@ function Signals({ lang }: { lang: Lang }) {
             <Metric label={t(lang, "stop")} value={card.stop} />
             <Metric label={t(lang, "target")} value={card.take} />
           </div>
+          {card.score ? (
+            <p className="mt-3 text-sm text-zinc-300">
+              {t(lang, "score")} {card.score.total}
+              {card.score_warning ? ` · ${t(lang, "scoreWarning")}` : ""}
+              <span className="mt-1 block text-xs text-zinc-500">
+                {card.score.trend}/{card.score.reversal}/{card.score.liquidity}/{card.score.structure}/{card.score.event}
+              </span>
+            </p>
+          ) : null}
           <p className="mt-3 text-sm text-zinc-300">
             {t(lang, "confidence")} {card.confidence}
             {card.model_action !== card.action ? ` · ${t(lang, "model")} ${card.model_action}` : ""}
@@ -416,9 +433,28 @@ function helpKey(preset: "conservative" | "moderate" | "aggressive"): Key {
 }
 
 function Bots({ lang }: { lang: Lang }) {
-  const loaded = useLoad<{ template: { kind: string; preset: string }; preview: Preview }>("/api/bots");
+  const loaded = useLoad<{
+    template: {
+      kind: string;
+      preset: string;
+      market?: string;
+      account_code?: string;
+      stop_enabled?: boolean;
+      take_profit_enabled?: boolean;
+      trailing_enabled?: boolean;
+      min_score?: number;
+      weights?: { trend: number; reversal: number; liquidity: number; structure: number; event: number };
+    };
+    preview: Preview;
+  }>("/api/bots");
   const [kind, setKind] = useState("dca");
   const [preset, setPreset] = useState("moderate");
+  const [stopOn, setStopOn] = useState(true);
+  const [takeOn, setTakeOn] = useState(true);
+  const [trailingOn, setTrailingOn] = useState(false);
+  const [minScore, setMinScore] = useState(80);
+  const [weights, setWeights] = useState({ trend: 25, reversal: 25, liquidity: 20, structure: 20, event: 10 });
+  const [accountCode, setAccountCode] = useState("");
   const [preview, setPreview] = useState<Preview | null>(null);
   const [note, setNote] = useState("");
   const [ask, setAsk] = useState(false);
@@ -426,14 +462,33 @@ function Bots({ lang }: { lang: Lang }) {
     if (!loaded.data) return;
     setKind(loaded.data.template.kind);
     setPreset(loaded.data.template.preset);
+    setStopOn(loaded.data.template.stop_enabled !== false);
+    setTakeOn(loaded.data.template.take_profit_enabled !== false);
+    setTrailingOn(loaded.data.template.trailing_enabled === true);
+    setMinScore(loaded.data.template.min_score || 80);
+    setWeights(loaded.data.template.weights || { trend: 25, reversal: 25, liquidity: 20, structure: 20, event: 10 });
+    setAccountCode(loaded.data.template.account_code || "");
     setPreview(loaded.data.preview);
   }, [loaded.data]);
+  function templateBody(nextKind = kind, nextPreset = preset) {
+    return {
+      kind: nextKind,
+      preset: nextPreset,
+      market: "spot",
+      stop_enabled: stopOn,
+      take_profit_enabled: takeOn,
+      trailing_enabled: trailingOn,
+      min_score: minScore,
+      weights,
+      account_code: accountCode,
+    };
+  }
   async function refresh(nextKind: string, nextPreset: string) {
     setKind(nextKind);
     setPreset(nextPreset);
     const row = await api<{ preview: Preview }>("/api/bots/preview", {
       method: "POST",
-      body: JSON.stringify({ kind: nextKind, preset: nextPreset }),
+      body: JSON.stringify({ ...templateBody(nextKind, nextPreset), kind: nextKind, preset: nextPreset }),
     });
     setPreview(row.preview);
   }
@@ -442,17 +497,65 @@ function Bots({ lang }: { lang: Lang }) {
       setAsk(true);
       return;
     }
-    await api("/api/bots/template", { method: "POST", body: JSON.stringify({ kind, preset }) });
+    const weightSum = Object.values(weights).reduce((sum, value) => sum + Number(value), 0);
+    if (weightSum !== 100 || minScore < 50 || minScore > 100) {
+      setNote(t(lang, "weightsSum"));
+      return;
+    }
+    await api("/api/bots/template", {
+      method: "POST",
+      body: JSON.stringify(templateBody()),
+    });
     setAsk(false);
     setNote(t(lang, "saved"));
   }
   if (loaded.error) return <Empty lang={lang} text={t(lang, "error")} />;
   if (!preview) return <p className="text-sm text-zinc-400">{t(lang, "loading")}</p>;
+  const weightSum = Object.values(weights).reduce((sum, value) => sum + Number(value), 0);
   return (
     <div className="space-y-4">
+      <AccountsPanel lang={lang} />
+      <BudgetForm lang={lang} code={accountCode} />
       <Card>
         <h2 className="font-semibold">{t(lang, "bots")}</h2>
         <p className="mt-1 text-xs text-zinc-500">{t(lang, "places")}</p>
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          {([
+            ["stop", stopOn, setStopOn, "stopToggle"],
+            ["take", takeOn, setTakeOn, "takeToggle"],
+            ["trail", trailingOn, setTrailingOn, "trailToggle"],
+          ] as const).map(([key, value, setter, label]) => (
+            <button
+              key={key}
+              className={`rounded-xl border p-3 text-left ${value ? "border-emerald-400" : "border-amber-400"}`}
+              onClick={() => setter(!value)}
+              type="button"
+            >
+              <p className="font-medium">{t(lang, label)}</p>
+              <p className="text-xs text-zinc-500">{value ? t(lang, "on") : t(lang, "off")}</p>
+            </button>
+          ))}
+        </div>
+        {!stopOn ? <p className="mt-3"><Badge tone="warn">{t(lang, "noSl")}</Badge></p> : null}
+        {!takeOn && !trailingOn ? <p className="mt-3"><Badge tone="warn">{t(lang, "manualExit")}</Badge></p> : null}
+        <div className="mt-4">
+          <Field label={t(lang, "minScore")} hint="50–100">
+            <input className={inputClass} value={minScore} onChange={(event) => setMinScore(Number(event.target.value))} />
+          </Field>
+          {minScore < 80 ? <p className="mt-2"><Badge tone="warn">{t(lang, "scoreWarning")}</Badge></p> : null}
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          {(Object.keys(weights) as (keyof typeof weights)[]).map((key) => (
+            <Field key={key} label={t(lang, key === "trend" ? "weightTrend" : key === "reversal" ? "weightReversal" : key === "liquidity" ? "weightLiquidity" : key === "structure" ? "weightStructure" : "weightEvent")}>
+              <input
+                className={inputClass}
+                value={weights[key]}
+                onChange={(event) => setWeights({ ...weights, [key]: Number(event.target.value) })}
+              />
+            </Field>
+          ))}
+        </div>
+        <p className={`mt-2 text-xs ${weightSum === 100 ? "text-zinc-500" : "text-amber-200"}`}>{t(lang, "weightsSum")} {weightSum}</p>
         <div className="mt-4 grid grid-cols-2 gap-2">
           {(["dca", "grid"] as const).map((item) => (
             <button
@@ -500,6 +603,7 @@ function Bots({ lang }: { lang: Lang }) {
         {ask ? <p className="mt-3 text-sm text-amber-200">{t(lang, "aggressiveConfirm")}</p> : null}
         {note ? <p className="mt-3 text-sm text-zinc-400">{note}</p> : null}
       </Card>
+      <WarpBotsPanel lang={lang} />
     </div>
   );
 }
@@ -594,6 +698,8 @@ function Settings({ lang }: { lang: Lang }) {
   if (!loaded.data) return <p className="text-sm text-zinc-400">{t(lang, "loading")}</p>;
   const rows = Object.entries(loaded.data);
   return (
+    <div className="space-y-4">
+    <PaperCheck lang={lang} />
     <Card>
       <h2 className="font-semibold">{t(lang, "settings")}</h2>
       <p className="mt-1 text-sm text-zinc-400">{t(lang, "modeHelp")}</p>
@@ -606,5 +712,6 @@ function Settings({ lang }: { lang: Lang }) {
         ))}
       </dl>
     </Card>
+    </div>
   );
 }

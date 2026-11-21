@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .auth import parse_cookies, session_valid
 from .bots import PRESETS, BotTemplate, preview_capital
+from .forward import summary
 from .screener import ScreenerFilters
 
 SNAPSHOT: dict[str, dict] = {}
@@ -77,6 +78,10 @@ ROUTES = (
     "/api/opportunities",
     "/api/screener",
     "/api/bots",
+    "/api/accounts",
+    "/api/forward",
+    "/api/warp-bots",
+    "/api/decisions",
 )
 
 
@@ -113,6 +118,27 @@ def public_config(cfg) -> dict:
         "require_backtest": cfg.require_backtest,
         "blend_confidence": cfg.blend_confidence,
         "password_login": len(os.getenv("WARP_DASHBOARD_PASSWORD", "")) >= 12,
+        "sleeve_usdt": _text(cfg.sleeve_usdt),
+        "sleeve_pct": _text(cfg.sleeve_pct),
+        "allocation_ceiling": _text(cfg.allocation_ceiling),
+        "per_deal_ceiling": _text(cfg.per_deal_ceiling),
+        "max_deals": cfg.max_deals,
+        "deal_stop_risk": _text(cfg.deal_stop_risk),
+        "aggregate_stop_risk": _text(cfg.aggregate_stop_risk),
+        "trade_daily_loss": _text(cfg.trade_daily_loss),
+        "trade_drawdown": _text(cfg.trade_drawdown),
+        "stop_slippage": _text(cfg.stop_slippage),
+        "stress_shock": _text(cfg.stress_shock),
+        "stress_cap": _text(cfg.stress_cap),
+        "corr_min": _text(cfg.corr_min),
+        "max_alts": cfg.max_alts,
+        "min_score": cfg.min_score,
+        "tp_min": _text(cfg.tp_min),
+        "cooldown_stop_hours": cfg.cooldown_stop_hours,
+        "cooldown_tp_hours": cfg.cooldown_tp_hours,
+        "review_days": cfg.review_days,
+        "paper_min_days": cfg.paper_min_days,
+        "paper_min_deals": cfg.paper_min_deals,
     }
 
 
@@ -208,6 +234,17 @@ def publish(cfg, journal, engine) -> None:
         "error": getattr(engine, "screener_error", None),
         "source": getattr(engine, "screener_source", ""),
     }
+    accounts = []
+    for row in getattr(engine, "last_accounts", []) or []:
+        if hasattr(row, "to_public"):
+            allowed, reason = _account_reason(cfg, row)
+            accounts.append(row.to_public(selectable=allowed, reason=reason))
+    selected = _selected(journal)
+    SNAPSHOT["/api/accounts"] = {"accounts": accounts, "selected": selected, "places_orders": False}
+    SNAPSHOT["/api/forward"] = summary(journal)
+    SNAPSHOT["/api/decisions"] = {"decisions": list(getattr(engine, "last_aegis", []) or [])}
+    bots = journal.warp_bots()
+    SNAPSHOT["/api/warp-bots"] = {"bots": bots, "budget": _budget_view(cfg, journal, selected, accounts)}
     SNAPSHOT["/api/bots"] = {
         "template": template.to_dict(),
         "presets": list(PRESETS),
@@ -216,6 +253,40 @@ def publish(cfg, journal, engine) -> None:
     RUNTIME["journal"] = journal
     RUNTIME["cfg"] = cfg
     RUNTIME["engine"] = engine
+
+
+def _selected(journal) -> dict | None:
+    raw = journal.get_setting("target_account")
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _account_reason(cfg, account) -> tuple[bool, str]:
+    from .accounts import account_allowed
+
+    return account_allowed(account, mode=cfg.mode, live_ack=cfg.live_ack)
+
+
+def _budget_view(cfg, journal, selected, accounts) -> dict:
+    return {
+        "sleeve_usdt": _text(cfg.sleeve_usdt),
+        "sleeve_pct": _text(cfg.sleeve_pct),
+        "allocation_ceiling": _text(cfg.allocation_ceiling),
+        "reserve_floor": _text(cfg.min_reserve),
+        "per_deal_ceiling": _text(cfg.per_deal_ceiling),
+        "max_deals": cfg.max_deals,
+        "deal_stop_risk": _text(cfg.deal_stop_risk),
+        "aggregate_stop_risk": _text(cfg.aggregate_stop_risk),
+        "daily_loss_halt": _text(cfg.trade_daily_loss),
+        "drawdown_halt": _text(cfg.trade_drawdown),
+        "min_score": cfg.min_score,
+        "review_days": cfg.review_days,
+    }
 
 
 def bearer_authorized(header: str | None) -> bool:
