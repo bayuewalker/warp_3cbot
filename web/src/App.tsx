@@ -653,7 +653,11 @@ function ScreenerPage({ lang }: { lang: Lang }) {
   async function save(event: FormEvent) {
     event.preventDefault();
     if (!form) return;
-    await api("/api/screener/filters", { method: "POST", body: JSON.stringify(form) });
+    // Old TradingView-backed configurations may retain unsupported RSI/rec
+    // constraints. Normalize to what the Binance ticker API actually provides.
+    const supported = { ...form, rsi_min: "0", rsi_max: "100", min_recommendation: "-1" };
+    await api("/api/screener/filters", { method: "POST", body: JSON.stringify(supported) });
+    setForm(supported);
     setNote(t(lang, "saved"));
   }
   return (
