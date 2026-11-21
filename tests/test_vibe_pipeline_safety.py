@@ -38,8 +38,12 @@ class SafeVibePipelineTests(unittest.TestCase):
 
     def test_unsupported_legacy_tradingview_filters_fail_closed(self):
         values = ScreenerFilters.from_mapping({"rsi_min": "50", "rsi_max": "65"})
-        with self.assertRaisesRegex(ScreenerError, "Unsupported Binance"):
-            Screener("", "https://data-api.binance.vision").scan(values)
+        screener = Screener("", "https://data-api.binance.vision")
+        try:
+            with self.assertRaisesRegex(ScreenerError, "Unsupported Binance"):
+                screener.scan(values)
+        finally:
+            screener.close()
         normalized = ScreenerFilters.from_mapping({"min_quote_volume": "2500000", "limit": 5})
         normalized.require_binance_filters()
 
@@ -83,6 +87,7 @@ class SafeVibePipelineTests(unittest.TestCase):
                     def __init__(self):
                         self.can_quote = False
                         self.queries = 0
+
                     def last_price(self, symbol):
                         self.queries += 1
                         self.assert_symbol = symbol
@@ -154,7 +159,8 @@ class SafeVibePipelineTests(unittest.TestCase):
             screener.close()
 
     def test_auto_universe_excludes_stables_and_leveraged(self):
-        candidate = lambda symbol: Candidate(
+        def candidate(symbol):
+            return Candidate(
             symbol=symbol,
             quote_volume=Decimal("25000000"),
             spread=Decimal("0.001"),
