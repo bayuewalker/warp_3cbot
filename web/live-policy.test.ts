@@ -21,3 +21,10 @@ test("the first read still uses HTTP before any frame arrives", () => {
   assert.equal(decision.acceptHttp, true);
   assert.equal(decision.applyCachedFrame, false);
 });
+
+test("an editable form ignores streamed snapshots and still accepts HTTP", () => {
+  const decision = liveReadDecision(true, true, false);
+  assert.equal(decision.startPoll, false);
+  assert.equal(decision.acceptHttp, true);
+  assert.equal(decision.applyCachedFrame, false);
+});

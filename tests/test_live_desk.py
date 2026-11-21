@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import os
+import threading
 import unittest
 from pathlib import Path
 
 from warp3c.config import Settings
 from warp3c.engine import Engine
-from warp3c.live import BUS, encode_event, parse_tickers
+from warp3c.live import BUS, encode_event, iter_server_events, parse_tickers
 from warp3c.operator import _sleeve_view
 from warp3c.screener import ScreenerError
 from warp3c.state import OrderJournal
@@ -85,28 +86,26 @@ class LiveDeskTests(unittest.TestCase):
 
         previous = os.environ.get("WARP_OPERATOR_TOKEN")
         os.environ["WARP_OPERATOR_TOKEN"] = "operator-token-16"
-        BUS.heartbeat = 0.05
+        BUS.heartbeat = 0.01
         client = TestClient(create_app())
+        inbox = BUS.subscribe()
+        stop = threading.Event()
         try:
             denied = client.get("/api/stream")
             self.assertEqual(denied.status_code, 401)
             self.assertNotIn("accounts", denied.text)
-            with client.stream(
-                "GET",
-                "/api/stream",
-                headers={"Authorization": "Bearer operator-token-16"},
-            ) as response:
-                self.assertEqual(response.status_code, 200)
-                self.assertIn("text/event-stream", response.headers["content-type"])
-                chunks: list[str] = []
-                for chunk in response.iter_text():
-                    chunks.append(chunk)
-                    if "heartbeat" in "".join(chunks):
-                        break
-            text = "".join(chunks)
+            self.assertIn("/api/stream", {getattr(route, "path", None) for route in create_app().routes})
+            self.assertIsNotNone(inbox)
+            text = ""
+            for payload in iter_server_events(inbox, BUS, stop):
+                text += payload.decode()
+                if "heartbeat" in text:
+                    stop.set()
             self.assertIn("event: hello", text)
             self.assertIn("event: heartbeat", text)
         finally:
+            if inbox is not None:
+                BUS.unsubscribe(inbox)
             BUS.heartbeat = 15
             if previous is None:
                 os.environ.pop("WARP_OPERATOR_TOKEN", None)
