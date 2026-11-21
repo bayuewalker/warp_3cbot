@@ -342,7 +342,7 @@ def _rules() -> tuple[int, list[tuple[str, str]], bytes]:
     if journal is None or cfg is None:
         return _json(503, {"error": "journal_unavailable"})
     policy = Policy.from_settings(cfg)
-    raw = journal.get_setting("trade_rules")
+    raw = journal.get_setting("trade_rules", request_local=True)
     if raw:
         try:
             policy = apply_rule_edits(policy, json.loads(raw))

@@ -12,8 +12,8 @@ from decimal import Decimal
 from pathlib import Path
 
 import httpx
-
 from test_core import evidence, sig
+
 from warp3c.config import Settings
 from warp3c.engine import Engine
 from warp3c.market import MarketDataError

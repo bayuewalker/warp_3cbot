@@ -5,9 +5,11 @@ import {
   type BudgetView,
   type ForwardStats,
   type WarpBot,
+  type Status,
 } from "./api";
 import { Key, Lang, t } from "./i18n";
-import { Badge, Button, Card, Field, inputClass } from "./ui";
+import { useLoad } from "./snapshot";
+import { Badge, Button, Card, Field, Loading, Problem, inputClass } from "./ui";
 
 function reasonLabel(reason: string, lang: Lang): string {
   const known: Record<string, Key> = {
@@ -21,7 +23,7 @@ function reasonLabel(reason: string, lang: Lang): string {
   return key ? t(lang, key) : reason.replaceAll("_", " ");
 }
 
-export function AccountsPanel({ lang }: { lang: Lang }) {
+export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code: string) => void }) {
   const [rows, setRows] = useState<BrokerAccount[] | null>(null);
   const [selected, setSelected] = useState("");
   const [note, setNote] = useState("");
@@ -30,9 +32,12 @@ export function AccountsPanel({ lang }: { lang: Lang }) {
   async function load() {
     setError("");
     try {
-      const payload = await api<{ accounts: BrokerAccount[]; selected: { code?: string } | null }>("/api/accounts");
+      const payload = await api<{ accounts: BrokerAccount[]; selected: { code?: string } | null }>(
+        "/api/accounts",
+      );
       setRows(payload.accounts);
       setSelected(payload.selected?.code || "");
+      onSelect(payload.selected?.code || "");
     } catch {
       setError(t(lang, "error"));
     }
@@ -65,8 +70,17 @@ export function AccountsPanel({ lang }: { lang: Lang }) {
         </div>
         <p className="mt-2 text-xs text-zinc-500">{t(lang, "accountHelp")}</p>
       </Card>
-      {error ? <Card><p className="text-sm text-red-300">{error}</p></Card> : null}
-      {rows && rows.length === 0 ? <Card><p className="text-sm text-zinc-400">{t(lang, "noAccounts")}</p></Card> : null}
+      {error ? (
+        <Card>
+          <p className="text-sm text-red-300">{error}</p>
+        </Card>
+      ) : null}
+      {!rows && !error && <Loading lang={lang} />}
+      {rows && rows.length === 0 ? (
+        <Card>
+          <p className="text-sm text-zinc-400">{t(lang, "noAccounts")}</p>
+        </Card>
+      ) : null}
       {rows?.map((row) => (
         <Card key={row.code}>
           <div className="flex items-start justify-between gap-3">
@@ -82,50 +96,41 @@ export function AccountsPanel({ lang }: { lang: Lang }) {
           <p className="mt-1 text-xs text-zinc-500">
             {row.market === "spot" ? t(lang, "spot") : t(lang, "notSpot")} · {row.exchange_code}
           </p>
-          {!row.selectable ? <p className="mt-2 text-xs text-zinc-400">{reasonLabel(row.reason, lang)}</p> : null}
+          {!row.selectable ? (
+            <p className="mt-2 text-xs text-zinc-400">{reasonLabel(row.reason, lang)}</p>
+          ) : null}
           <Button
             className="mt-3 w-full"
             variant={selected === row.code ? "outline" : "default"}
             type="button"
-            disabled={!row.selectable}
+            disabled={!row.selectable || selected === row.code}
             onClick={() => void choose(row.code)}
           >
             {selected === row.code ? t(lang, "selectedAccount") : t(lang, "selectAccount")}
           </Button>
         </Card>
       ))}
-      {note ? <p className="text-sm text-zinc-400">{note}</p> : null}
+      {note ? (
+        <p role="status" className="text-sm text-zinc-400">
+          {note}
+        </p>
+      ) : null}
     </div>
   );
 }
 
 export function BudgetForm({ lang, code }: { lang: Lang; code: string }) {
-  const [absolute, setAbsolute] = useState("100");
-  const [fraction, setFraction] = useState("0.10");
-  const [maxBots, setMaxBots] = useState("2");
-  const [view, setView] = useState<BudgetView | null>(null);
-  const [target, setTarget] = useState(code);
+  const [absolute, setAbsolute] = useState("");
+  const [fraction, setFraction] = useState("");
+  const [maxBots, setMaxBots] = useState("");
+  const budget = useLoad<{ budget: BudgetView | null }>("/api/warp-bots");
+  const view = budget.data?.budget;
   const [note, setNote] = useState("");
-
-  async function load() {
-    const [payload, accounts] = await Promise.all([
-      api<{ budget: BudgetView | null }>("/api/warp-bots"),
-      api<{ selected: { code?: string } | null }>("/api/accounts"),
-    ]);
-    const chosen = code || accounts.selected?.code || "";
-    setTarget(chosen);
-    if (payload.budget) {
-      setView(payload.budget);
-      setAbsolute(payload.budget.absolute);
-      setFraction(payload.budget.fraction);
-      setMaxBots(String(payload.budget.max_bots));
-    }
-  }
-
   useEffect(() => {
-    void load().catch(() => setNote(t(lang, "error")));
-  }, [code]);
-
+    setAbsolute(view?.absolute ?? "");
+    setFraction(view?.fraction ?? "");
+    setMaxBots(view?.max_bots?.toString() ?? "");
+  }, [view]);
   async function save(event: FormEvent) {
     event.preventDefault();
     setNote("");
@@ -133,14 +138,13 @@ export function BudgetForm({ lang, code }: { lang: Lang; code: string }) {
       await api("/api/accounts/budget", {
         method: "POST",
         body: JSON.stringify({
-          code: target,
+          code,
           budget_usdt: absolute,
           budget_fraction: fraction,
           max_bots: Number(maxBots),
         }),
       });
       setNote(t(lang, "saved"));
-      await load();
     } catch {
       setNote(t(lang, "error"));
     }
@@ -149,26 +153,50 @@ export function BudgetForm({ lang, code }: { lang: Lang; code: string }) {
   return (
     <Card>
       <h2 className="font-semibold">{t(lang, "budget")}</h2>
-      {view ? (
+      {!budget.error && view ? (
         <p className="mt-2 text-sm text-zinc-300">
-          {t(lang, "budgetUsed")} {view.used} · {t(lang, "budgetLeft")} {view.remaining} · {view.open_bots}/{view.max_bots}
+          {t(lang, "budgetUsed")} {view.used ?? "—"} · {t(lang, "budgetLeft")} {view.remaining ?? "—"}
         </p>
       ) : null}
+      {budget.error && <Problem lang={lang} retry={budget.reload} />}
+      <p className="panel-note">
+        {t(lang, "currentTarget")} · {code || t(lang, "unknown")}
+      </p>
       <form className="mt-3 space-y-3" onSubmit={save}>
-        <Field label="USDT">
-          <input className={inputClass} value={absolute} onChange={(event) => setAbsolute(event.target.value)} />
+        <Field label={lang === "en" ? "Budget limit (USDT)" : "Batas anggaran (USDT)"}>
+          <input
+            className={inputClass}
+            value={absolute}
+            onChange={(event) => setAbsolute(event.target.value)}
+          />
         </Field>
-        <Field label="%" hint="0.10 = 10%">
-          <input className={inputClass} value={fraction} onChange={(event) => setFraction(event.target.value)} />
+        <Field label={lang === "en" ? "Budget fraction" : "Fraksi anggaran"} hint="0.10 = 10%">
+          <input
+            className={inputClass}
+            value={fraction}
+            onChange={(event) => setFraction(event.target.value)}
+          />
         </Field>
         <Field label={t(lang, "maxBots")}>
-          <input className={inputClass} value={maxBots} onChange={(event) => setMaxBots(event.target.value)} />
+          <input
+            className={inputClass}
+            value={maxBots}
+            onChange={(event) => setMaxBots(event.target.value)}
+          />
         </Field>
-        <Button className="w-full" type="submit" disabled={!target}>
+        <Button
+          className="w-full"
+          type="submit"
+          disabled={!code || !absolute || !fraction || !maxBots || budget.error}
+        >
           {t(lang, "saveBudget")}
         </Button>
       </form>
-      {note ? <p className="mt-3 text-sm text-zinc-400">{note}</p> : null}
+      {note ? (
+        <p role="status" className="mt-3 text-sm text-zinc-400">
+          {note}
+        </p>
+      ) : null}
     </Card>
   );
 }
@@ -180,34 +208,57 @@ const confirms = {
   delete: "DELETE",
 } as const;
 
-export function WarpBotsPanel({ lang }: { lang: Lang }) {
-  const [bots, setBots] = useState<WarpBot[] | null>(null);
+export function WarpBotsPanel({ lang, status }: { lang: Lang; status: Status | null }) {
+  const list = useLoad<{ bots: WarpBot[]; budget: BudgetView | null }>("/api/warp-bots", true);
+  const accounts = useLoad<{ accounts: BrokerAccount[] }>("/api/accounts");
+  const bots = list.data?.bots;
   const [pending, setPending] = useState<{ id: string; action: keyof typeof confirms } | null>(null);
   const [word, setWord] = useState("");
+  const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
-
-  async function load() {
-    const payload = await api<{ bots: WarpBot[] }>("/api/warp-bots");
-    setBots(payload.bots);
+  function allowed(bot: WarpBot, action: keyof typeof confirms) {
+    const account = accounts.data?.accounts.find((row) => row.code === bot.account_code);
+    return (
+      !list.error &&
+      !accounts.error &&
+      status?.mode === "paper" &&
+      account?.demo === true &&
+      account.market === "spot" &&
+      account.status === "active" &&
+      !!bot.external_code &&
+      ["dca_bot", "grid_bot"].includes(bot.product) &&
+      bot.status !== "deleted" &&
+      (action !== "resume" || status.halt === false)
+    );
   }
-
-  useEffect(() => {
-    void load().catch(() => setNote(t(lang, "error")));
-  }, []);
-
   async function act() {
-    if (!pending || word.trim().toUpperCase() !== confirms[pending.action]) return;
+    const bot = bots?.find((row) => row.warp_id === pending?.id);
+    if (
+      !bot ||
+      !pending ||
+      busy ||
+      !allowed(bot, pending.action) ||
+      word.trim().toUpperCase() !== confirms[pending.action]
+    )
+      return;
     setNote("");
+    setBusy(true);
     try {
       await api("/api/warp-bots/action", {
         method: "POST",
-        body: JSON.stringify({ warp_id: pending.id, action: pending.action, confirm: confirms[pending.action] }),
+        body: JSON.stringify({
+          warp_id: pending.id,
+          action: pending.action,
+          confirm: confirms[pending.action],
+        }),
       });
       setPending(null);
       setWord("");
-      setBots(null);
+      list.reload();
     } catch (err) {
       setNote((err as Error).message || t(lang, "error"));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -217,22 +268,52 @@ export function WarpBotsPanel({ lang }: { lang: Lang }) {
         <h2 className="font-semibold">{t(lang, "warpBots")}</h2>
         <p className="mt-2 text-xs text-zinc-500">{t(lang, "ownedOnly")}</p>
       </Card>
-      {bots && bots.length === 0 ? <Card><p className="text-sm text-zinc-400">{t(lang, "noWarpBots")}</p></Card> : null}
+      {list.error && <Problem lang={lang} retry={list.reload} />}
+      {accounts.error && <Problem lang={lang} retry={accounts.reload} />}
+      {!bots && !list.error && <Loading lang={lang} />}
+      {!list.error && list.data?.budget && (
+        <div className="capital-strip">
+          {list.data.budget.sleeve_pct != null && (
+            <span>
+              {lang === "id" ? "Alokasi akun" : "Account sleeve"}{" "}
+              <b>{Number(list.data.budget.sleeve_pct) * 100}%</b>
+            </span>
+          )}
+          <span>
+            {t(lang, "budgetUsed")} <b>{list.data.budget.used ?? "—"}</b>
+          </span>
+          <span>
+            {t(lang, "budgetLeft")} <b>{list.data.budget.remaining ?? "—"}</b>
+          </span>
+        </div>
+      )}
+      {bots && bots.length === 0 ? (
+        <Card>
+          <p className="text-sm text-zinc-400">{t(lang, "noWarpBots")}</p>
+        </Card>
+      ) : null}
       {bots?.map((bot) => (
         <Card key={bot.warp_id}>
           <div className="flex items-start justify-between gap-3">
             <div>
               <h3 className="font-semibold">{bot.name}</h3>
-              <p className="text-xs text-zinc-500">{bot.symbol} · {bot.market} · {bot.kind}</p>
+              <p className="text-xs text-zinc-500">
+                {bot.symbol} · {bot.market} · {bot.kind}
+              </p>
             </div>
             <Badge>{bot.status}</Badge>
           </div>
+          <p className="panel-note">
+            {accounts.data?.accounts.find((row) => row.code === bot.account_code)?.badge ??
+              t(lang, "unknown")}
+          </p>
           <p className="mt-2 text-sm text-zinc-300">{bot.commitment} USDT</p>
           <div className="mt-3 grid grid-cols-2 gap-2">
             {(["pause", "resume", "close", "delete"] as const).map((action) => (
               <Button
                 key={action}
                 variant={action === "delete" || action === "close" ? "danger" : "outline"}
+                disabled={busy || !allowed(bot, action)}
                 size="sm"
                 type="button"
                 onClick={() => {
@@ -240,37 +321,77 @@ export function WarpBotsPanel({ lang }: { lang: Lang }) {
                   setWord("");
                 }}
               >
-                {t(lang, action === "pause" ? "pauseBot" : action === "resume" ? "resumeBot" : action === "close" ? "closeBot" : "deleteBot")}
+                {t(
+                  lang,
+                  action === "pause"
+                    ? "pauseBot"
+                    : action === "resume"
+                      ? "resumeBot"
+                      : action === "close"
+                        ? "closeBot"
+                        : "deleteBot",
+                )}
               </Button>
             ))}
           </div>
+          {pending?.id === bot.warp_id ? (
+            <div className="confirm-box">
+              <p className="text-sm">
+                {t(
+                  lang,
+                  pending.action === "pause"
+                    ? "confirmPause"
+                    : pending.action === "resume"
+                      ? "confirmBotResume"
+                      : pending.action === "close"
+                        ? "confirmClose"
+                        : "confirmDelete",
+                )}
+              </p>
+              <p className="panel-note">
+                {bot.name} · {bot.symbol}
+              </p>
+              <input
+                autoFocus
+                aria-label={t(lang, "confirmWord")}
+                className={`${inputClass} mt-3`}
+                value={word}
+                onChange={(event) => setWord(event.target.value)}
+              />
+              <div className="mt-3 flex gap-2">
+                <Button
+                  type="button"
+                  disabled={
+                    busy ||
+                    !allowed(bot, pending.action) ||
+                    word.trim().toUpperCase() !== confirms[pending.action]
+                  }
+                  onClick={() => void act()}
+                >
+                  {confirms[pending.action]}
+                </Button>
+                <Button variant="ghost" type="button" disabled={busy} onClick={() => setPending(null)}>
+                  {t(lang, "cancel")}
+                </Button>
+              </div>
+            </div>
+          ) : null}
         </Card>
       ))}
-      {pending ? (
-        <Card>
-          <p className="text-sm">{t(lang, pending.action === "pause" ? "confirmPause" : pending.action === "resume" ? "confirmBotResume" : pending.action === "close" ? "confirmClose" : "confirmDelete")}</p>
-          <input className={`${inputClass} mt-3`} value={word} onChange={(event) => setWord(event.target.value)} />
-          <div className="mt-3 flex gap-2">
-            <Button type="button" onClick={() => void act()}>{t(lang, "save")}</Button>
-            <Button variant="ghost" type="button" onClick={() => setPending(null)}>{t(lang, "cancel")}</Button>
-          </div>
-        </Card>
+      {note ? (
+        <p role="status" className="text-sm text-zinc-400">
+          {note}
+        </p>
       ) : null}
-      {note ? <p className="text-sm text-zinc-400">{note}</p> : null}
     </div>
   );
 }
 
 export function ForwardPanel({ lang }: { lang: Lang }) {
-  const [stats, setStats] = useState<ForwardStats | null>(null);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    void api<ForwardStats>("/api/forward")
-      .then(setStats)
-      .catch(() => setError(t(lang, "error")));
-  }, []);
-  if (error) return <Card><p className="text-sm text-red-300">{error}</p></Card>;
-  if (!stats) return <p className="text-sm text-zinc-400">{t(lang, "loading")}</p>;
+  const loaded = useLoad<ForwardStats>("/api/forward", true);
+  if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
+  const stats = loaded.data;
+  if (!stats) return <Loading lang={lang} />;
   const empty = stats.scored === 0;
   return (
     <Card>
@@ -278,7 +399,9 @@ export function ForwardPanel({ lang }: { lang: Lang }) {
       <p className="mt-2 text-xs text-zinc-500">{t(lang, "forwardHelp")}</p>
       <p className="mt-2 text-xs text-zinc-500">{stats.hit_rule}</p>
       {empty ? <p className="mt-3 text-sm text-zinc-400">{t(lang, "noForward")}</p> : null}
-      <p className="mt-2 text-xs text-zinc-500">{t(lang, "pendingVerdicts")}: {stats.pending}</p>
+      <p className="mt-2 text-xs text-zinc-500">
+        {t(lang, "pendingVerdicts")}: {stats.pending}
+      </p>
       <div className="mt-3 space-y-3">
         {Object.entries(stats.by_verdict).map(([verdict, horizons]) => (
           <div key={verdict} className="rounded-xl bg-black/20 p-3">
@@ -303,22 +426,16 @@ export function ForwardPanel({ lang }: { lang: Lang }) {
 
 export function RulesPage({ lang }: { lang: Lang }) {
   const [values, setValues] = useState<Record<string, string | number> | null>(null);
-  const [decisions, setDecisions] = useState<{ symbol: string; status: string; reasons: string[] }[]>([]);
+  const rules = useLoad<{ values: Record<string, string | number>; error?: string }>("/api/rules");
+  const cycle = useLoad<{ decisions: { symbol: string; status: string; reasons: string[] }[] }>(
+    "/api/decisions",
+    true,
+  );
   const [note, setNote] = useState("");
-
-  async function load() {
-    const [rules, cycle] = await Promise.all([
-      api<{ values: Record<string, string | number> }>("/api/rules"),
-      api<{ decisions: { symbol: string; status: string; reasons: string[] }[] }>("/api/decisions"),
-    ]);
-    setValues(rules.values);
-    setDecisions(cycle.decisions || []);
-  }
-
   useEffect(() => {
-    void load().catch(() => setNote(t(lang, "error")));
-  }, [lang]);
-
+    setValues(rules.data?.values ?? null);
+  }, [rules.data]);
+  const decisions = cycle.data?.decisions;
   async function save(event: FormEvent) {
     event.preventDefault();
     if (!values) return;
@@ -331,29 +448,44 @@ export function RulesPage({ lang }: { lang: Lang }) {
       setValues(saved.values);
       setNote(t(lang, "saved"));
     } catch {
-      setNote(t(lang, "weightsSum"));
+      setNote(t(lang, "error"));
     }
   }
 
   return (
-    <div className="space-y-4">
+    <div className="form-grid">
       <Card>
         <h2 className="font-semibold">{t(lang, "decisions")}</h2>
-        {decisions.length === 0 ? <p className="mt-2 text-sm text-zinc-400">{t(lang, "noDecisions")}</p> : null}
-        {decisions.map((row) => (
-          <div key={row.symbol} className="mt-3 rounded-xl bg-black/20 p-3">
-            <div className="flex items-center justify-between gap-2">
-              <p className="font-medium">{row.symbol}</p>
-              <Badge tone={row.status.startsWith("APPROVED") ? "good" : row.status === "VETO" ? "bad" : "warn"}>{row.status}</Badge>
+        {cycle.error ? (
+          <Problem lang={lang} retry={cycle.reload} />
+        ) : !decisions ? (
+          <Loading lang={lang} />
+        ) : decisions.length === 0 ? (
+          <p className="mt-2 text-sm text-zinc-400">{t(lang, "noDecisions")}</p>
+        ) : null}
+        {!cycle.error &&
+          decisions?.map((row) => (
+            <div key={row.symbol} className="mt-3 rounded-xl bg-black/20 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="font-medium">{row.symbol}</p>
+                <Badge
+                  tone={row.status.startsWith("APPROVED") ? "good" : row.status === "VETO" ? "bad" : "warn"}
+                >
+                  {row.status}
+                </Badge>
+              </div>
+              {row.reasons?.length ? (
+                <p className="mt-1 text-xs text-zinc-400">{row.reasons.join(", ")}</p>
+              ) : null}
             </div>
-            {row.reasons?.length ? <p className="mt-1 text-xs text-zinc-400">{row.reasons.join(", ")}</p> : null}
-          </div>
-        ))}
+          ))}
       </Card>
       <Card>
         <h2 className="font-semibold">{t(lang, "rules")}</h2>
         <p className="mt-2 text-xs text-zinc-500">{t(lang, "rulesHelp")}</p>
-        {values ? (
+        {rules.error || rules.data?.error ? (
+          <Problem lang={lang} retry={rules.reload} />
+        ) : values ? (
           <form className="mt-4 space-y-3" onSubmit={save}>
             {Object.entries(values).map(([key, value]) => (
               <Field key={key} label={key}>
@@ -365,33 +497,44 @@ export function RulesPage({ lang }: { lang: Lang }) {
               </Field>
             ))}
             {Number(values.min_score) < 80 ? <Badge tone="warn">{t(lang, "scoreWarning")}</Badge> : null}
-            <Button className="w-full" type="submit">{t(lang, "saveRules")}</Button>
+            <Button className="w-full" type="submit">
+              {t(lang, "saveRules")}
+            </Button>
           </form>
         ) : (
           <p className="mt-3 text-sm text-zinc-400">{t(lang, "loading")}</p>
         )}
-        {note ? <p className="mt-3 text-sm text-zinc-400">{note}</p> : null}
+        {note ? (
+          <p role="status" className="mt-3 text-sm text-zinc-400">
+            {note}
+          </p>
+        ) : null}
       </Card>
     </div>
   );
 }
 
-export function PaperCheck({ lang }: { lang: Lang }) {
+export function PaperCheck({ lang, enabled }: { lang: Lang; enabled: boolean }) {
   const [word, setWord] = useState("");
   const [note, setNote] = useState("");
 
+  const [busy, setBusy] = useState(false);
   async function run(event: FormEvent) {
     event.preventDefault();
-    if (word.trim().toUpperCase() !== "PAPERCHECK") return;
+    if (!enabled || busy || word.trim().toUpperCase() !== "PAPERCHECK") return;
     setNote("");
+    setBusy(true);
     try {
       const report = await api<{ ok: boolean; steps: { step: string; ok: boolean; detail: string }[] }>(
         "/api/paper/roundtrip",
         { method: "POST", body: JSON.stringify({ confirm: "PAPERCHECK" }) },
       );
+      setWord("");
       setNote(report.steps.map((step) => `${step.step}: ${step.ok ? "ok" : step.detail}`).join(" · "));
     } catch (err) {
       setNote((err as Error).message || t(lang, "error"));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -400,10 +543,26 @@ export function PaperCheck({ lang }: { lang: Lang }) {
       <h2 className="font-semibold">{t(lang, "paperCheck")}</h2>
       <p className="mt-2 text-xs text-zinc-500">{t(lang, "paperCheckHelp")}</p>
       <form className="mt-3 space-y-3" onSubmit={run}>
-        <input className={inputClass} value={word} onChange={(event) => setWord(event.target.value)} />
-        <Button className="w-full" type="submit" variant="outline">{t(lang, "paperCheck")}</Button>
+        <input
+          aria-label={t(lang, "confirmWord")}
+          className={inputClass}
+          value={word}
+          onChange={(event) => setWord(event.target.value)}
+        />
+        <Button
+          className="w-full"
+          disabled={!enabled || busy || word.trim().toUpperCase() !== "PAPERCHECK"}
+          type="submit"
+          variant="outline"
+        >
+          {t(lang, "paperCheck")}
+        </Button>
       </form>
-      {note ? <p className="mt-3 text-sm text-zinc-300">{note}</p> : null}
+      {note ? (
+        <p role="status" className="mt-3 text-sm text-zinc-300">
+          {note}
+        </p>
+      ) : null}
     </Card>
   );
 }

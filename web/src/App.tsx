@@ -1,14 +1,18 @@
 import {
   Activity,
+  ArrowUpRight,
   Bot,
+  ChartNoAxesCombined,
+  ChevronRight,
+  Clock3,
+  Crosshair,
   LayoutDashboard,
   ListFilter,
   LogOut,
-  Shield,
+  RefreshCw,
   SlidersHorizontal,
-  Wallet,
 } from "lucide-react";
-import { FormEvent, ReactNode, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import {
   api,
   AuthError,
@@ -21,110 +25,93 @@ import {
 } from "./api";
 import { Key, Lang, t } from "./i18n";
 import { AccountsPanel, BudgetForm, ForwardPanel, PaperCheck, RulesPage, WarpBotsPanel } from "./desk";
-import { Badge, Button, Card, Field, inputClass } from "./ui";
+import { Badge, Button, Card, Field, Loading, Problem, inputClass } from "./ui";
+import { Overview, Providers } from "./monitor";
+import { useLoad } from "./snapshot";
 
-type Page = "overview" | "signals" | "bots" | "positions" | "screener" | "rules" | "settings";
-
-const nav: { id: Page; icon: typeof Activity }[] = [
-  { id: "overview", icon: LayoutDashboard },
-  { id: "signals", icon: Activity },
-  { id: "bots", icon: Bot },
-  { id: "positions", icon: Wallet },
-  { id: "screener", icon: ListFilter },
-  { id: "rules", icon: Shield },
-];
-
-function useLang(): [Lang, (lang: Lang) => void] {
-  const stored = localStorage.getItem("warp.lang");
-  const initial: Lang = stored === "id" ? "id" : "en";
-  const [lang, setLang] = useState<Lang>(initial);
-  return [
-    lang,
-    (next) => {
-      localStorage.setItem("warp.lang", next);
-      setLang(next);
-    },
-  ];
-}
-
-export function App() {
-  const [lang, setLang] = useLang();
-  const [authed, setAuthed] = useState<boolean | null>(null);
-  const [page, setPage] = useState<Page>("overview");
-
-  useEffect(() => {
-    api<{ authenticated: boolean }>("/api/session")
-      .then((row) => setAuthed(row.authenticated))
-      .catch(() => setAuthed(false));
-  }, []);
-
-  if (authed === null) {
-    return <Shell lang={lang}>{t(lang, "loading")}</Shell>;
-  }
-  if (!authed) {
-    return (
-      <Shell lang={lang} onLang={setLang}>
-        <Login
-          lang={lang}
-          onSuccess={() => {
-            setAuthed(true);
-            setPage("overview");
-          }}
-        />
-      </Shell>
-    );
-  }
+const nav = [
+  { id: "overview", short: "overview", icon: LayoutDashboard },
+  { id: "signals", short: "signals", icon: Crosshair },
+  { id: "assets", short: "minibots", icon: Bot },
+  { id: "screener", short: "screener", icon: ListFilter },
+  { id: "preferences", short: "minisettings", icon: SlidersHorizontal },
+] as const;
+type Page = (typeof nav)[number]["id"];
+function Brand() {
   return (
-    <Shell lang={lang} onLang={setLang}>
-      <Workspace
-        lang={lang}
-        page={page}
-        onPage={setPage}
-        onLogout={async () => {
-          await api("/api/logout", { method: "POST" });
-          setAuthed(false);
-        }}
-      />
-    </Shell>
-  );
-}
-
-function Shell({
-  children,
-  lang,
-  onLang,
-}: {
-  children: ReactNode;
-  lang: Lang;
-  onLang?: (lang: Lang) => void;
-}) {
-  return (
-    <div className="mx-auto min-h-screen max-w-3xl px-4 pb-28 pt-5">
-      <header className="mb-5 flex items-start justify-between gap-3">
-        <div>
-          <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">{t(lang, "title")}</p>
-          <h1 className="text-2xl font-semibold">{t(lang, "subtitle")}</h1>
-        </div>
-        {onLang ? (
-          <div className="flex rounded-full border border-white/10 p-1 text-xs">
-            {(["en", "id"] as Lang[]).map((item) => (
-              <button
-                key={item}
-                className={`rounded-full px-2 py-1 ${lang === item ? "bg-white text-zinc-950" : "text-zinc-400"}`}
-                onClick={() => onLang(item)}
-                type="button"
-              >
-                {item.toUpperCase()}
-              </button>
-            ))}
-          </div>
-        ) : null}
-      </header>
-      {children}
+    <div className="brand">
+      <span className="mark">
+        <ChartNoAxesCombined size={24} />
+      </span>
+      <strong>
+        WARP <b>3C</b>
+      </strong>
     </div>
   );
 }
-
+function pageFromHash(): Page {
+  return nav.find((item) => item.id === location.hash.slice(1))?.id ?? "overview";
+}
+export function App() {
+  const [lang, setLang] = useState<Lang>(() => (localStorage.getItem("warp.lang") === "id" ? "id" : "en"));
+  const [authed, setAuthed] = useState(false);
+  const session = useLoad<{ authenticated: boolean }>("/api/session");
+  useEffect(() => {
+    setAuthed(session.data?.authenticated === true);
+  }, [session.data]);
+  useEffect(() => {
+    function expire() {
+      setAuthed(false);
+    }
+    window.addEventListener("warp:session-expired", expire);
+    return () => window.removeEventListener("warp:session-expired", expire);
+  }, []);
+  useEffect(() => {
+    document.documentElement.lang = lang;
+    localStorage.setItem("warp.lang", lang);
+  }, [lang]);
+  const language = (
+    <div role="group" aria-label={t(lang, "language")} className="lang-switch">
+      {(["en", "id"] as const).map((item) => (
+        <button key={item} aria-pressed={lang === item} onClick={() => setLang(item)}>
+          {item.toUpperCase()}
+        </button>
+      ))}
+    </div>
+  );
+  if (!authed)
+    return (
+      <main className="login-wrap">
+        <div className="login-head">
+          <Brand />
+          {language}
+        </div>
+        {session.error ? (
+          <Problem lang={lang} retry={session.reload} />
+        ) : !session.data ? (
+          <Loading lang={lang} />
+        ) : (
+          <Login
+            lang={lang}
+            onSuccess={() => {
+              location.hash = "overview";
+              setAuthed(true);
+            }}
+          />
+        )}
+      </main>
+    );
+  return (
+    <Workspace
+      lang={lang}
+      language={language}
+      logout={async () => {
+        await api("/api/logout", { method: "POST" });
+        setAuthed(false);
+      }}
+    />
+  );
+}
 function Login({ lang, onSuccess }: { lang: Lang; onSuccess: () => void }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -144,7 +131,7 @@ function Login({ lang, onSuccess }: { lang: Lang; onSuccess: () => void }) {
       const status = (err as { status?: number }).status;
       if (status === 429) setError(t(lang, "locked"));
       else if (status === 503) setError(t(lang, "unconfigured"));
-      else setError(t(lang, "badLogin"));
+      else setError(t(lang, err instanceof AuthError ? "badLogin" : "error"));
     } finally {
       setBusy(false);
     }
@@ -152,7 +139,7 @@ function Login({ lang, onSuccess }: { lang: Lang; onSuccess: () => void }) {
   return (
     <Card>
       <form className="space-y-4" onSubmit={submit}>
-        <h2 className="text-lg font-semibold">{t(lang, "login")}</h2>
+        <h1 className="text-xl font-semibold">{t(lang, "login")}</h1>
         <p className="text-sm text-zinc-400">{t(lang, "loginHelp")}</p>
         <Field label={t(lang, "password")}>
           <input
@@ -163,7 +150,11 @@ function Login({ lang, onSuccess }: { lang: Lang; onSuccess: () => void }) {
             onChange={(event) => setPassword(event.target.value)}
           />
         </Field>
-        {error ? <p className="text-sm text-red-300">{error}</p> : null}
+        {error ? (
+          <p role="alert" className="text-sm text-red-300">
+            {error}
+          </p>
+        ) : null}
         <Button className="w-full" type="submit" disabled={busy}>
           {busy ? t(lang, "signingIn") : t(lang, "signIn")}
         </Button>
@@ -174,227 +165,242 @@ function Login({ lang, onSuccess }: { lang: Lang; onSuccess: () => void }) {
 
 function Workspace({
   lang,
-  page,
-  onPage,
-  onLogout,
+  language,
+  logout,
 }: {
   lang: Lang;
-  page: Page;
-  onPage: (page: Page) => void;
-  onLogout: () => void;
+  language: React.ReactNode;
+  logout: () => Promise<void>;
 }) {
-  return (
-    <>
-      <div className="mb-4 flex justify-end gap-2">
-        <Button variant="ghost" size="sm" onClick={() => onPage("settings")} type="button">
-          <SlidersHorizontal className="mr-2 h-4 w-4" />
-          {t(lang, "settings")}
-        </Button>
-        <Button variant="outline" size="sm" onClick={onLogout} type="button">
-          <LogOut className="mr-2 h-4 w-4" />
-          {t(lang, "logout")}
-        </Button>
-      </div>
-      {page === "overview" ? <Overview lang={lang} /> : null}
-      {page === "signals" ? (
-        <div className="space-y-4">
-          <ForwardPanel lang={lang} />
-          <Signals lang={lang} />
-        </div>
-      ) : null}
-      {page === "bots" ? <Bots lang={lang} /> : null}
-      {page === "positions" ? <Positions lang={lang} /> : null}
-      {page === "screener" ? <ScreenerPage lang={lang} /> : null}
-      {page === "rules" ? <RulesPage lang={lang} /> : null}
-      {page === "settings" ? <Settings lang={lang} /> : null}
-      <nav className="fixed inset-x-0 bottom-0 border-t border-white/10 bg-ink/95 backdrop-blur">
-        <div className="mx-auto grid max-w-3xl grid-cols-3">
-          {nav.map((item) => {
-            const Icon = item.icon;
-            const active = page === item.id;
-            return (
-              <button
-                key={item.id}
-                className={`flex flex-col items-center gap-1 px-1 py-3 text-[11px] ${active ? "text-emerald-300" : "text-zinc-500"}`}
-                onClick={() => onPage(item.id)}
-                type="button"
-              >
-                <Icon className="h-5 w-5" />
-                {t(lang, item.id)}
-              </button>
-            );
-          })}
-        </div>
-      </nav>
-    </>
-  );
-}
-
-function useLoad<T>(path: string) {
-  const [data, setData] = useState<T | null>(null);
-  const [error, setError] = useState("");
-  const [tick, setTick] = useState(0);
+  const [page, setPage] = useState<Page>(pageFromHash);
+  const [logoutError, setLogoutError] = useState(false);
+  const status = useLoad<Status>("/api/status", true);
+  const row = status.error ? null : status.data;
+  const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
-    let alive = true;
-    api<T>(path)
-      .then((row) => {
-        if (alive) {
-          setData(row);
-          setError("");
-        }
-      })
-      .catch((err) => {
-        if (!alive) return;
-        if (err instanceof AuthError) window.location.reload();
-        else setError("error");
-      });
-    return () => {
-      alive = false;
-    };
-  }, [path, tick]);
-  return { data, error, reload: () => setTick((value) => value + 1) };
-}
-
-function Empty({ lang, text }: { lang: Lang; text: string }) {
-  return <Card><p className="text-sm text-zinc-400">{text || t(lang, "error")}</p></Card>;
-}
-
-function pretty(value: string | null, digits = 2): string {
-  if (value == null || value === "") return "—";
-  const number = Number(value);
-  if (!Number.isFinite(number)) return value;
-  return new Intl.NumberFormat("en", { maximumFractionDigits: digits }).format(number);
-}
-
-function compact(value: string | null): string {
-  if (value == null || value === "") return "—";
-  const number = Number(value);
-  if (!Number.isFinite(number)) return value;
-  return new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 2 }).format(number);
-}
-
-function reasonText(reason: string, lang: Lang): string {
-  if (reason === "observe_without_account") return lang === "id" ? "Observe, tanpa akun" : "Observe, no account";
-  if (reason === "ok") return lang === "id" ? "Siap" : "Ready";
-  return reason.replaceAll("_", " ");
-}
-
-function modeTone(mode: string): "info" | "warn" | "bad" {
-  if (mode === "live") return "bad";
-  if (mode === "paper") return "warn";
-  return "info";
-}
-
-function Overview({ lang }: { lang: Lang }) {
-  const status = useLoad<Status>("/api/status");
-  const positions = useLoad<{ positions: Position[] }>("/api/positions");
-  const [confirm, setConfirm] = useState<"halt" | "resume" | null>(null);
-  const [word, setWord] = useState("");
-  const [note, setNote] = useState("");
-  if (status.error) return <Empty lang={lang} text={t(lang, "error")} />;
-  if (!status.data) return <p className="text-sm text-zinc-400">{t(lang, "loading")}</p>;
-  const row = status.data;
-  const open = positions.data?.positions.length ?? 0;
-  async function send() {
-    const expected = confirm === "halt" ? "HALT" : "RESUME";
-    if (word.trim().toUpperCase() !== expected) return;
-    const path = confirm === "halt" ? "/api/pause" : "/api/resume";
-    await api(path, { method: "POST" });
-    setConfirm(null);
-    setWord("");
-    setNote(confirm === "halt" ? t(lang, "haltHelp") : t(lang, "confirmResume"));
-    status.reload();
-  }
+    function navigate() {
+      setPage(pageFromHash());
+      window.scrollTo(0, 0);
+      requestAnimationFrame(() => heading.current?.focus({ preventScroll: true }));
+    }
+    window.addEventListener("hashchange", navigate);
+    return () => window.removeEventListener("hashchange", navigate);
+  }, []);
+  const links = (mobile: boolean) =>
+    nav.map(({ id, short, icon: Icon }) => (
+      <a key={id} href={`#${id}`} aria-current={page === id ? "page" : undefined} aria-label={t(lang, id)}>
+        <Icon size={18} />
+        <span>{t(lang, mobile ? short : id)}</span>
+      </a>
+    ));
+  const title = t(lang, page === "overview" ? "portfolio" : page);
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge tone={modeTone(row.mode)}>{row.mode === "live" ? t(lang, "live") : row.mode === "paper" ? t(lang, "paper") : t(lang, "observe")}</Badge>
-        <Badge tone={row.halt ? "bad" : "neutral"}>{row.halt ? "HALT" : reasonText(row.reason, lang)}</Badge>
-        <Badge tone={row.market_data_fresh ? "good" : "warn"}>{row.market_data_fresh ? t(lang, "fresh") : t(lang, "stale")}</Badge>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <Card>
-          <p className="text-xs text-zinc-500">{t(lang, "equity")}</p>
-          <p className="mt-1 text-xl font-semibold">{row.equity ?? t(lang, "noEquity")}</p>
-        </Card>
-        <Card>
-          <p className="text-xs text-zinc-500">{t(lang, "pnl")}</p>
-          <p className="mt-1 text-xl font-semibold">{row.pnl_today ?? "—"}</p>
-        </Card>
-        <Card>
-          <p className="text-xs text-zinc-500">{t(lang, "open")}</p>
-          <p className="mt-1 text-xl font-semibold">{open}</p>
-        </Card>
-        <Card>
-          <p className="text-xs text-zinc-500">{t(lang, "execution")}</p>
-          <p className="mt-1 text-xl font-semibold">{row.execution_permitted ? t(lang, "on") : t(lang, "off")}</p>
-        </Card>
-      </div>
-      <Card>
-        <div className="mb-3 flex items-center gap-2">
-          <Shield className="h-4 w-4 text-emerald-300" />
-          <h2 className="font-semibold">{t(lang, "status")}</h2>
-        </div>
-        <p className="text-sm text-zinc-300">{row.risk_permitted ? t(lang, "riskOn") : t(lang, "riskOff")}</p>
-        <p className="mt-2 text-xs text-zinc-500">{t(lang, "haltHelp")}</p>
-        <div className="mt-4 flex gap-2">
-          <Button variant="danger" type="button" onClick={() => setConfirm("halt")}>{t(lang, "halt")}</Button>
-          <Button variant="outline" type="button" onClick={() => setConfirm("resume")}>{t(lang, "resume")}</Button>
-        </div>
-        {note ? <p className="mt-3 text-sm text-zinc-400">{note}</p> : null}
-      </Card>
-      <Card>
-        <h2 className="mb-3 font-semibold">{t(lang, "pipeline")}</h2>
-        <ol className="space-y-3">
-          {([
-            ["stepScreen", "stepScreenBody", row.pipeline?.screening.state, row.pipeline?.screening.count],
-            ["stepAnalysis", "stepAnalysisBody", row.pipeline?.analysis.state, row.pipeline?.analysis.count],
-            ["stepRisk", "stepRiskBody", row.pipeline?.risk.state, undefined],
-            ["stepDesk", "stepDeskBody", row.pipeline?.opportunities.state, row.pipeline?.opportunities.count],
-          ] as const).map(([title, body, stage, count]) => (
-            <li key={title} className="rounded-xl bg-black/20 p-3">
-              <div className="flex items-center justify-between gap-3">
-                <p className="font-medium">{t(lang, title)}</p>
-                <Badge tone={stage === "ready" || stage === "pass" ? "good" : "warn"}>
-                  {stage || "pending"}{count === undefined ? "" : ` · ${count}`}
-                </Badge>
-              </div>
-              <p className="text-sm text-zinc-400">{t(lang, body)}</p>
-            </li>
-          ))}
-        </ol>
-      </Card>
-      {confirm ? (
-        <Card>
-          <p className="text-sm">{confirm === "halt" ? t(lang, "confirmHalt") : t(lang, "confirmResume")}</p>
-          <input className={`${inputClass} mt-3`} value={word} onChange={(event) => setWord(event.target.value)} />
-          <div className="mt-3 flex gap-2">
-            <Button type="button" onClick={send}>{t(lang, "save")}</Button>
-            <Button variant="ghost" type="button" onClick={() => setConfirm(null)}>{t(lang, "cancel")}</Button>
+    <div className="terminal">
+      <a
+        className="skip-link"
+        href="#workspace"
+        onClick={(e) => {
+          e.preventDefault();
+          heading.current?.focus();
+        }}
+      >
+        {t(lang, "skipNav")}
+      </a>
+      <aside className="rail">
+        <Brand />
+        <div className="rail-label">{t(lang, "desk")}</div>
+        <nav aria-label={t(lang, "navigation")}>{links(false)}</nav>
+      </aside>
+      <div className="workarea">
+        <header className="topbar">
+          <div className="breadcrumb">
+            <Activity size={16} />
+            <span>{t(lang, "desk")}</span>
+            <ChevronRight size={14} />
+            <strong>{t(lang, page)}</strong>
           </div>
-        </Card>
-      ) : null}
+          <div className="mobile-brand">
+            <Brand />
+          </div>
+          <div className="toolbar">
+            {status.data?.halt && <Badge tone="bad">HALT</Badge>}
+            <Badge tone={row?.halt || row?.mode === "live" ? "bad" : row?.mode === "paper" ? "warn" : "info"}>
+              {row?.mode?.toUpperCase() ?? "—"}
+            </Badge>
+            {language}
+            <button
+              className="icon-button"
+              aria-label={t(lang, "logout")}
+              title={t(lang, "logout")}
+              onClick={() => void logout().catch(() => setLogoutError(true))}
+            >
+              <LogOut size={17} />
+            </button>
+          </div>
+        </header>
+        <main id="workspace" className="workspace">
+          {(status.data?.halt || status.error || logoutError) && (
+            <div className="alert" role="alert">
+              {status.data?.halt && <strong>HALT · {t(lang, "haltHelp")} </strong>}
+              {status.error && (
+                <button onClick={status.reload}>
+                  {t(lang, "noSnapshot")} · {t(lang, "retry")}
+                </button>
+              )}
+              {logoutError && t(lang, "error")}
+            </div>
+          )}
+          <div className="page-heading">
+            <div>
+              <h1 tabIndex={-1} ref={heading}>
+                {title}
+              </h1>
+            </div>
+            <div className="snapshot-clock">
+              <Clock3 size={14} />
+              <span>
+                {t(lang, "received")}{" "}
+                <time>{status.received?.toLocaleTimeString(lang, { hour12: false }) ?? "—"}</time>
+              </span>
+              <button
+                className="icon-button"
+                onClick={status.reload}
+                aria-label={t(lang, "refresh") + " · " + t(lang, "status")}
+              >
+                <RefreshCw size={15} />
+              </button>
+            </div>
+          </div>
+          {page === "overview" && <Overview lang={lang} status={status} />}
+          {page === "signals" && (
+            <div className="monitor-col">
+              <Signals lang={lang} />
+              <ForwardPanel lang={lang} />
+            </div>
+          )}
+          {page === "assets" && <AssetDesk lang={lang} status={row} />}
+          {page === "screener" && <ScreenerPage lang={lang} marketFresh={row?.market_data_fresh} />}
+          {page === "preferences" && <Preferences lang={lang} status={row} />}
+        </main>
+      </div>
+      <nav className="bottom-nav" aria-label={t(lang, "navigation")}>
+        {links(true)}
+      </nav>
     </div>
   );
 }
-
+function Sections<K extends Key>({
+  lang,
+  items,
+  value,
+  change,
+}: {
+  lang: Lang;
+  items: readonly K[];
+  value: K;
+  change: (v: K) => void;
+}) {
+  return (
+    <div className="sections">
+      {items.map((key) => (
+        <button key={key} aria-pressed={key === value} onClick={() => change(key)}>
+          {t(lang, key)}
+        </button>
+      ))}
+    </div>
+  );
+}
+function AssetDesk({ lang, status }: { lang: Lang; status: Status | null }) {
+  const [tab, setTab] = useState<"manage" | "positions" | "template">("manage");
+  return (
+    <>
+      <Sections
+        lang={lang}
+        items={["manage", "positions", "template"] as const}
+        value={tab}
+        change={setTab}
+      />
+      {tab === "manage" ? (
+        <WarpBotsPanel lang={lang} status={status} />
+      ) : tab === "positions" ? (
+        <Positions lang={lang} />
+      ) : (
+        <Bots lang={lang} />
+      )}
+    </>
+  );
+}
+function Preferences({ lang, status }: { lang: Lang; status: Status | null }) {
+  const [tab, setTab] = useState<"venues" | "rules" | "configuration">("venues");
+  const [selected, setSelected] = useState("");
+  return (
+    <>
+      <Sections
+        lang={lang}
+        items={["venues", "rules", "configuration"] as const}
+        value={tab}
+        change={setTab}
+      />
+      {tab === "venues" ? (
+        <div className="form-grid">
+          <AccountsPanel lang={lang} onSelect={setSelected} />
+          <BudgetForm key={selected} lang={lang} code={selected} />
+        </div>
+      ) : tab === "rules" ? (
+        <RulesPage lang={lang} />
+      ) : (
+        <div className="monitor-col">
+          <Card>
+            <Providers lang={lang} data={status} />
+          </Card>
+          <Settings lang={lang} paper={status?.mode === "paper" && status.halt === false} />
+        </div>
+      )}
+    </>
+  );
+}
+function Empty({ text }: { lang: Lang; text: string }) {
+  return (
+    <Card className="empty">
+      <Crosshair size={22} />
+      <p>{text}</p>
+    </Card>
+  );
+}
+function pretty(value: string | null, digits = 8) {
+  return value == null || value === ""
+    ? "—"
+    : new Intl.NumberFormat("en", { maximumFractionDigits: digits }).format(Number(value));
+}
+function compact(value: string | null) {
+  return value == null
+    ? "—"
+    : new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 2 }).format(Number(value));
+}
 function Signals({ lang }: { lang: Lang }) {
-  const loaded = useLoad<{ cards: CardRow[] }>("/api/opportunities");
-  if (loaded.error) return <Empty lang={lang} text={t(lang, "error")} />;
-  if (!loaded.data) return <p className="text-sm text-zinc-400">{t(lang, "loading")}</p>;
+  const loaded = useLoad<{ cards: CardRow[] }>("/api/opportunities", true);
+  if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
+  if (!loaded.data) return <Loading lang={lang} />;
   if (!loaded.data.cards.length) return <Empty lang={lang} text={t(lang, "noSignals")} />;
   return (
-    <div className="space-y-3">
-      {loaded.data.cards.map((card) => (
+    <div className="opportunity-grid">
+      {loaded.data.cards.map((card, index) => (
         <Card key={card.symbol}>
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h2 className="text-lg font-semibold">{card.symbol}</h2>
-              <p className="text-xs text-zinc-500">{card.regime} · RSI {card.rsi ?? "—"}</p>
+              <h2 className="text-lg font-semibold">
+                <small className="rank">#{index + 1}</small>
+                {card.symbol}
+              </h2>
+              <p className="text-xs text-zinc-500">
+                {card.regime ?? "—"} · RSI {card.rsi ?? "—"}
+              </p>
             </div>
             <div className="flex flex-col items-end gap-1">
-              <Badge tone={card.action === "BUY" ? "good" : card.action === "SKIP" ? "bad" : "warn"}>{card.action}</Badge>
-              {card.fresh === false ? <Badge tone="warn">Stale evidence</Badge> : null}
+              <Badge tone={card.action === "BUY" ? "good" : card.action === "SKIP" ? "bad" : "warn"}>
+                {card.action ?? "—"}
+              </Badge>
+              {card.fresh === false ? <Badge tone="warn">{t(lang, "staleEvidence")}</Badge> : null}
             </div>
           </div>
           <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
@@ -407,23 +413,57 @@ function Signals({ lang }: { lang: Lang }) {
               {t(lang, "score")} {card.score.total}
               {card.score_warning ? ` · ${t(lang, "scoreWarning")}` : ""}
               <span className="mt-1 block text-xs text-zinc-500">
-                {card.score.trend}/{card.score.reversal}/{card.score.liquidity}/{card.score.structure}/{card.score.event}
+                {card.score.trend}/{card.score.reversal}/{card.score.liquidity}/{card.score.structure}/
+                {card.score.event}
               </span>
             </p>
           ) : null}
           <p className="mt-3 text-sm text-zinc-300">
-            {t(lang, "confidence")} {card.confidence}
-            {card.model_action !== card.action ? ` · ${t(lang, "model")} ${card.model_action}` : ""}
+            {t(lang, "confidence")} {card.confidence ?? "—"}
+            {card.model_action && card.model_action !== card.action
+              ? ` · ${t(lang, "model")} ${card.model_action}`
+              : ""}
           </p>
           <p className="mt-1 text-xs text-zinc-500">
-            {t(lang, "backtest")}: {card.backtest_passed ? t(lang, "passed") : t(lang, "failed")} ({card.backtest_reason})
+            {t(lang, "backtest")}:{" "}
+            {card.backtest_passed == null
+              ? "—"
+              : card.backtest_passed
+                ? t(lang, "passed")
+                : t(lang, "failed")}{" "}
+            {card.backtest_reason && `(${card.backtest_reason})`}
           </p>
-          {card.as_of ? (
-            <p className="mt-2 text-xs text-zinc-500">
-              {card.source || "research"} · {card.as_of}
-            </p>
-          ) : null}
-          <p className="mt-3 text-sm leading-6 text-zinc-200">{lang === "id" ? card.why_id : card.why}</p>
+          <div className="metadata">
+            <span>
+              {t(lang, "source")} <b>{card.source || "—"}</b>
+            </span>
+            <span>
+              {t(lang, "exchange")} <b>—</b>
+            </span>
+            <span>
+              {t(lang, "riskScore")} <b>—</b>
+            </span>
+            <span>
+              {t(lang, "signalTime")} <time>{card.as_of ?? "—"}</time>
+            </span>
+            <span>
+              {t(lang, "marketTime")} <time>{card.evidence_as_of ?? "—"}</time>
+            </span>
+          </div>
+          <details>
+            <summary>{t(lang, "why")}</summary>
+            <p>{lang === "id" ? card.why_id : card.why}</p>
+          </details>
+          {/^[A-Z0-9]+USDT$/.test(card.symbol) && (
+            <a
+              className="chart-link"
+              href={`https://www.tradingview.com/chart/?symbol=BINANCE%3A${encodeURIComponent(card.symbol)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {t(lang, "chart")} · TradingView <ArrowUpRight size={14} />
+            </a>
+          )}
         </Card>
       ))}
     </div>
@@ -466,11 +506,18 @@ function Bots({ lang }: { lang: Lang }) {
   const [takeOn, setTakeOn] = useState(true);
   const [trailingOn, setTrailingOn] = useState(false);
   const [minScore, setMinScore] = useState(80);
-  const [weights, setWeights] = useState({ trend: 25, reversal: 25, liquidity: 20, structure: 20, event: 10 });
+  const [weights, setWeights] = useState({
+    trend: 25,
+    reversal: 25,
+    liquidity: 20,
+    structure: 20,
+    event: 10,
+  });
   const [accountCode, setAccountCode] = useState("");
   const [preview, setPreview] = useState<Preview | null>(null);
   const [note, setNote] = useState("");
   const [ask, setAsk] = useState(false);
+  const [previewBusy, setPreviewBusy] = useState(false);
   useEffect(() => {
     if (!loaded.data) return;
     setKind(loaded.data.template.kind);
@@ -479,7 +526,9 @@ function Bots({ lang }: { lang: Lang }) {
     setTakeOn(loaded.data.template.take_profit_enabled !== false);
     setTrailingOn(loaded.data.template.trailing_enabled === true);
     setMinScore(loaded.data.template.min_score || 80);
-    setWeights(loaded.data.template.weights || { trend: 25, reversal: 25, liquidity: 20, structure: 20, event: 10 });
+    setWeights(
+      loaded.data.template.weights || { trend: 25, reversal: 25, liquidity: 20, structure: 20, event: 10 },
+    );
     setAccountCode(loaded.data.template.account_code || "");
     setPreview(loaded.data.preview);
   }, [loaded.data]);
@@ -497,13 +546,21 @@ function Bots({ lang }: { lang: Lang }) {
     };
   }
   async function refresh(nextKind: string, nextPreset: string) {
-    setKind(nextKind);
-    setPreset(nextPreset);
-    const row = await api<{ preview: Preview }>("/api/bots/preview", {
-      method: "POST",
-      body: JSON.stringify({ ...templateBody(nextKind, nextPreset), kind: nextKind, preset: nextPreset }),
-    });
-    setPreview(row.preview);
+    if (previewBusy) return;
+    setPreviewBusy(true);
+    try {
+      const row = await api<{ preview: Preview }>("/api/bots/preview", {
+        method: "POST",
+        body: JSON.stringify(templateBody(nextKind, nextPreset)),
+      });
+      setKind(nextKind);
+      setPreset(nextPreset);
+      setPreview(row.preview);
+      setAsk(false);
+      setNote("");
+    } finally {
+      setPreviewBusy(false);
+    }
   }
   async function save() {
     if (preset === "aggressive" && !ask) {
@@ -522,25 +579,26 @@ function Bots({ lang }: { lang: Lang }) {
     setAsk(false);
     setNote(t(lang, "saved"));
   }
-  if (loaded.error) return <Empty lang={lang} text={t(lang, "error")} />;
-  if (!preview) return <p className="text-sm text-zinc-400">{t(lang, "loading")}</p>;
+  if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
+  if (!preview) return <Loading lang={lang} />;
   const weightSum = Object.values(weights).reduce((sum, value) => sum + Number(value), 0);
   return (
-    <div className="space-y-4">
-      <AccountsPanel lang={lang} />
-      <BudgetForm lang={lang} code={accountCode} />
+    <div className="form-grid">
       <Card>
         <h2 className="font-semibold">{t(lang, "bots")}</h2>
         <p className="mt-1 text-xs text-zinc-500">{t(lang, "places")}</p>
         <div className="mt-4 grid grid-cols-2 gap-2">
-          {([
-            ["stop", stopOn, setStopOn, "stopToggle"],
-            ["take", takeOn, setTakeOn, "takeToggle"],
-            ["trail", trailingOn, setTrailingOn, "trailToggle"],
-          ] as const).map(([key, value, setter, label]) => (
+          {(
+            [
+              ["stop", stopOn, setStopOn, "stopToggle"],
+              ["take", takeOn, setTakeOn, "takeToggle"],
+              ["trail", trailingOn, setTrailingOn, "trailToggle"],
+            ] as const
+          ).map(([key, value, setter, label]) => (
             <button
               key={key}
               className={`rounded-xl border p-3 text-left ${value ? "border-emerald-400" : "border-amber-400"}`}
+              aria-pressed={value}
               onClick={() => setter(!value)}
               type="button"
             >
@@ -549,17 +607,47 @@ function Bots({ lang }: { lang: Lang }) {
             </button>
           ))}
         </div>
-        {!stopOn ? <p className="mt-3"><Badge tone="warn">{t(lang, "noSl")}</Badge></p> : null}
-        {!takeOn && !trailingOn ? <p className="mt-3"><Badge tone="warn">{t(lang, "manualExit")}</Badge></p> : null}
+        {!stopOn ? (
+          <p className="mt-3">
+            <Badge tone="warn">{t(lang, "noSl")}</Badge>
+          </p>
+        ) : null}
+        {!takeOn && !trailingOn ? (
+          <p className="mt-3">
+            <Badge tone="warn">{t(lang, "manualExit")}</Badge>
+          </p>
+        ) : null}
         <div className="mt-4">
           <Field label={t(lang, "minScore")} hint="50–100">
-            <input className={inputClass} value={minScore} onChange={(event) => setMinScore(Number(event.target.value))} />
+            <input
+              className={inputClass}
+              value={minScore}
+              onChange={(event) => setMinScore(Number(event.target.value))}
+            />
           </Field>
-          {minScore < 80 ? <p className="mt-2"><Badge tone="warn">{t(lang, "scoreWarning")}</Badge></p> : null}
+          {minScore < 80 ? (
+            <p className="mt-2">
+              <Badge tone="warn">{t(lang, "scoreWarning")}</Badge>
+            </p>
+          ) : null}
         </div>
         <div className="mt-4 grid grid-cols-2 gap-2">
           {(Object.keys(weights) as (keyof typeof weights)[]).map((key) => (
-            <Field key={key} label={t(lang, key === "trend" ? "weightTrend" : key === "reversal" ? "weightReversal" : key === "liquidity" ? "weightLiquidity" : key === "structure" ? "weightStructure" : "weightEvent")}>
+            <Field
+              key={key}
+              label={t(
+                lang,
+                key === "trend"
+                  ? "weightTrend"
+                  : key === "reversal"
+                    ? "weightReversal"
+                    : key === "liquidity"
+                      ? "weightLiquidity"
+                      : key === "structure"
+                        ? "weightStructure"
+                        : "weightEvent",
+              )}
+            >
               <input
                 className={inputClass}
                 value={weights[key]}
@@ -568,13 +656,17 @@ function Bots({ lang }: { lang: Lang }) {
             </Field>
           ))}
         </div>
-        <p className={`mt-2 text-xs ${weightSum === 100 ? "text-zinc-500" : "text-amber-200"}`}>{t(lang, "weightsSum")} {weightSum}</p>
+        <p className={`mt-2 text-xs ${weightSum === 100 ? "text-zinc-500" : "text-amber-200"}`}>
+          {t(lang, "weightsSum")} {weightSum}
+        </p>
         <div className="mt-4 grid grid-cols-2 gap-2">
           {(["dca", "grid"] as const).map((item) => (
             <button
               key={item}
               className={`rounded-xl border p-3 text-left ${kind === item ? "border-emerald-400" : "border-white/10"}`}
-              onClick={() => refresh(item, preset)}
+              disabled={previewBusy}
+              aria-pressed={kind === item}
+              onClick={() => void refresh(item, preset).catch(() => setNote(t(lang, "error")))}
               type="button"
               title={t(lang, item === "dca" ? "dcaHelp" : "gridHelp")}
             >
@@ -588,7 +680,9 @@ function Bots({ lang }: { lang: Lang }) {
             <button
               key={item}
               className={`rounded-xl border p-3 text-left ${preset === item ? "border-emerald-400" : "border-white/10"}`}
-              onClick={() => refresh(kind, item)}
+              disabled={previewBusy}
+              aria-pressed={preset === item}
+              onClick={() => void refresh(kind, item).catch(() => setNote(t(lang, "error")))}
               type="button"
               title={t(lang, helpKey(item))}
             >
@@ -612,19 +706,25 @@ function Bots({ lang }: { lang: Lang }) {
         <p className={`mt-3 text-sm ${preview.fits_caps ? "text-emerald-300" : "text-amber-200"}`}>
           {preview.fits_caps ? t(lang, "fits") : t(lang, "tight")}
         </p>
-        <Button className="mt-4 w-full" type="button" onClick={save}>{t(lang, "save")}</Button>
+        <Button
+          className="mt-4 w-full"
+          type="button"
+          disabled={previewBusy}
+          onClick={() => void save().catch(() => setNote(t(lang, "error")))}
+        >
+          {t(lang, "save")}
+        </Button>
         {ask ? <p className="mt-3 text-sm text-amber-200">{t(lang, "aggressiveConfirm")}</p> : null}
         {note ? <p className="mt-3 text-sm text-zinc-400">{note}</p> : null}
       </Card>
-      <WarpBotsPanel lang={lang} />
     </div>
   );
 }
 
 function Positions({ lang }: { lang: Lang }) {
-  const loaded = useLoad<{ positions: Position[] }>("/api/positions");
-  if (loaded.error) return <Empty lang={lang} text={t(lang, "error")} />;
-  if (!loaded.data) return <p className="text-sm text-zinc-400">{t(lang, "loading")}</p>;
+  const loaded = useLoad<{ positions: Position[] }>("/api/positions", true);
+  if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
+  if (!loaded.data) return <Loading lang={lang} />;
   if (!loaded.data.positions.length) return <Empty lang={lang} text={t(lang, "noPositions")} />;
   return (
     <div className="space-y-3">
@@ -634,6 +734,7 @@ function Positions({ lang }: { lang: Lang }) {
             <h2 className="font-semibold">{row.symbol || "—"}</h2>
             <Badge tone={row.paper ? "warn" : "neutral"}>{row.status || "—"}</Badge>
           </div>
+          <p className="panel-note">{row.paper == null ? "—" : t(lang, row.paper ? "demo" : "real")}</p>
           <p className="mt-2 break-all text-xs text-zinc-500">{row.strategy_id}</p>
         </Card>
       ))}
@@ -641,15 +742,17 @@ function Positions({ lang }: { lang: Lang }) {
   );
 }
 
-function ScreenerPage({ lang }: { lang: Lang }) {
-  const loaded = useLoad<{ filters: Filters; hits: Hit[]; error: string | null; source: string }>("/api/screener");
-  const [form, setForm] = useState<Filters | null>(null);
+function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean }) {
+  const loaded = useLoad<{ filters: Filters; hits: Hit[]; error: string | null; source: string }>(
+    "/api/screener",
+    true,
+  );
+  const [draft, setForm] = useState<Filters | null>(null);
+  const form = draft ?? loaded.data?.filters;
   const [note, setNote] = useState("");
-  useEffect(() => {
-    if (loaded.data) setForm(loaded.data.filters);
-  }, [loaded.data]);
-  if (loaded.error) return <Empty lang={lang} text={t(lang, "error")} />;
-  if (!loaded.data || !form) return <p className="text-sm text-zinc-400">{t(lang, "loading")}</p>;
+
+  if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
+  if (!loaded.data || !form) return <Loading lang={lang} />;
   async function save(event: FormEvent) {
     event.preventDefault();
     if (!form) return;
@@ -660,80 +763,131 @@ function ScreenerPage({ lang }: { lang: Lang }) {
     setForm(supported);
     setNote(t(lang, "saved"));
   }
+  const result = loaded.data;
   return (
-    <div className="space-y-4">
+    <div className="monitor-col">
       <Card>
-        <h2 className="font-semibold">{t(lang, "filters")}</h2>
-        <p className="mt-1 text-xs text-zinc-500">{t(lang, "source")}: {loaded.data.source || "—"} {loaded.data.error || ""}</p>
-        <p className="mt-2 text-xs text-amber-200/80">
-          {lang === "id"
-            ? "Ticker Binance tidak menyediakan RSI/rekomendasi TradingView. RSI diverifikasi nanti dari candle yang sudah close sebelum validasi risiko."
-            : "Binance ticker data has no TradingView RSI/recommendation. RSI is evaluated later from closed exchange candles before risk validation."}
-        </p>
-        <form className="mt-4 space-y-3" onSubmit={save}>
+        <div className="panel-heading">
+          <h2 className="panel-title">
+            <ListFilter />
+            {t(lang, "candidates")}
+          </h2>
+          <Badge>{result.source || t(lang, "unknown")}</Badge>
+        </div>
+        {result.error && (
+          <p role="alert" className="alert">
+            {result.error}
+          </p>
+        )}
+        {marketFresh === false && <p className="panel-note text-amber-200">{t(lang, "stale")}</p>}
+        {result.hits.length ? (
+          <div className="table-scroll" tabIndex={0} role="region" aria-label={t(lang, "candidates")}>
+            <table>
+              <caption className="sr-only">{t(lang, "candidates")}</caption>
+              <thead>
+                <tr>
+                  {[
+                    t(lang, "rank"),
+                    t(lang, "symbols"),
+                    t(lang, "price"),
+                    t(lang, "momentum"),
+                    t(lang, "volume") + " (USDT)",
+                  ].map((label) => (
+                    <th key={label} scope="col">
+                      {label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {result.hits.map((hit, index) => (
+                  <tr key={hit.symbol}>
+                    <td>{index + 1}</td>
+                    <th scope="row">{hit.symbol}</th>
+                    <td>{pretty(hit.last)}</td>
+                    <td>{hit.change_pct == null ? "—" : pretty(hit.change_pct) + "%"}</td>
+                    <td>{compact(hit.quote_volume)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          !result.error && <p className="panel-note">{t(lang, "noHits")}</p>
+        )}
+      </Card>
+      <Card>
+        <h2 className="panel-title">
+          <SlidersHorizontal />
+          {t(lang, "filters")}
+        </h2>
+        <form
+          className="mt-4 space-y-3"
+          onSubmit={(event) => void save(event).catch(() => setNote(t(lang, "error")))}
+        >
           <Field label={t(lang, "minVolume")}>
-            <input className={inputClass} value={form.min_quote_volume} onChange={(event) => setForm({ ...form, min_quote_volume: event.target.value })} />
+            <input
+              className={inputClass}
+              value={form.min_quote_volume}
+              onChange={(event) => setForm({ ...form, min_quote_volume: event.target.value })}
+            />
           </Field>
           <div className="grid grid-cols-2 gap-2">
-            <Field label={t(lang, "change")}>
-              <input className={inputClass} value={form.min_change_pct} onChange={(event) => setForm({ ...form, min_change_pct: event.target.value })} />
+            <Field label={t(lang, "minChange")}>
+              <input
+                className={inputClass}
+                value={form.min_change_pct}
+                onChange={(event) => setForm({ ...form, min_change_pct: event.target.value })}
+              />
             </Field>
-            <Field label=" ">
-              <input className={inputClass} value={form.max_change_pct} onChange={(event) => setForm({ ...form, max_change_pct: event.target.value })} />
-            </Field>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <Field label={t(lang, "rsi")} hint="0–100">
-              <input disabled aria-disabled="true" className={inputClass} value={form.rsi_min} onChange={(event) => setForm({ ...form, rsi_min: event.target.value })} />
-            </Field>
-            <Field label=" ">
-              <input disabled aria-disabled="true" className={inputClass} value={form.rsi_max} onChange={(event) => setForm({ ...form, rsi_max: event.target.value })} />
+            <Field label={t(lang, "maxChange")}>
+              <input
+                className={inputClass}
+                value={form.max_change_pct}
+                onChange={(event) => setForm({ ...form, max_change_pct: event.target.value })}
+              />
             </Field>
           </div>
           <Field label={t(lang, "limit")}>
-            <input className={inputClass} value={form.limit} onChange={(event) => setForm({ ...form, limit: Number(event.target.value) })} />
+            <input
+              className={inputClass}
+              value={form.limit}
+              onChange={(event) => setForm({ ...form, limit: Number(event.target.value) })}
+            />
           </Field>
           <Button type="submit">{t(lang, "apply")}</Button>
           {note ? <p className="text-sm text-zinc-400">{note}</p> : null}
         </form>
       </Card>
-      {loaded.data.hits.length === 0 ? <Empty lang={lang} text={t(lang, "noHits")} /> : null}
-      {loaded.data.hits.map((hit) => (
-        <Card key={hit.symbol}>
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold">{hit.symbol}</h2>
-            <Badge>{hit.source}</Badge>
-          </div>
-          <p className="mt-2 text-sm text-zinc-300">
-            {pretty(hit.last)} · {pretty(hit.change_pct)}% · vol {compact(hit.quote_volume)}
-          </p>
-          <p className="text-xs text-zinc-500">RSI {hit.rsi ?? "—"} · rec {hit.recommendation ?? "—"}</p>
-        </Card>
-      ))}
     </div>
   );
 }
 
-function Settings({ lang }: { lang: Lang }) {
+function Settings({ lang, paper }: { lang: Lang; paper: boolean }) {
   const loaded = useLoad<Record<string, string | number | boolean | string[]>>("/api/config");
-  if (loaded.error) return <Empty lang={lang} text={t(lang, "error")} />;
-  if (!loaded.data) return <p className="text-sm text-zinc-400">{t(lang, "loading")}</p>;
+  if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
+  if (!loaded.data) return <Loading lang={lang} />;
   const rows = Object.entries(loaded.data);
   return (
     <div className="space-y-4">
-    <PaperCheck lang={lang} />
-    <Card>
-      <h2 className="font-semibold">{t(lang, "settings")}</h2>
-      <p className="mt-1 text-sm text-zinc-400">{t(lang, "modeHelp")}</p>
-      <dl className="mt-4 space-y-2">
-        {rows.map(([key, value]) => (
-          <div key={key} className="flex items-start justify-between gap-3 border-b border-white/5 py-2 text-sm">
-            <dt className="text-zinc-500">{key}</dt>
-            <dd className="max-w-[60%] break-all text-right">{Array.isArray(value) ? value.join(", ") : String(value)}</dd>
-          </div>
-        ))}
-      </dl>
-    </Card>
+      <PaperCheck lang={lang} enabled={paper} />
+      <Card>
+        <h2 className="font-semibold">{t(lang, "settings")}</h2>
+        <p className="mt-1 text-sm text-zinc-400">{t(lang, "modeHelp")}</p>
+        <dl className="mt-4 space-y-2">
+          {rows.map(([key, value]) => (
+            <div
+              key={key}
+              className="flex items-start justify-between gap-3 border-b border-white/5 py-2 text-sm"
+            >
+              <dt className="text-zinc-500">{key}</dt>
+              <dd className="max-w-[60%] break-all text-right">
+                {Array.isArray(value) ? value.join(", ") : String(value)}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </Card>
     </div>
   );
 }
