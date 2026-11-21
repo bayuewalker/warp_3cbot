@@ -45,6 +45,11 @@ def parse_groups(raw: str) -> tuple[tuple[str, str], ...]:
     return tuple(pairs)
 
 
+# Public catalog at https://integrate.api.nvidia.com/v1/models on 2026-11-21.
+# nvidia/nemotron-3-nano-30b-a3b is absent and the chat endpoint returns HTTP 410.
+DEFAULT_NVIDIA_MODEL = "nvidia/nemotron-3.5-lightning-30b-a3b"
+
+
 @dataclass(frozen=True)
 class Settings:
     mode: str = "observe"
@@ -104,7 +109,7 @@ class Settings:
     backtest_min_trades: int = 3
     # Legacy scanner URL is accepted but never contacted by the research worker.
     screener_url: str = ""
-    nvidia_model: str = "nvidia/nemotron-3-nano-30b-a3b"
+    nvidia_model: str = DEFAULT_NVIDIA_MODEL
     openrouter_model: str = "deepseek/deepseek-v4-pro"
     llm_timeout: int = 40
     llm_daily_calls: int = 48
@@ -355,7 +360,9 @@ class Settings:
             blend_confidence=os.getenv("WARP_BLEND_CONFIDENCE", "0") == "1",
             backtest_min_trades=int(os.getenv("WARP_BACKTEST_MIN_TRADES", "3")),
             screener_url=os.getenv("WARP_SCREENER_URL", ""),
-            nvidia_model=os.getenv("NVIDIA_MODEL", "nvidia/nemotron-3-nano-30b-a3b"),
+            nvidia_model=(
+                os.getenv("WARP_NVIDIA_MODEL") or os.getenv("NVIDIA_MODEL") or DEFAULT_NVIDIA_MODEL
+            ).strip(),
             openrouter_model=os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-v4-pro"),
             llm_timeout=int(os.getenv("WARP_LLM_TIMEOUT_SECONDS", "40")),
             llm_daily_calls=int(os.getenv("WARP_LLM_DAILY_CALLS", "48")),

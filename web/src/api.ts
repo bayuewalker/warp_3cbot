@@ -28,6 +28,15 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   return payload as T;
 }
 
+export type ProviderHealth = {
+  configured: boolean;
+  healthy: boolean;
+  state: "ok" | "cooldown" | "unconfigured";
+  model: string;
+  detail: string;
+  until: string | null;
+};
+
 export type Status = {
   alive?: boolean;
   dependencies_healthy?: boolean;

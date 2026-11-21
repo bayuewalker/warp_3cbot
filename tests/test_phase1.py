@@ -4,7 +4,7 @@ import json
 import os
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -23,7 +23,7 @@ from warp3c.bots import (
     client_id_for,
     execution_fractions,
 )
-from warp3c.config import Settings, parse_groups
+from warp3c.config import DEFAULT_NVIDIA_MODEL, Settings, parse_groups
 from warp3c.engine import Engine
 from warp3c.httpapi import web_root
 from warp3c.levels import derive_levels
@@ -329,6 +329,12 @@ class AuthTests(unittest.TestCase):
                 allowed = client.get("/api/config")
                 self.assertEqual(allowed.status_code, 200)
                 self.assertEqual(allowed.json()["mode"], "observe")
+                status = client.get("/api/status")
+                self.assertEqual(status.status_code, 200)
+                providers = status.json()["providers"]
+                self.assertEqual(providers["nvidia"]["state"], "unconfigured")
+                self.assertEqual(providers["nvidia"]["model"], DEFAULT_NVIDIA_MODEL)
+                self.assertEqual(providers["openrouter"]["state"], "unconfigured")
                 self.assertNotIn("super-secret-key", allowed.text)
                 paused = client.post("/api/pause")
                 self.assertEqual(paused.status_code, 200)
@@ -553,6 +559,182 @@ class LlmTests(unittest.TestCase):
             analyst.budget.calls = 0
             analyst.research(("BTCUSDT",), {"BTCUSDT": item}, 30)
         analyst.close()
+
+    def test_openrouter_reasoning_channel_still_publishes_a_signal(self):
+        item = evidence()
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content.decode())
+            seen["reasoning"] = body.get("reasoning")
+            self.assertNotIn("reasoning_effort", body)
+            answer = json.dumps(
+                {
+                    "decisions": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "action": "WAIT",
+                            "confidence": 0.42,
+                            "source": "llm evidence snapshot",
+                            "thesis": "Evidence is thin on the supplied snapshot",
+                        }
+                    ]
+                }
+            )
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": None, "reasoning_content": answer}}]},
+            )
+
+        analyst = LlmAnalyst(
+            openrouter_key="or-test",
+            timeout=5,
+            daily_calls=4,
+            transport=httpx.MockTransport(handler),
+        )
+        signals = analyst.research(("BTCUSDT",), {"BTCUSDT": item}, 30)
+        self.assertEqual(seen["reasoning"], {"effort": "none"})
+        self.assertEqual(signals[0].action, "WAIT")
+        self.assertEqual(signals[0].symbol, "BTCUSDT")
+        analyst.close()
+
+    def test_gone_model_cools_down_and_is_not_retried(self):
+        item = evidence()
+        now = datetime(2026, 11, 21, tzinfo=timezone.utc)
+        clock = {"now": now}
+        nvidia_calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content.decode())
+            if "nvidia" in request.url.host:
+                nvidia_calls.append(body["model"])
+                self.assertFalse(body["chat_template_kwargs"]["enable_thinking"])
+                return httpx.Response(410, json={"error": "gone"})
+            if "closer spot-crypto" in body["messages"][-1]["content"]:
+                content = json.dumps({"symbols": ["BTCUSDT"]})
+            else:
+                content = json.dumps(
+                    {
+                        "decisions": [
+                            {
+                                "symbol": "BTCUSDT",
+                                "action": "WAIT",
+                                "confidence": 0.4,
+                                "source": "llm evidence snapshot",
+                                "thesis": "Evidence is thin",
+                            }
+                        ]
+                    }
+                )
+            return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+        analyst = LlmAnalyst(
+            nvidia_key="nv-test",
+            nvidia_model="nvidia/retired",
+            openrouter_key="or-test",
+            timeout=5,
+            daily_calls=20,
+            clock=lambda: clock["now"],
+            transport=httpx.MockTransport(handler),
+        )
+        with self.assertLogs("warp3c", level="WARNING") as logs:
+            analyst.research(("BTCUSDT",), {"BTCUSDT": item}, 30)
+            clock["now"] = now + timedelta(minutes=30)
+            analyst.research(("BTCUSDT",), {"BTCUSDT": item}, 30)
+        self.assertEqual(nvidia_calls, ["nvidia/retired"])
+        self.assertEqual(sum("llm_provider_unhealthy" in line and "HTTP 410" in line for line in logs.output), 1)
+        health = analyst.health()
+        self.assertEqual(health["nvidia"]["state"], "cooldown")
+        self.assertEqual(health["nvidia"]["detail"], "HTTP 410")
+        self.assertFalse(health["nvidia"]["healthy"])
+        self.assertEqual(health["openrouter"]["state"], "ok")
+        clock["now"] = now + timedelta(hours=1, seconds=1)
+        with self.assertLogs("warp3c", level="WARNING"):
+            analyst.research(("BTCUSDT",), {"BTCUSDT": item}, 30)
+        self.assertEqual(nvidia_calls, ["nvidia/retired", "nvidia/retired"])
+        analyst.close()
+
+    def test_missing_model_and_transient_errors(self):
+        item = evidence()
+        seen: list[int] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "nvidia" in request.url.host:
+                seen.append(404 if len(seen) == 0 else 503)
+                return httpx.Response(seen[-1], json={"error": "no"})
+            content = json.dumps({"symbols": ["BTCUSDT"]})
+            if "closer spot-crypto" not in request.content.decode():
+                content = json.dumps(
+                    {
+                        "decisions": [
+                            {
+                                "symbol": "BTCUSDT",
+                                "action": "SKIP",
+                                "confidence": 0.2,
+                                "source": "llm evidence snapshot",
+                                "thesis": "No setup",
+                            }
+                        ]
+                    }
+                )
+            return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+        analyst = LlmAnalyst(
+            nvidia_key="nv-test",
+            openrouter_key="or-test",
+            timeout=5,
+            daily_calls=20,
+            transport=httpx.MockTransport(handler),
+        )
+        with self.assertLogs("warp3c", level="WARNING") as gone:
+            analyst.research(("BTCUSDT",), {"BTCUSDT": item}, 30)
+        self.assertIn("HTTP 404", gone.output[0])
+        self.assertEqual(analyst.health()["nvidia"]["state"], "cooldown")
+        analyst._until.clear()
+        before = len(seen)
+        with self.assertNoLogs("warp3c", level="WARNING"):
+            analyst.research(("BTCUSDT",), {"BTCUSDT": item}, 30)
+            analyst.research(("BTCUSDT",), {"BTCUSDT": item}, 30)
+        self.assertEqual(seen[before:], [503, 503])
+        self.assertEqual(analyst.health()["nvidia"]["state"], "ok")
+        analyst.close()
+
+    def test_nvidia_model_comes_from_warp_env(self):
+        keys = ("WARP_NVIDIA_MODEL", "NVIDIA_MODEL")
+        saved = {key: os.environ.get(key) for key in keys}
+        try:
+            os.environ.pop("WARP_NVIDIA_MODEL", None)
+            os.environ.pop("NVIDIA_MODEL", None)
+            self.assertEqual(Settings.from_env().nvidia_model, DEFAULT_NVIDIA_MODEL)
+            os.environ["NVIDIA_MODEL"] = "nvidia/legacy"
+            self.assertEqual(Settings.from_env().nvidia_model, "nvidia/legacy")
+            os.environ["WARP_NVIDIA_MODEL"] = "nvidia/nemotron-3.5-lightning-30b-a3b"
+            self.assertEqual(Settings.from_env().nvidia_model, "nvidia/nemotron-3.5-lightning-30b-a3b")
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_status_snapshot_shows_a_cooling_provider(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Settings(db_path=os.path.join(tmp, "warp.db"))
+            journal = OrderJournal(cfg.db_path)
+            from test_failures import Markets, Research
+
+            engine = Engine(cfg, _Quiet(), Research(), journal, Markets())
+            engine.analyst = LlmAnalyst(nvidia_key="nv-test", nvidia_model=DEFAULT_NVIDIA_MODEL, openrouter_key="or-test")
+            with self.assertLogs("warp3c", level="WARNING"):
+                engine.analyst._cool("nvidia", DEFAULT_NVIDIA_MODEL, 410)
+            publish(cfg, journal, engine)
+            from warp3c.operator import SNAPSHOT
+
+            nvidia = SNAPSHOT["/api/status"]["providers"]["nvidia"]
+            self.assertEqual(nvidia["state"], "cooldown")
+            self.assertEqual(nvidia["model"], DEFAULT_NVIDIA_MODEL)
+            journal.close()
+            engine.analyst.close()
 
 
 class DashboardPathTests(unittest.TestCase):

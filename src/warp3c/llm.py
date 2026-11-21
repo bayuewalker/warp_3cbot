@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import httpx
 
+from .config import DEFAULT_NVIDIA_MODEL
 from .models import Signal
+from .telemetry import log_event
 from .vibe import ResearchError, extract_decisions
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
@@ -33,6 +36,9 @@ PRICE_KEYS = {
 
 NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+# 404 and 410 mean this model id is gone. Retrying every cycle only burns the cap.
+GONE = frozenset({404, 410})
+PROVIDER_COOLDOWN = timedelta(hours=1)
 
 
 class LlmError(RuntimeError):
@@ -43,20 +49,49 @@ def strip_price_fields(raw: dict) -> dict:
     return {key: value for key, value in raw.items() if key not in PRICE_KEYS}
 
 
-def _content(payload: object) -> str:
+def _piece(value: object) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        chunks = [_piece(part) for part in value]
+        return "\n".join(chunk for chunk in chunks if chunk)
+    if isinstance(value, dict):
+        for key in ("text", "content", "reasoning", "reasoning_content"):
+            found = _piece(value.get(key))
+            if found:
+                return found
+    return ""
+
+
+def _response_texts(payload: object) -> list[str]:
+    """Visible answer first, then DeepSeek thinking text.
+
+    deepseek/deepseek-v4-pro thinks by default. OpenRouter can return HTTP 200
+    with message.content null and the JSON only in reasoning or reasoning_content.
+    Reading content alone turns that 200 into ResearchError and publishes no signals.
+    """
     if not isinstance(payload, dict):
         raise LlmError("LLM response is not an object")
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
         raise LlmError("LLM response has no choices")
     message = choices[0].get("message") or {}
-    content = message.get("content") if isinstance(message, dict) else None
-    if isinstance(content, list):
-        texts = [part.get("text", "") for part in content if isinstance(part, dict)]
-        content = "".join(texts)
-    if not isinstance(content, str) or not content.strip():
+    if not isinstance(message, dict):
         raise LlmError("LLM response content is empty")
-    return content
+    ordered = [
+        _piece(message.get("content")),
+        _piece(message.get("reasoning_content")),
+        _piece(message.get("reasoning")),
+        _piece(choices[0].get("reasoning_content")),
+        _piece(choices[0].get("reasoning")),
+    ]
+    texts: list[str] = []
+    for text in ordered:
+        if text and text not in texts:
+            texts.append(text)
+    if not texts:
+        raise LlmError("LLM response content is empty")
+    return texts
 
 
 class _Budget:
@@ -89,13 +124,15 @@ class LlmAnalyst:
         self,
         *,
         nvidia_key: str = "",
-        nvidia_model: str = "nvidia/nemotron-3-nano-30b-a3b",
+        nvidia_model: str = DEFAULT_NVIDIA_MODEL,
         openrouter_key: str = "",
         openrouter_model: str = "deepseek/deepseek-v4-pro",
         timeout: float = 40,
         daily_calls: int = 48,
         daily_usd: Decimal = Decimal("2"),
         usd_per_call: Decimal = Decimal("0.02"),
+        cooldown: timedelta = PROVIDER_COOLDOWN,
+        clock=None,
         transport=None,
     ):
         self.nvidia_key = nvidia_key
@@ -103,7 +140,12 @@ class LlmAnalyst:
         self.openrouter_key = openrouter_key
         self.openrouter_model = openrouter_model
         self.timeout = timeout
+        self.cooldown = cooldown
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.budget = _Budget(daily_calls, daily_usd, usd_per_call)
+        self._lock = threading.Lock()
+        self._until: dict[str, datetime] = {}
+        self._reason: dict[str, str] = {}
         self.http = httpx.Client(timeout=timeout, transport=transport)
 
     def close(self) -> None:
@@ -111,6 +153,70 @@ class LlmAnalyst:
 
     def configured(self) -> bool:
         return bool(self.nvidia_key or self.openrouter_key)
+
+    def health(self) -> dict:
+        now = self.clock()
+        return {
+            "nvidia": self._health("nvidia", self.nvidia_key, self.nvidia_model, now),
+            "openrouter": self._health("openrouter", self.openrouter_key, self.openrouter_model, now),
+        }
+
+    def _health(self, name: str, key: str, model: str, now: datetime) -> dict:
+        with self._lock:
+            until = self._until.get(name)
+            reason = self._reason.get(name, "")
+        if not key:
+            return {
+                "configured": False,
+                "healthy": False,
+                "state": "unconfigured",
+                "model": model,
+                "detail": "",
+                "until": None,
+            }
+        if until is not None and now < until:
+            return {
+                "configured": True,
+                "healthy": False,
+                "state": "cooldown",
+                "model": model,
+                "detail": reason,
+                "until": until.isoformat(),
+            }
+        return {
+            "configured": True,
+            "healthy": True,
+            "state": "ok",
+            "model": model,
+            "detail": "",
+            "until": None,
+        }
+
+    def _cooling(self, name: str, now: datetime) -> bool:
+        with self._lock:
+            until = self._until.get(name)
+        return until is not None and now < until
+
+    def _cool(self, name: str, model: str, status: int) -> None:
+        now = self.clock()
+        until = now + self.cooldown
+        reason = f"HTTP {status}"
+        with self._lock:
+            self._until[name] = until
+            self._reason[name] = reason
+        log_event(
+            "llm_provider_unhealthy",
+            level=logging.WARNING,
+            provider=name,
+            model=model,
+            http_status=status,
+            cooldown_seconds=int(self.cooldown.total_seconds()),
+            until=until.isoformat(),
+            detail=(
+                f"{name} model {model} returned HTTP {status}. "
+                f"Skipping this provider until {until.isoformat()}."
+            ),
+        )
 
     def research(self, symbols: tuple[str, ...], evidence: dict, max_age_minutes: int) -> list[Signal]:
         if not self.configured():
@@ -128,9 +234,13 @@ class LlmAnalyst:
             ordered = [router, nvidia]
         return [item for item in ordered if item is not None]
 
-    def _complete(self, purpose: str, messages: list[dict]) -> str:
+    def _complete(self, purpose: str, messages: list[dict]) -> list[str]:
         last: Exception | None = None
+        now = self.clock()
         for name, url, model in self._providers(purpose):
+            if self._cooling(name, now):
+                last = LlmError(f"{name} cooling down after {self._reason.get(name, 'HTTP error')}")
+                continue
             self.budget.charge()
             key = self.nvidia_key if name == "nvidia" else self.openrouter_key
             headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
@@ -140,6 +250,12 @@ class LlmAnalyst:
                 "max_tokens": 700,
                 "messages": messages,
             }
+            if name == "nvidia":
+                # Lightning is a reasoning model. Screening needs the JSON in content.
+                body["chat_template_kwargs"] = {"enable_thinking": False}
+            else:
+                # DeepSeek V4 thinks by default and can spend this whole budget before content.
+                body["reasoning"] = {"effort": "none"}
             try:
                 response = self.http.post(url, headers=headers, json=body)
             except httpx.TimeoutException as exc:
@@ -150,15 +266,28 @@ class LlmAnalyst:
                 last = LlmError(f"{name} transport failed")
                 last.__cause__ = exc
                 continue
+            if response.status_code in GONE:
+                self._cool(name, model, response.status_code)
+                last = LlmError(f"{name} HTTP {response.status_code}")
+                continue
             if response.status_code >= 400:
                 last = LlmError(f"{name} HTTP {response.status_code}")
                 continue
             try:
-                return _content(response.json())
+                return _response_texts(response.json())
             except (LlmError, ValueError) as exc:
                 last = exc
                 continue
         raise ResearchError("LLM providers failed") from last
+
+    def _parsed(self, purpose: str, messages: list[dict], parse):
+        last: Exception | None = None
+        for text in self._complete(purpose, messages):
+            try:
+                return parse(text)
+            except ResearchError as exc:
+                last = exc
+        raise ResearchError("LLM response was not the expected JSON") from last
 
     def _screen(self, symbols: list[str], evidence: dict) -> list[str]:
         if not symbols or not self.nvidia_key:
@@ -172,7 +301,7 @@ class LlmAnalyst:
             + _evidence_lines(symbols, evidence)
         )
         try:
-            raw = extract_symbols(self._complete("screen", _messages(prompt)))
+            raw = self._parsed("screen", _messages(prompt), extract_symbols)
         except (ResearchError, ValueError):
             return symbols[:8]
         allowed = set(symbols)
@@ -189,7 +318,7 @@ class LlmAnalyst:
             + ". Evidence: "
             + _evidence_lines(symbols, evidence)
         )
-        parsed = extract_decisions(self._complete("final", _messages(prompt)))
+        parsed = self._parsed("final", _messages(prompt), extract_decisions)
         decisions = parsed.get("decisions")
         if not isinstance(decisions, list) or len(decisions) > len(symbols):
             raise ResearchError("LLM decisions are not a bounded list")

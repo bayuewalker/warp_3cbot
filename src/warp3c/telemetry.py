@@ -13,13 +13,13 @@ LOG = logging.getLogger("warp3c")
 _HIDDEN = {"api_key", "api_secret", "secret", "signature", "authorization", "token", "webhook"}
 
 
-def log_event(event: str, **fields: object) -> None:
+def log_event(event: str, level: int = logging.INFO, **fields: object) -> None:
     payload = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "event": event,
         **{key: value for key, value in fields.items() if key.lower() not in _HIDDEN},
     }
-    LOG.info("%s", json.dumps(payload, default=str, separators=(",", ":")))
+    LOG.log(level, "%s", json.dumps(payload, default=str, separators=(",", ":")))
 
 
 def send_telegram(token: str, chat_id: str, event: str, detail: str, *, transport=None) -> bool:
