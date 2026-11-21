@@ -9,6 +9,7 @@ let attempt = 0;
 let connected = false;
 let timer: number | undefined;
 let started = false;
+let stopped = false;
 
 function notify() {
   listeners.forEach((fn) => fn());
@@ -36,11 +37,28 @@ export function liveConnected() {
 
 export function ensureLive() {
   if (started) return;
+  stopped = false;
   started = true;
   connect();
 }
 
+export function stopLive() {
+  stopped = true;
+  started = false;
+  connected = false;
+  attempt = 0;
+  if (timer !== undefined) {
+    window.clearTimeout(timer);
+    timer = undefined;
+  }
+  source?.close();
+  source = null;
+  routes.clear();
+  notify();
+}
+
 function connect() {
+  if (stopped) return;
   source = new EventSource("/api/stream");
   source.addEventListener("hello", () => {
     connected = true;
@@ -89,6 +107,7 @@ function connect() {
     }
   });
   source.onerror = () => {
+    if (stopped) return;
     connected = false;
     source?.close();
     source = null;
@@ -97,7 +116,7 @@ function connect() {
     attempt += 1;
     timer = window.setTimeout(() => {
       timer = undefined;
-      connect();
+      if (!stopped) connect();
     }, wait);
   };
 }

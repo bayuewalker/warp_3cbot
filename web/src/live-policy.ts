@@ -1,5 +1,9 @@
 /** What a panel does with a cached stream frame and the next HTTP read. */
 
+export function liveSessionAfterLogout() {
+  return { connected: false, reconnect: false, cachedRoutes: 0 };
+}
+
 export function liveReadDecision(connected: boolean, hasFrame: boolean, poll: boolean) {
   if (!poll) {
     return { startPoll: false, acceptHttp: true, applyCachedFrame: false };

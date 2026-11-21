@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { liveReadDecision } from "./src/live-policy.ts";
+import { liveReadDecision, liveSessionAfterLogout } from "./src/live-policy.ts";
 
 test("a dropped stream polls and accepts HTTP even when a frame is cached", () => {
   const decision = liveReadDecision(false, true, true);
@@ -20,6 +20,13 @@ test("the first read still uses HTTP before any frame arrives", () => {
   const decision = liveReadDecision(true, false, true);
   assert.equal(decision.acceptHttp, true);
   assert.equal(decision.applyCachedFrame, false);
+});
+
+test("logout closes the stream and drops cached snapshots", () => {
+  const session = liveSessionAfterLogout();
+  assert.equal(session.connected, false);
+  assert.equal(session.reconnect, false);
+  assert.equal(session.cachedRoutes, 0);
 });
 
 test("an editable form ignores streamed snapshots and still accepts HTTP", () => {

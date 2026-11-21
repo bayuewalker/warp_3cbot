@@ -28,6 +28,7 @@ import { AccountsPanel, BudgetForm, ForwardPanel, PaperCheck, RulesPage, WarpBot
 import { Badge, Button, Card, Field, Loading, Problem, inputClass } from "./ui";
 import { Overview, Providers } from "./monitor";
 import { Age } from "./age";
+import { stopLive } from "./live";
 import { useLiveState, useLoad } from "./snapshot";
 
 const nav = [
@@ -129,6 +130,7 @@ export function App() {
       language={language}
       logout={async () => {
         await api("/api/logout", { method: "POST" });
+        stopLive();
         setAuthed(false);
       }}
     />
