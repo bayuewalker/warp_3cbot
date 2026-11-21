@@ -199,7 +199,13 @@ class Engine:
                 return ()
             return selected
         if self.cfg.discovery != "auto":
-            return self.cfg.symbols
+            # The global denylist is a safety policy, not an auto-discovery option.
+            # Static mode must never bypass it (including through old saved presets).
+            chosen = tuple(symbol for symbol in self.cfg.symbols if symbol not in self.cfg.deny_symbols)
+            if not chosen:
+                self._discovery_block = "no_eligible_market"
+                self._record([(now.isoformat(), "*", "universe", "no_eligible_market", "fail_closed")])
+            return chosen
         try:
             selected, rejected = self.market.discover(now=now)
         except MarketDataError:
