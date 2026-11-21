@@ -161,10 +161,25 @@ class TradebookTests(unittest.TestCase):
             scale=Decimal("1.2"), step=Decimal("0.02"), policy=policy(),
         )
         self.assertIsNotNone(ladder)
-        self.assertAlmostEqual(float(ladder.orders[0]), 45.0, places=2)
+        self.assertEqual(ladder.orders[1], ladder.base)
         payload = apply_ladder({"stopLoss": Decimal("0.2"), "takeProfits": []}, ladder)
+        self.assertEqual(payload["stopLossBaseOn"], "entry_order")
+        self.assertAlmostEqual(float(Decimal("100") * (Decimal("1") - payload["stopLoss"])), float(ladder.stop_price), places=6)
         self.assertTrue(stop_configured(payload))
         self.assertGreaterEqual(payload["takeProfits"][0]["priceDeviation"], take_profit_floor(policy()))
+        rebuilt = [payload["amountPerTrade"]]
+        for index in range(1, ladder.safety_orders + 1):
+            rebuilt.append(payload["amountPerTrade"] * (payload["extraOrderVolumeMultiplier"] ** (index - 1)))
+        self.assertEqual(rebuilt, list(ladder.orders))
+        capped = search_ladder(
+            price=Decimal("100"), cap=Decimal("300"), nav=Decimal("5000"),
+            open_stop_risk=Decimal("0"), open_commitment=Decimal("0"),
+            minimum=Decimal("1"), atr_1h_pct=Decimal("0.02"), policy=policy(sleeve_pct=Decimal("1")),
+            max_base=Decimal("5"),
+        )
+        self.assertIsNotNone(capped)
+        self.assertLessEqual(capped.base, Decimal("5"))
+        self.assertLess(capped.commitment, Decimal("300"))
 
     def test_addendum_cooldowns_review_and_go_no_go(self):
         now = datetime(2026, 11, 21, tzinfo=timezone.utc)

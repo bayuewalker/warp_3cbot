@@ -13,6 +13,7 @@ from warp3c.config import Settings
 from warp3c.engine import Engine
 from warp3c.market import MarketData, MarketDataError
 from warp3c.state import OrderJournal
+from warp3c.threecommas import IntegrationError
 
 NOW = datetime(2026, 6, 1, tzinfo=timezone.utc)
 NOW_MS = int(NOW.timestamp() * 1000)
@@ -106,3 +107,44 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(edited.sleeve_pct, Decimal("0.2"))
         with self.assertRaises(ValueError):
             apply_rule_edits(rules, {"min_score": 49})
+
+    def test_a_finished_strategy_frees_its_slot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = paper(tmp)
+            journal = OrderJournal(cfg.db_path)
+            stamp = "2026-11-21T00:00:00+00:00"
+            journal.insert_warp_bot({
+                "warp_id": "abcd1234", "name": "WARP-abcd1234", "client_id": "warp3c-done",
+                "external_code": "strat-1", "kind": "dca", "product": "strategy",
+                "account_code": "p123", "market": "spot", "symbol": "SOLUSDT",
+                "status": "confirmed", "commitment": "20", "created_at": stamp, "updated_at": stamp,
+            })
+
+            class Done(ExplodingBroker):
+                def get_strategy(self, client_id):
+                    return {"status": "completed", "clientId": client_id, "strategyId": "strat-1"}
+
+            engine = Engine(cfg, Done(), Research(), journal, Markets())
+            engine._retire_finished([])
+            self.assertEqual(journal.warp_bot("abcd1234")["status"], "closed")
+            journal.close()
+
+    def test_readback_mismatch_keeps_the_accepted_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = paper(tmp)
+            journal = OrderJournal(cfg.db_path)
+
+            class Echo(ExplodingBroker):
+                def create_strategy(self, payload):
+                    self.creates += 1
+                    return {"strategyId": "live-1", "clientId": payload["clientId"], "stopLoss": None}
+
+            broker = Echo()
+            engine = Engine(cfg, broker, Research(), journal, Markets())
+            with self.assertRaises(IntegrationError):
+                engine.cycle()
+            self.assertEqual(broker.creates, 1)
+            self.assertEqual(journal.recent_submissions()[0]["state"], "confirmed")
+            self.assertEqual(journal.warp_bots()[0]["status"], "confirmed")
+            self.assertEqual(journal.warp_bots()[0]["external_code"], "live-1")
+            journal.close()

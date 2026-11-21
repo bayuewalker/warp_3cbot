@@ -393,12 +393,13 @@ class Engine:
                 self._record(notes)
                 if not exc.uncertain:
                     self.journal.reject(client_id)
-                if getattr(self, "_pending_warp", None):
+                if getattr(self, "_pending_warp", None) and not getattr(self, "_kept_order", False):
                     self.journal.update_warp_bot(
                         self._pending_warp,
                         status="rejected" if not exc.uncertain else "unknown",
                         updated_at=datetime.now(timezone.utc).isoformat(),
                     )
+                self._kept_order = False
                 raise
             broker_id = _broker_id(result)
             self.journal.confirm(client_id, broker_id)
@@ -498,7 +499,17 @@ class Engine:
         else:
             result = self.broker.create_strategy(request)
         if isinstance(result, dict) and not readback_ok(result, exits):
-            raise IntegrationError("3Commas read-back does not match the exit toggles", uncertain=False)
+            kept = _broker_id_or_none(result)
+            if kept:
+                self.journal.confirm(client_id, kept)
+                self.journal.update_warp_bot(
+                    warp_id,
+                    status="confirmed",
+                    external_code=kept,
+                    updated_at=datetime.now(timezone.utc).isoformat(),
+                )
+                self._kept_order = True
+            raise IntegrationError("3Commas read-back does not match the exit toggles", uncertain=True)
         return result
 
     def _untracked(self, positions) -> tuple[tuple[str, Decimal], ...]:
@@ -625,6 +636,27 @@ class Engine:
         unresolved = self.journal.reconcile_ids(found)
         if unresolved:
             raise IntegrationError(f"{len(unresolved)} trade submissions unreconciled: entries halted")
+        self._retire_finished(positions)
+
+    def _retire_finished(self, positions: list[dict]) -> None:
+        by_client = {str(row.get("clientId")): row for row in positions if row.get("clientId")}
+        by_id = {str(row.get("strategyId")): row for row in positions if row.get("strategyId")}
+        terminal = {"completed", "canceled", "cancelled", "panic_exited", "unlinked", "failed", "closed"}
+        for bot in self.journal.warp_bots():
+            if bot.get("status") not in {"confirmed", "active", "paused"}:
+                continue
+            row = by_client.get(str(bot.get("client_id") or "")) or by_id.get(str(bot.get("external_code") or ""))
+            if row is None and bot.get("client_id") and hasattr(self.broker, "get_strategy"):
+                try:
+                    row = self.broker.get_strategy(bot["client_id"])
+                except (StrategyNotFound, IntegrationError):
+                    continue
+            if isinstance(row, dict) and str(row.get("status") or "") in terminal:
+                self.journal.update_warp_bot(
+                    bot["warp_id"],
+                    status="closed",
+                    updated_at=datetime.now(timezone.utc).isoformat(),
+                )
 
     def _halted(self) -> bool:
         return Path(self.cfg.db_path).parent.joinpath("HALT").exists()
@@ -732,6 +764,8 @@ class Engine:
             score=score,
             min_score=self._template().min_score,
             exits=_exits(self._template()),
+            max_commitment=plan.full_commitment,
+            max_base=plan.base_amount,
             symbol=plan.symbol,
             now=now,
             tape=tape,

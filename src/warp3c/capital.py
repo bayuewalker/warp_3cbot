@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from .models import positive
+from .risk import dca_ladder_factor
 
 MAJORS = {"BTCUSDT", "ETHUSDT"}
 
@@ -199,17 +200,16 @@ def build_ladder(
         return None
     if not Decimal("1") <= scale <= Decimal("1.2"):
         return None
-    base = policy.base_share * commitment
+    # 3Commas repeats the base on the first safety order, then applies the multiplier.
+    # The ladder has to be that shape or the live order is larger than the one we checked.
     capital = (Decimal("1") - policy.order_cushion) * commitment
-    if base <= 0 or base >= capital:
+    factor = dca_ladder_factor(safety_orders + 1, scale, order_averaging=False)
+    base = capital / factor
+    if base <= 0:
         return None
-    growth = sum((scale ** i for i in range(safety_orders)), Decimal("0"))
-    if growth <= 0:
-        return None
-    first = (capital - base) / growth
     orders = [base]
-    for index in range(safety_orders):
-        orders.append(first * (scale ** index))
+    for index in range(1, safety_orders + 1):
+        orders.append(base * (scale ** (index - 1)))
     buys: list[Decimal] = []
     coins = base / price
     for index in range(1, safety_orders + 1):
@@ -262,6 +262,7 @@ def search_ladder(
     atr_1h_pct: Decimal | None,
     policy: Policy,
     stop_enabled: bool = True,
+    max_base: Decimal | None = None,
 ) -> Ladder | None:
     if cap <= 0 or nav <= 0 or price <= 0:
         return None
@@ -283,6 +284,8 @@ def search_ladder(
                     stop_enabled=stop_enabled,
                 )
                 if ladder is None or not orders_clear_minimum(ladder, minimum):
+                    continue
+                if max_base is not None and ladder.base > max_base:
                     continue
                 if ladder.stop_loss > policy.deal_stop_risk * nav:
                     continue
@@ -593,6 +596,8 @@ def approve(
     model_buy: bool,
     score: Breakdown | None,
     atr_1h_pct: Decimal | None = None,
+    max_commitment: Decimal | None = None,
+    max_base: Decimal | None = None,
     tape: BtcTape | None = None,
     events: list[dict] | None = None,
     symbol: str = "",
@@ -670,11 +675,12 @@ def approve(
         warp_pending_so=warp_pending_so,
         policy=policy,
     )
-    if caps.new_deal_cap <= 0:
-        return Decision("VETO", ["no_capital"], nav=book.eligible, cap=caps.new_deal_cap, score=score)
+    deal_cap = caps.new_deal_cap if max_commitment is None else min(caps.new_deal_cap, max_commitment)
+    if deal_cap <= 0:
+        return Decision("VETO", ["no_capital"], nav=book.eligible, cap=deal_cap, score=score)
     ladder = search_ladder(
         price=price,
-        cap=caps.new_deal_cap,
+        cap=deal_cap,
         nav=book.eligible,
         open_stop_risk=open_stop_risk,
         open_commitment=warp_committed,
@@ -682,6 +688,7 @@ def approve(
         atr_1h_pct=atr_1h_pct,
         policy=policy,
         stop_enabled=chosen.stop,
+        max_base=max_base,
     )
     if ladder is None:
         return Decision("VETO", ["no_feasible_ladder"], nav=book.eligible, cap=caps.new_deal_cap, score=score)
@@ -702,9 +709,12 @@ def apply_ladder(payload: dict, ladder: Ladder, exits: Exits | None = None) -> d
     updated["extraOrderDeviation"] = ladder.step
     updated["extraOrderVolumeMultiplier"] = ladder.scale
     if chosen.stop:
+        # Anchor to the entry order so the broker stop is the price the model checked.
         updated["stopLoss"] = ladder.stop_fraction
+        updated["stopLossBaseOn"] = "entry_order"
     else:
         updated.pop("stopLoss", None)
+        updated.pop("stopLossBaseOn", None)
     if chosen.take_profit:
         updated["takeProfits"] = [{"priceDeviation": ladder.take_profit, "portfolio": Decimal("1")}]
     else:
