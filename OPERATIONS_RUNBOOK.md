@@ -5,7 +5,7 @@ Default `TRADING_MODE=observe`. This runbook does not authorize paper or live tr
 ## What the process does
 
 1. Monitor reads the 3Commas profile and live strategies when credentials exist, reconciles unknown client ids, and refreshes equity marks.
-2. Scan reads the TradingView screener with a Binance ticker fallback, then public Binance candles. Research asks NVIDIA and OpenRouter for `BUY`, `WAIT`, or `SKIP` and ignores any price or size the model adds. Entry, stop, and target are computed from the last trade.
+2. Scan reads the TradingView screener with a Binance ticker fallback, then public Binance candles. Research asks NVIDIA and OpenRouter for `BUY`, `WAIT`, or `SKIP` and ignores any price or size the model adds. Entry, stop, and target are computed from the last trade. If a provider returns HTTP 404 or 410, the worker logs `llm_provider_unhealthy` and skips that provider for one hour. Set `WARP_NVIDIA_MODEL` to a model that is still on `https://integrate.api.nvidia.com/v1/models`, then restart. The overview shows NVIDIA and OpenRouter as healthy, cooling down, or not configured.
 3. Risk may plan one new ladder. Observe logs it and does not POST. Paper and live POST only after the journal reserves the client id.
 4. A busy research thread does not stop step 1.
 

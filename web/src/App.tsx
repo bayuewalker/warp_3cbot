@@ -273,6 +273,47 @@ function compact(value: string | null): string {
   return new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 2 }).format(number);
 }
 
+function providerState(state: string | undefined, lang: Lang): { tone: "good" | "warn" | "neutral"; label: string } {
+  if (state === "ok") return { tone: "good", label: t(lang, "providerOk") };
+  if (state === "cooldown") return { tone: "warn", label: t(lang, "providerDown") };
+  return { tone: "neutral", label: t(lang, "providerOff") };
+}
+
+function ProviderHealthList({
+  lang,
+  providers,
+}: {
+  lang: Lang;
+  providers: Status["providers"];
+}) {
+  const rows = [
+    ["NVIDIA", providers?.nvidia],
+    ["OpenRouter", providers?.openrouter],
+  ] as const;
+  return (
+    <div className="mt-3">
+      <p className="text-xs text-zinc-500">{t(lang, "providers")}</p>
+      <ul className="mt-2 space-y-2">
+        {rows.map(([label, item]) => {
+          const view = providerState(item?.state, lang);
+          return (
+            <li key={label} className="flex items-center justify-between gap-3">
+              <span>
+                <span className="text-sm font-medium">{label}</span>
+                <span className="mt-0.5 block text-xs text-zinc-500">{item?.model || "—"}</span>
+                {item?.state === "cooldown" && item.detail ? (
+                  <span className="mt-0.5 block text-xs text-amber-200/80">{item.detail}</span>
+                ) : null}
+              </span>
+              <Badge tone={view.tone}>{view.label}</Badge>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function reasonText(reason: string, lang: Lang): string {
   if (reason === "observe_without_account") return lang === "id" ? "Observe, tanpa akun" : "Observe, no account";
   if (reason === "ok") return lang === "id" ? "Siap" : "Ready";
@@ -336,6 +377,7 @@ function Overview({ lang }: { lang: Lang }) {
           <h2 className="font-semibold">{t(lang, "status")}</h2>
         </div>
         <p className="text-sm text-zinc-300">{row.risk_permitted ? t(lang, "riskOn") : t(lang, "riskOff")}</p>
+        <ProviderHealthList lang={lang} providers={row.providers} />
         <p className="mt-2 text-xs text-zinc-500">{t(lang, "haltHelp")}</p>
         <div className="mt-4 flex gap-2">
           <Button variant="danger" type="button" onClick={() => setConfirm("halt")}>{t(lang, "halt")}</Button>

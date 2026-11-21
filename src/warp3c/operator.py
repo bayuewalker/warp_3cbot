@@ -142,6 +142,23 @@ def public_config(cfg) -> dict:
     }
 
 
+def _provider_health(cfg, engine) -> dict:
+    analyst = getattr(engine, "analyst", None)
+    if analyst is not None and hasattr(analyst, "health"):
+        return analyst.health()
+    blank = {
+        "configured": False,
+        "healthy": False,
+        "state": "unconfigured",
+        "detail": "",
+        "until": None,
+    }
+    return {
+        "nvidia": {**blank, "model": cfg.nvidia_model},
+        "openrouter": {**blank, "model": cfg.openrouter_model},
+    }
+
+
 def _positions(engine) -> list[dict]:
     rows = []
     for row in getattr(engine, "last_positions", []) or []:
@@ -207,6 +224,7 @@ def publish(cfg, journal, engine) -> None:
         "halt": engine._halted(),
         "pnl_today": _pnl_today(journal),
         "equity": None if decision is None or decision.equity is None else _text(decision.equity),
+        "providers": _provider_health(cfg, engine),
     }
     SNAPSHOT["/api/risk"] = {
         "reason": status.reason,

@@ -20,6 +20,15 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   return response.json() as Promise<T>;
 }
 
+export type ProviderHealth = {
+  configured: boolean;
+  healthy: boolean;
+  state: "ok" | "cooldown" | "unconfigured";
+  model: string;
+  detail: string;
+  until: string | null;
+};
+
 export type Status = {
   mode: string;
   reason: string;
@@ -30,6 +39,10 @@ export type Status = {
   equity: string | null;
   pnl_today: string | null;
   universe: string[];
+  providers?: {
+    nvidia: ProviderHealth;
+    openrouter: ProviderHealth;
+  };
 };
 
 export type CardRow = {

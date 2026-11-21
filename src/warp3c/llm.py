@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import httpx
 
+from .config import DEFAULT_NVIDIA_MODEL
 from .models import Signal
+from .telemetry import log_event
 from .vibe import ResearchError, extract_decisions
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
@@ -33,6 +36,9 @@ PRICE_KEYS = {
 
 NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+# 404 and 410 mean this model id is gone. Retrying every cycle only burns the cap.
+GONE = frozenset({404, 410})
+PROVIDER_COOLDOWN = timedelta(hours=1)
 
 
 class LlmError(RuntimeError):
@@ -89,13 +95,15 @@ class LlmAnalyst:
         self,
         *,
         nvidia_key: str = "",
-        nvidia_model: str = "nvidia/nemotron-3-nano-30b-a3b",
+        nvidia_model: str = DEFAULT_NVIDIA_MODEL,
         openrouter_key: str = "",
         openrouter_model: str = "deepseek/deepseek-v4-pro",
         timeout: float = 40,
         daily_calls: int = 48,
         daily_usd: Decimal = Decimal("2"),
         usd_per_call: Decimal = Decimal("0.02"),
+        cooldown: timedelta = PROVIDER_COOLDOWN,
+        clock=None,
         transport=None,
     ):
         self.nvidia_key = nvidia_key
@@ -103,7 +111,12 @@ class LlmAnalyst:
         self.openrouter_key = openrouter_key
         self.openrouter_model = openrouter_model
         self.timeout = timeout
+        self.cooldown = cooldown
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.budget = _Budget(daily_calls, daily_usd, usd_per_call)
+        self._lock = threading.Lock()
+        self._until: dict[str, datetime] = {}
+        self._reason: dict[str, str] = {}
         self.http = httpx.Client(timeout=timeout, transport=transport)
 
     def close(self) -> None:
@@ -111,6 +124,70 @@ class LlmAnalyst:
 
     def configured(self) -> bool:
         return bool(self.nvidia_key or self.openrouter_key)
+
+    def health(self) -> dict:
+        now = self.clock()
+        return {
+            "nvidia": self._health("nvidia", self.nvidia_key, self.nvidia_model, now),
+            "openrouter": self._health("openrouter", self.openrouter_key, self.openrouter_model, now),
+        }
+
+    def _health(self, name: str, key: str, model: str, now: datetime) -> dict:
+        with self._lock:
+            until = self._until.get(name)
+            reason = self._reason.get(name, "")
+        if not key:
+            return {
+                "configured": False,
+                "healthy": False,
+                "state": "unconfigured",
+                "model": model,
+                "detail": "",
+                "until": None,
+            }
+        if until is not None and now < until:
+            return {
+                "configured": True,
+                "healthy": False,
+                "state": "cooldown",
+                "model": model,
+                "detail": reason,
+                "until": until.isoformat(),
+            }
+        return {
+            "configured": True,
+            "healthy": True,
+            "state": "ok",
+            "model": model,
+            "detail": "",
+            "until": None,
+        }
+
+    def _cooling(self, name: str, now: datetime) -> bool:
+        with self._lock:
+            until = self._until.get(name)
+        return until is not None and now < until
+
+    def _cool(self, name: str, model: str, status: int) -> None:
+        now = self.clock()
+        until = now + self.cooldown
+        reason = f"HTTP {status}"
+        with self._lock:
+            self._until[name] = until
+            self._reason[name] = reason
+        log_event(
+            "llm_provider_unhealthy",
+            level=logging.WARNING,
+            provider=name,
+            model=model,
+            http_status=status,
+            cooldown_seconds=int(self.cooldown.total_seconds()),
+            until=until.isoformat(),
+            detail=(
+                f"{name} model {model} returned HTTP {status}. "
+                f"Skipping this provider until {until.isoformat()}."
+            ),
+        )
 
     def research(self, symbols: tuple[str, ...], evidence: dict, max_age_minutes: int) -> list[Signal]:
         if not self.configured():
@@ -130,7 +207,11 @@ class LlmAnalyst:
 
     def _complete(self, purpose: str, messages: list[dict]) -> str:
         last: Exception | None = None
+        now = self.clock()
         for name, url, model in self._providers(purpose):
+            if self._cooling(name, now):
+                last = LlmError(f"{name} cooling down after {self._reason.get(name, 'HTTP error')}")
+                continue
             self.budget.charge()
             key = self.nvidia_key if name == "nvidia" else self.openrouter_key
             headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
@@ -140,6 +221,9 @@ class LlmAnalyst:
                 "max_tokens": 700,
                 "messages": messages,
             }
+            if name == "nvidia":
+                # Lightning is a reasoning model. Screening needs the JSON in content.
+                body["chat_template_kwargs"] = {"enable_thinking": False}
             try:
                 response = self.http.post(url, headers=headers, json=body)
             except httpx.TimeoutException as exc:
@@ -149,6 +233,10 @@ class LlmAnalyst:
             except httpx.HTTPError as exc:
                 last = LlmError(f"{name} transport failed")
                 last.__cause__ = exc
+                continue
+            if response.status_code in GONE:
+                self._cool(name, model, response.status_code)
+                last = LlmError(f"{name} HTTP {response.status_code}")
                 continue
             if response.status_code >= 400:
                 last = LlmError(f"{name} HTTP {response.status_code}")

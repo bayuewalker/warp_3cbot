@@ -152,6 +152,10 @@ const copy = {
     saveRules: "Save rules",
     decisions: "Last cycle",
     noDecisions: "No AEGIS decision yet.",
+    providers: "Analysis providers",
+    providerOk: "healthy",
+    providerDown: "cooling down",
+    providerOff: "not configured",
   },
   id: {
     title: "WARP 3C",
@@ -304,6 +308,10 @@ const copy = {
     saveRules: "Simpan aturan",
     decisions: "Siklus terakhir",
     noDecisions: "Belum ada keputusan AEGIS.",
+    providers: "Penyedia analisis",
+    providerOk: "sehat",
+    providerDown: "jeda sementara",
+    providerOff: "belum dikonfigurasi",
   },
 } as const;
 
