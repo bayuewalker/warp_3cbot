@@ -76,6 +76,15 @@ class BotTemplate:
     market: str = "spot"
     leverage: int = 1
     account_code: str = ""
+    stop_enabled: bool = True
+    take_profit_enabled: bool = True
+    trailing_enabled: bool = False
+    min_score: int = 80
+    weights: tuple[int, int, int, int, int] = (25, 25, 20, 20, 10)
+
+    def weight_map(self) -> dict[str, int]:
+        names = ("trend", "reversal", "liquidity", "structure", "event")
+        return dict(zip(names, self.weights, strict=True))
 
     def to_dict(self) -> dict:
         return {
@@ -83,8 +92,13 @@ class BotTemplate:
             "product": self.product,
             "preset": self.preset,
             "market": self.market,
-            "leverage": self.leverage,
             "account_code": self.account_code,
+            "stop_enabled": self.stop_enabled,
+            "take_profit_enabled": self.take_profit_enabled,
+            "trailing_enabled": self.trailing_enabled,
+            "min_score": self.min_score,
+            "weights": self.weight_map(),
+            "score_warning": self.min_score < 80,
         }
 
     @classmethod
@@ -99,19 +113,32 @@ class BotTemplate:
         market = str(raw.get("market", "spot"))
         if kind not in {"dca", "grid"} or preset not in PRESETS:
             raise ValueError("Unknown bot kind or preset")
-        if market not in {"spot", "futures"}:
-            raise ValueError("Unknown market")
-        from .accounts import clamp_leverage
+        if market != "spot":
+            raise ValueError("WARP trades Binance spot only")
+        from .capital import parse_min_score, parse_weights
 
-        leverage = clamp_leverage(int(raw.get("leverage", 1)), 3)
         account_code = str(raw.get("account_code") or "")
-        if market == "futures":
-            product = "grid_bot" if kind == "grid" else "dca_bot"
-        elif kind == "grid":
+        if kind == "grid":
             product = "grid_bot"
         elif product not in {"strategy", "dca_bot"}:
             raise ValueError("Unknown DCA product")
-        return cls(kind, product, preset, market, leverage, account_code)
+        for flag in ("stop_enabled", "take_profit_enabled", "trailing_enabled"):
+            if flag in raw and type(raw[flag]) is not bool:
+                raise ValueError("Exit toggles must be true or false")
+        weights = parse_weights(raw.get("weights"))
+        return cls(
+            kind,
+            product,
+            preset,
+            market,
+            1,
+            account_code,
+            raw.get("stop_enabled", True) is not False,
+            raw.get("take_profit_enabled", True) is not False,
+            raw.get("trailing_enabled", False) is True,
+            parse_min_score(raw.get("min_score"), 80),
+            tuple(weights[name] for name in ("trend", "reversal", "liquidity", "structure", "event")),
+        )
 
 
 def execution_fractions(cfg, template: BotTemplate) -> tuple[Decimal, Decimal]:
@@ -218,68 +245,6 @@ def build_dca_bot_payload(
     }
 
 
-def futures_pair_code(symbol: str) -> str:
-    """USDT-M perpetual. Dated contracts such as BTCUSDT_270326 are refused."""
-    if not symbol.isalnum() or not symbol.endswith("USDT") or "_" in symbol:
-        raise ValueError("Futures pair must be the non-expiring USDT-M symbol")
-    return symbol
-
-
-def build_futures_dca_payload(
-    cfg,
-    plan: PlannedOrder,
-    client_id: str,
-    template: BotTemplate,
-    *,
-    exchange_code: str,
-    profile_code: str,
-    name: str,
-) -> dict:
-    """USDT-M long DCA. Leverage is capped. Short is not representable here."""
-    from .accounts import clamp_leverage
-
-    if template.market != "futures":
-        raise ValueError("Futures payload requires a futures template")
-    if not str(name).startswith("WARP-"):
-        raise ValueError("Futures bots must use a WARP- name")
-    if not exchange_code or "FUTURE" not in exchange_code.upper():
-        raise ValueError("Futures bots require the futures exchange code")
-    leverage = clamp_leverage(template.leverage, cfg.max_leverage)
-    preset = PRESETS[template.preset]
-    orders = min(max(preset.dca_orders, 1), cfg.dca_orders)
-    multiplier = min(preset.dca_multiplier, cfg.dca_multiplier)
-    base = _fit_base(cfg, plan, orders, multiplier)
-    if base <= 0:
-        raise ValueError("DCA base rounds to zero")
-    return {
-        "name": name,
-        "exchangeCode": exchange_code,
-        "pairsCodes": [futures_pair_code(plan.symbol)],
-        "profilesCodes": [profile_code],
-        "dcaTradingType": "long",
-        "marginMode": "isolated",
-        "leverage": leverage,
-        "exchangeLeverage": leverage,
-        "amountPerTrade": base,
-        "amountPerTradeType": "quote",
-        "amountPerTradeMultiplier": 1,
-        "orderType": "market",
-        "entrySignalCondition": "immediate",
-        "extraOrderCount": orders,
-        "extraOrderDeviation": min(max(preset.dca_deviation, Decimal("0.001")), cfg.dca_deviation),
-        "extraOrderVolumeMultiplier": multiplier,
-        "extraOrderDeviationMultiplier": min(preset.dca_step_multiplier, cfg.dca_step_multiplier),
-        "extraOrderCostAveraging": "quote",
-        "applyDcaForFirstSafetyOrder": False,
-        "takeProfits": [{"priceDeviation": min(preset.take_profit, cfg.take_profit), "portfolio": Decimal("1")}],
-        "takeProfitBaseOn": "average_price",
-        "stopLoss": min(preset.stop_loss, cfg.stop_loss),
-        "stopLossBaseOn": "average_price",
-        "maxOpenPositions": 1,
-        "clientId": client_id,
-    }
-
-
 def build_grid_payload(
     cfg,
     plan: PlannedOrder,
@@ -319,7 +284,7 @@ def build_grid_payload(
     payload = {
         "name": name or f"warp3c-{client_id}",
         "exchangeCode": exchange_code or cfg.exchange_code,
-        "pairCode": futures_pair_code(plan.symbol) if template.market == "futures" else plan.symbol,
+        "pairCode": plan.symbol,
         "profilesCodes": [profile_code or cfg.profile_code],
         "gridType": "interval",
         "gridMethod": "classic",
@@ -337,17 +302,6 @@ def build_grid_payload(
         "takeProfit": take_usd,
         "stopLoss": stop_usd,
     }
-    if template.market == "futures":
-        from .accounts import clamp_leverage
-
-        leverage = clamp_leverage(template.leverage, cfg.max_leverage)
-        if not str(payload["name"]).startswith("WARP-"):
-            raise ValueError("Futures bots must use a WARP- name")
-        if "FUTURE" not in str(payload["exchangeCode"]).upper():
-            raise ValueError("Futures bots require the futures exchange code")
-        payload["leverage"] = leverage
-        payload["exchangeLeverage"] = leverage
-        payload["marginMode"] = "isolated"
     return payload, total
 
 

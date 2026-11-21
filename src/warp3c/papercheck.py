@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from .accounts import budget_decision, budget_for, effective_budget, parse_budget_override
+from .capital import Policy, sleeve_nav
 from .ownership import NotOwned, apply_action, warp_name
 from .threecommas import IntegrationError
 
@@ -25,23 +25,26 @@ def _step(name: str, ok: bool, detail: str) -> dict:
 
 
 def choose_demo(accounts, *, requested: str | None, target: str | None):
-    demos = [row for row in accounts if row.demo and row.status == "active" and row.quote == "USDT"]
+    demos = [
+        row for row in accounts
+        if row.demo and row.status == "active" and row.quote == "USDT" and row.market == "spot"
+    ]
     chosen_code = requested or target
     if chosen_code:
         matches = [row for row in accounts if row.code == chosen_code]
         if len(matches) != 1:
             return None, "account_not_found"
         account = matches[0]
+        if account.market != "spot":
+            return None, "no_demo_spot_account"
         if not account.demo:
-            return None, "paper_requires_demo"
+            return None, "no_demo_spot_account"
         if account.quote != "USDT" or account.status != "active":
             return None, "account_not_usable"
         return account, "ok"
-    futures = [row for row in demos if row.market == "futures"]
-    pool = futures or demos
-    if len(pool) != 1:
-        return None, "demo_account_ambiguous" if pool else "demo_account_missing"
-    return pool[0], "ok"
+    if len(demos) != 1:
+        return None, "demo_account_ambiguous" if demos else "no_demo_spot_account"
+    return demos[0], "ok"
 
 
 def run_roundtrip(cfg, broker, journal, *, now: datetime | None = None) -> dict:
@@ -89,33 +92,23 @@ def run_roundtrip(cfg, broker, journal, *, now: datetime | None = None) -> dict:
     warp_id = secrets.token_hex(4)
     name = warp_name(warp_id)
     quote = Decimal("15")
-    override = parse_budget_override(journal.get_setting("account_budgets"), account.code)
-    try:
-        absolute, fraction, max_bots = effective_budget(cfg, override)
-    except ValueError:
-        return fail("budget", "invalid")
-    decision = budget_decision(
-        budget_for(
-            balance=account.total,
-            absolute=absolute,
-            fraction=fraction,
-            max_bots=max_bots,
-            bots=journal.warp_bots(account.code),
-        ),
-        quote,
+    book = sleeve_nav(
+        account_usdt=account.total,
+        free_usdt=account.free,
+        warp_owned=Decimal("0"),
+        non_warp_spent=Decimal("0"),
+        non_warp_future_so=Decimal("0"),
+        policy=Policy.from_settings(cfg),
     )
-    if not decision[0]:
-        return fail("budget", decision[1])
-    steps.append(_step("budget", True, decision[1]))
+    if book.eligible < quote:
+        return fail("sleeve", "no_demo_spot_account" if account.market != "spot" else "sleeve_too_small")
+    steps.append(_step("sleeve", True, format(book.eligible, "f")))
     payload = {
         "name": name,
         "exchangeCode": account.exchange_code,
         "pairsCodes": ["BTCUSDT"],
         "profilesCodes": [account.code],
         "dcaTradingType": "long",
-        "marginMode": "isolated",
-        "leverage": 1,
-        "exchangeLeverage": 1,
         "amountPerTrade": quote,
         "amountPerTradeType": "quote",
         "amountPerTradeMultiplier": 1,
@@ -126,6 +119,7 @@ def run_roundtrip(cfg, broker, journal, *, now: datetime | None = None) -> dict:
         "extraOrderVolumeMultiplier": Decimal("1"),
         "extraOrderDeviationMultiplier": Decimal("1"),
         "takeProfits": [{"priceDeviation": Decimal("0.02"), "portfolio": Decimal("1")}],
+        "stopLoss": Decimal("0.08"),
         "maxOpenPositions": 1,
     }
     stamp = moment.isoformat()

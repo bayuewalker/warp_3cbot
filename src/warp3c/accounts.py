@@ -164,31 +164,21 @@ def account_allowed(
         return False, "inactive"
     if account.quote != "USDT":
         return False, "quote_not_usdt"
-    if intent_market == "futures" and account.market != "futures":
-        return False, "not_futures"
-    if intent_market == "spot" and account.market != "spot":
-        return False, "not_spot"
-    if account.market == "futures" and account.margin_mode == "cross":
-        return False, "futures_requires_isolated"
+    if account.market != "spot":
+        return False, "spot_only"
     if mode == "paper":
         if not account.demo:
             return False, "paper_requires_demo"
-        if account.margin_mode == "" and account.market == "futures":
-            return True, "margin_unconfirmed"
         return True, "ok"
     if mode == "live":
         if account.demo:
             return False, "live_refuses_demo"
         if live_ack != LIVE_ACK:
             return False, "live_ack_required"
-        if account.market == "futures" and account.margin_mode != "isolated":
-            return False, "futures_requires_isolated"
         return True, "ok"
     if mode == "observe":
         if not account.demo:
             return False, "observe_refuses_real"
-        if account.margin_mode == "" and account.market == "futures":
-            return True, "margin_unconfirmed"
         return True, "observe_saved"
     return False, "mode"
 

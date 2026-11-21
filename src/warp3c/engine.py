@@ -9,22 +9,23 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from .accounts import (
-    budget_decision,
-    budget_for,
-    effective_budget,
-    execution_allowed,
-    futures_entry_allowed,
-    parse_budget_override,
-)
+from .accounts import execution_allowed
 from .bots import (
     BotTemplate,
     allocate_client_id,
     build_dca_bot_payload,
-    build_futures_dca_payload,
     build_grid_payload,
     build_strategy_dca_payload,
     execution_fractions,
+)
+from .capital import (
+    Exits,
+    Policy,
+    apply_ladder,
+    approve,
+    outbound_matches,
+    readback_ok,
+    score_candidate,
 )
 from .config import Settings
 from .forward import evaluate_due
@@ -49,6 +50,10 @@ class CycleStatus:
     market_data_fresh: bool = False
     dependencies_healthy: bool = False
     reason: str = "not_run"
+
+
+def _exits(template) -> Exits:
+    return Exits(template.stop_enabled, template.take_profit_enabled, template.trailing_enabled)
 
 
 def _broker_id_or_none(result: dict) -> str | None:
@@ -234,6 +239,21 @@ class Engine:
             enriched = replace(signal, evidence=self.evidence.get(signal.symbol))
             candles = getattr(self.market, "last_candles", {}).get(signal.symbol)
             gated, card = qualify(enriched, enriched.evidence, candles, self.cfg, template)
+            if enriched.evidence is not None:
+                card["score"] = score_candidate(
+                    regime=enriched.evidence.regime,
+                    rsi=enriched.evidence.rsi,
+                    quote_volume=enriched.evidence.quote_volume,
+                    spread=None,
+                    change_24h=None,
+                    tradable=enriched.evidence.tradable,
+                    volatility=enriched.evidence.volatility,
+                    policy=Policy.from_settings(self.cfg),
+                    weights=template.weight_map(),
+                ).to_dict()
+                card["min_score"] = template.min_score
+                card["score_warning"] = template.min_score < 80
+                card["weights"] = template.weight_map()
             self.last_opportunities.append(card)
             if enriched.evidence is not None and enriched.evidence.last_price > 0:
                 self.journal.record_verdict(
@@ -337,16 +357,16 @@ class Engine:
                 notes.append((stamp, plan.symbol, "broker", why, "not_submitted"))
                 self.status.execution_permitted = False
                 continue
-            futures_ok, futures_why = futures_entry_allowed(account, self.cfg.mode)
-            if not futures_ok:
-                notes.append((stamp, plan.symbol, "broker", futures_why, "not_submitted"))
+            if getattr(account, "market", "spot") not in {"", "spot"}:
+                notes.append((stamp, plan.symbol, "broker", "spot_only", "not_submitted"))
                 self.status.execution_permitted = False
                 continue
-            room, room_why = self._budget(account, plan.full_commitment)
-            if not room:
-                notes.append((stamp, plan.symbol, "broker", room_why, "not_submitted"))
+            book = self._approve(account, plan, now)
+            if book.decision != "APPROVED" or book.ladder is None:
+                notes.append((stamp, plan.symbol, "broker", ",".join(book.reasons) or book.decision, "not_submitted"))
                 self.status.execution_permitted = False
                 continue
+            self._approved_ladder = book.ladder
             client_id = allocate_client_id(self.journal, plan.symbol, template, now)
             if client_id is None:
                 notes.append((stamp, plan.symbol, "broker", "duplicate_client", "skipped"))
@@ -394,13 +414,11 @@ class Engine:
         return BotTemplate.from_mapping(json.loads(raw))
 
     def _build(self, plan, client_id: str, template: BotTemplate, account, name: str) -> tuple[dict, dict]:
-        futures = getattr(account, "market", "spot") == "futures"
-        if futures and template.market != "futures":
-            template = replace(template, market="futures", product="grid_bot" if template.kind == "grid" else "dca_bot")
-        if template.market == "futures" and getattr(account, "market", "spot") != "futures":
-            raise IntegrationError("Futures template requires a futures account", uncertain=False)
+        if template.market != "spot":
+            raise IntegrationError("WARP trades Binance spot only", uncertain=False)
         profile = account.code or self.cfg.profile_code
         exchange = account.exchange_code or self.cfg.exchange_code
+        ladder = getattr(self, "_approved_ladder", None)
         if template.kind == "grid":
             stop_fraction, take_fraction = execution_fractions(self.cfg, template)
             levels = derive_levels(
@@ -412,37 +430,23 @@ class Engine:
             if levels is None:
                 raise IntegrationError("Grid levels unavailable", uncertain=False)
             request, total = build_grid_payload(
-                self.cfg,
-                plan,
-                levels,
-                client_id,
-                template,
-                name=name if futures else None,
-                profile_code=profile,
-                exchange_code=exchange,
+                self.cfg, plan, levels, client_id, template, profile_code=profile, exchange_code=exchange
             )
             return request, {"product": "grid_bot", "commitment": format(total, "f"), "request": request}
-        if futures or template.product == "dca_bot":
-            if futures:
-                request = build_futures_dca_payload(
-                    self.cfg,
-                    plan,
-                    client_id,
-                    template,
-                    exchange_code=exchange,
-                    profile_code=profile,
-                    name=name,
-                )
-            else:
-                request = build_dca_bot_payload(
-                    self.cfg, plan, client_id, template, name=name, profile_code=profile, exchange_code=exchange
-                )
+        if template.product == "dca_bot":
+            request = build_dca_bot_payload(
+                self.cfg, plan, client_id, template, name=name, profile_code=profile, exchange_code=exchange
+            )
+            if ladder is not None:
+                request = apply_ladder(request, ladder, _exits(template))
             return request, {
                 "product": "dca_bot",
-                "commitment": format(plan.full_commitment, "f"),
+                "commitment": format(plan.full_commitment if ladder is None else ladder.commitment, "f"),
                 "request": request,
             }
         request = build_strategy_dca_payload(self.cfg, plan, client_id, template)
+        if ladder is not None:
+            request = apply_ladder(request, ladder, _exits(template))
         return request, request
 
     def _place(self, plan, client_id: str, template: BotTemplate, account) -> dict:
@@ -457,10 +461,10 @@ class Engine:
                 "name": name,
                 "client_id": client_id,
                 "external_code": None,
-                "kind": template.kind if getattr(account, "market", "spot") != "futures" else template.kind,
+                "kind": template.kind,
                 "product": envelope["product"] if isinstance(envelope, dict) and envelope.get("product") else template.product,
                 "account_code": account.code,
-                "market": getattr(account, "market", "spot") or "spot",
+                "market": "spot",
                 "symbol": plan.symbol,
                 "status": "pending",
                 "commitment": format(plan.full_commitment, "f"),
@@ -469,16 +473,19 @@ class Engine:
             }
         )
         self.journal.reserve(client_id, plan.symbol, envelope if isinstance(envelope, dict) else request)
-        futures = getattr(account, "market", "spot") == "futures"
         product = envelope.get("product") if isinstance(envelope, dict) else template.product
-        if futures and product == "grid_bot":
-            return self._resolve_bot(self.broker.post_grid_bot(request, market="futures"), name, "grid")
-        if futures or product == "dca_bot":
-            poster = self.broker.post_dca_bot if futures else self.broker.create_dca_bot
-            return self._resolve_bot(poster(request), name, "dca") if futures else poster(request)
-        if product == "grid_bot":
-            return self.broker.create_grid_bot(request)
-        return self.broker.create_strategy(request)
+        exits = _exits(template)
+        if product != "grid_bot" and not outbound_matches(request, exits):
+            raise IntegrationError("Exit toggles do not match the order", uncertain=False)
+        if product == "dca_bot":
+            result = self.broker.create_dca_bot(request)
+        elif product == "grid_bot":
+            result = self.broker.create_grid_bot(request)
+        else:
+            result = self.broker.create_strategy(request)
+        if isinstance(result, dict) and not readback_ok(result, exits):
+            raise IntegrationError("3Commas read-back does not match the exit toggles", uncertain=False)
+        return result
 
     def _untracked(self, positions) -> tuple[tuple[str, Decimal], ...]:
         live = {
@@ -500,12 +507,10 @@ class Engine:
         target = self._target()
         code = str(target.get("code")) if target and target.get("code") else self.cfg.profile_code
         if self.cfg.api_key and self.cfg.api_secret and code:
-            market = str(target.get("market") or "spot") if target else "spot"
+            if target and target.get("market") not in {None, "spot"}:
+                raise IntegrationError("WARP trades Binance spot only", uncertain=False)
             exchange = str(target.get("exchange_code") or self.cfg.exchange_code) if target else self.cfg.exchange_code
-            if market == "futures":
-                account = self.broker.get_account(code, exchange, market="futures")
-            else:
-                account = self.broker.get_account(code, exchange)
+            account = self.broker.get_account(code, exchange)
             self._require_mode_matches(account.demo)
             positions = self.broker.get_live()
             self.last_positions = positions
@@ -620,21 +625,65 @@ class Engine:
             return None
         return payload if isinstance(payload, dict) else None
 
-    def _budget(self, account, commitment: Decimal) -> tuple[bool, str]:
-        try:
-            absolute, fraction, max_bots = effective_budget(
-                self.cfg, parse_budget_override(self.journal.get_setting("account_budgets"), account.code)
+    def _approve(self, account, plan, now):
+        evidence = self.evidence.get(plan.symbol)
+        policy = Policy.from_settings(self.cfg)
+        score = None
+        if evidence is not None:
+            template = self._template()
+            score = score_candidate(
+                regime=evidence.regime,
+                rsi=evidence.rsi,
+                quote_volume=evidence.quote_volume,
+                spread=None,
+                change_24h=None,
+                tradable=evidence.tradable,
+                volatility=evidence.volatility,
+                policy=policy,
+                weights=template.weight_map(),
             )
-        except ValueError:
-            return False, "budget"
-        room = budget_for(
-            balance=account.total_usdt,
-            absolute=absolute,
-            fraction=fraction,
-            max_bots=max_bots,
-            bots=self.journal.warp_bots(account.code),
+        bots = [row for row in self.journal.warp_bots(account.code) if row.get("status") in {"pending", "unknown", "confirmed", "active", "paused"}]
+        warp_committed = sum((Decimal(str(row.get("commitment") or "0")) for row in bots), Decimal("0"))
+        return approve(
+            policy=policy,
+            account_usdt=account.total_usdt,
+            free_usdt=account.free_usdt,
+            warp_owned=Decimal("0"),
+            warp_committed=warp_committed,
+            warp_pending_so=Decimal("0"),
+            non_warp_spent=account.used_usdt,
+            non_warp_future_so=self._foreign_future_so(),
+            open_deals=len(bots),
+            open_stop_risk=Decimal("0"),
+            open_symbols=[str(row.get("symbol")) for row in bots],
+            price=evidence.last_price if evidence is not None else plan.base_amount,
+            minimum=evidence.min_notional if evidence is not None else self.cfg.min_base,
+            model_buy=True,
+            score=score,
+            min_score=self._template().min_score,
+            exits=_exits(self._template()),
+            symbol=plan.symbol,
+            now=now,
+            quote_volume=evidence.quote_volume if evidence is not None else policy.min_quote_volume,
+            tradable=True if evidence is None else evidence.tradable,
         )
-        return budget_decision(room, commitment)
+
+    def _foreign_future_so(self) -> Decimal:
+        if not hasattr(self.broker, "list_dca_bots"):
+            return Decimal("0")
+        try:
+            rows = self.broker.list_dca_bots()
+        except IntegrationError:
+            return Decimal("0")
+        total = Decimal("0")
+        for row in rows:
+            if str(row.get("name") or "").startswith("WARP-"):
+                continue
+            text = str(row.get("maxRequiredAmount") or "")
+            number = "".join(ch for ch in text if ch.isdigit() or ch == ".")
+            if number:
+                total += Decimal(number)
+        return total
 
     def _resolve_bot(self, result: dict, name: str, kind: str) -> dict:
         if _broker_id_or_none(result):

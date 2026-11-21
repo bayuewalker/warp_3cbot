@@ -63,7 +63,7 @@ def evaluate_due(journal, price_at, now: datetime, *, limit: int = 20) -> int:
     return filled
 
 
-def summary(journal) -> dict:
+def summary(journal, *, round_trip: Decimal = Decimal("0.002")) -> dict:
     buckets = {
         verdict: {
             label: {"n": 0, "hits": 0, "move_sum": Decimal("0")}
@@ -103,6 +103,7 @@ def summary(journal) -> dict:
                 "hits": slot["hits"],
                 "hit_rate": None if count == 0 else format(Decimal(slot["hits"]) / Decimal(count), "f"),
                 "avg_move": None if count == 0 else format(slot["move_sum"] / Decimal(count), "f"),
+                "avg_net_move": None if count == 0 else format((slot["move_sum"] / Decimal(count)) - round_trip, "f"),
             }
     return {
         "hit_rule": "BUY if price rises, SKIP if it falls, WAIT if the move stays within 0.5%",

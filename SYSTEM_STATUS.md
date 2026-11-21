@@ -15,9 +15,10 @@ Verdict for this pass: **observe and paper paths are implemented and unit-tested
 ## Paper desk
 
 - Accounts from `GET /open_api/api_profiles` are shown with exchange, quote balance, and a DEMO or REAL badge. Selection is stored as `target_account`. Paper cannot select a real account. Live still requires `WARP_LIVE_EXECUTION_ACK=I_UNDERSTAND_LIVE_ORDERS` and refuses a demo account.
-- Futures USDT-M uses the cabinet DCA bot (and a long derivative grid when that preset is saved): pair code is the perpetual such as `BTCUSDT`, exchange code comes from the account (`BINANCE_FUTURES`), leverage defaults to 1 and cannot exceed 3, direction is long. `marginMode` is sent as `isolated`. WARP does not edit the account's own margin mode, because that would affect bots it did not create. A futures account that reports `cross` cannot be selected. Paper may use a demo futures account whose margin mode is unreported; live may not.
+- Spot buy/long only. Futures accounts are shown and cannot be selected. Eligible NAV is the sleeve in [docs/tradebook-addendum.md](docs/tradebook-addendum.md), after other bots' safety orders are reserved.
+- Stop-loss and take-profit are dashboard toggles, both on by default. Turning the stop off sizes the deal against a virtual stop and shows **No SL**. Turning take-profit off without a trailing exit shows **Manual exit**.
+- The minimum score defaults to 80 and can be set from 50 to 100 on the bot preset. Below 80 shows a warning. Rubric weights are editable and must sum to 100.
 - Every create is stored in `warp_bots` under a `WARP-` name. Pause, resume, close, and delete load that row, re-read the remote bot, and refuse the call unless the remote name matches. Open API strategy orders stay on the old client id and do not have a cabinet pause route.
-- Before a create, WARP checks `min(WARP_BUDGET_USDT, WARP_BUDGET_FRACTION * balance)` minus open WARP commitments, and `WARP_MAX_WARP_BOTS`. The dashboard can store a tighter or looser per-account override. It does not place an order.
 - Verdicts are stored with the market price at decision time. A later cycle fills 4h, 24h, and 72h moves from Binance 1h closes. BUY hits when price rises, SKIP when it falls, WAIT when the move stays inside 0.5%.
 - `python -m warp3c.papercheck` is the demo round trip. It is not a live approval.
 

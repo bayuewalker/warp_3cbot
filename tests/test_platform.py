@@ -312,7 +312,7 @@ class ScheduleTests(unittest.TestCase):
             cfg = Settings(
                 mode="paper", db_path=os.path.join(tmp, "warp.db"),
                 api_key="k", api_secret="s", profile_code="p123",
-                budget_usdt=Decimal("100000"), budget_fraction=Decimal("1"), max_warp_bots=8,
+                sleeve_pct=Decimal("1"),
             )
             journal = OrderJournal(cfg.db_path)
             broker = RecordingBroker()

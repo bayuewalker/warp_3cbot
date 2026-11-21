@@ -48,6 +48,9 @@ export type CardRow = {
   thesis: string;
   backtest_passed: boolean;
   backtest_reason: string;
+  score?: { trend: number; reversal: number; liquidity: number; structure: number; event: number; total: number };
+  min_score?: number;
+  score_warning?: boolean;
 };
 
 export type Position = {

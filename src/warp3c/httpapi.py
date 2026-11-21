@@ -208,8 +208,6 @@ def _save_template(body: bytes) -> tuple[int, list[tuple[str, str]], bytes]:
         template = BotTemplate.from_mapping(_body(body))
     except (ValueError, TypeError):
         return _json(400, {"error": "invalid_template"})
-    if template.leverage > cfg.max_leverage:
-        return _json(400, {"error": "invalid_template"})
     journal.set_setting("bot_template", json.dumps(template.to_dict()))
     return _json(200, {"saved": True, "template": template.to_dict(), "places_orders": False})
 

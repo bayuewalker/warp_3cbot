@@ -104,7 +104,7 @@ class PipelineTests(unittest.TestCase):
             observe_cfg = Settings(db_path=path, api_key="k", api_secret="s", profile_code="p123", **wide)
             paper_cfg = Settings(
                 mode="paper", db_path=path, api_key="k", api_secret="s", profile_code="p123",
-                budget_usdt=Decimal("100000"), budget_fraction=Decimal("1"), max_warp_bots=8,
+                sleeve_pct=Decimal("1"),
                 **wide,
             )
 

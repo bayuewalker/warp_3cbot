@@ -314,20 +314,10 @@ class ThreeCommas:
         return result
 
     def create_grid_bot(self, payload: dict, *, market: str = "spot") -> dict:
-        query_market = "derivative" if market in {"futures", "derivative"} else "spot"
-        if market not in {"spot", "futures", "derivative"}:
-            raise ValueError("Unsupported grid market")
-        result = self.request("POST", "/open_api/grid_bots/create", payload, query={"gridMarket": query_market})
+        if market != "spot":
+            raise ValueError("WARP trades Binance spot only")
+        result = self.request("POST", "/open_api/grid_bots/create", payload, query={"gridMarket": "spot"})
         return _confirmed_bot(result)
-
-    def post_grid_bot(self, payload: dict, *, market: str = "spot") -> dict:
-        query_market = "derivative" if market in {"futures", "derivative"} else "spot"
-        if market not in {"spot", "futures", "derivative"}:
-            raise ValueError("Unsupported grid market")
-        result = self.request("POST", "/open_api/grid_bots/create", payload, query={"gridMarket": query_market})
-        if not isinstance(result, dict):
-            raise IntegrationError("3Commas returned no grid bot body", uncertain=True)
-        return result
 
     def list_dca_bots(self) -> list[dict]:
         return self._named_pages("/open_api/dca_bots", identity="code")

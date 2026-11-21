@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from .accounts import budget_for, effective_budget, parse_budget_override
 from .auth import parse_cookies, session_valid
 from .bots import PRESETS, BotTemplate, preview_capital
 from .forward import summary
@@ -118,10 +117,27 @@ def public_config(cfg) -> dict:
         "require_backtest": cfg.require_backtest,
         "blend_confidence": cfg.blend_confidence,
         "password_login": len(os.getenv("WARP_DASHBOARD_PASSWORD", "")) >= 12,
-        "max_leverage": cfg.max_leverage,
-        "budget_usdt": _text(cfg.budget_usdt),
-        "budget_fraction": _text(cfg.budget_fraction),
-        "max_warp_bots": cfg.max_warp_bots,
+        "sleeve_usdt": _text(cfg.sleeve_usdt),
+        "sleeve_pct": _text(cfg.sleeve_pct),
+        "allocation_ceiling": _text(cfg.allocation_ceiling),
+        "per_deal_ceiling": _text(cfg.per_deal_ceiling),
+        "max_deals": cfg.max_deals,
+        "deal_stop_risk": _text(cfg.deal_stop_risk),
+        "aggregate_stop_risk": _text(cfg.aggregate_stop_risk),
+        "trade_daily_loss": _text(cfg.trade_daily_loss),
+        "trade_drawdown": _text(cfg.trade_drawdown),
+        "stop_slippage": _text(cfg.stop_slippage),
+        "stress_shock": _text(cfg.stress_shock),
+        "stress_cap": _text(cfg.stress_cap),
+        "corr_min": _text(cfg.corr_min),
+        "max_alts": cfg.max_alts,
+        "min_score": cfg.min_score,
+        "tp_min": _text(cfg.tp_min),
+        "cooldown_stop_hours": cfg.cooldown_stop_hours,
+        "cooldown_tp_hours": cfg.cooldown_tp_hours,
+        "review_days": cfg.review_days,
+        "paper_min_days": cfg.paper_min_days,
+        "paper_min_deals": cfg.paper_min_deals,
     }
 
 
@@ -231,7 +247,6 @@ def publish(cfg, journal, engine) -> None:
         "template": template.to_dict(),
         "presets": list(PRESETS),
         "preview": preview_capital(cfg, template, equity=equity),
-        "max_leverage": cfg.max_leverage,
     }
     RUNTIME["journal"] = journal
     RUNTIME["cfg"] = cfg
@@ -255,30 +270,21 @@ def _account_reason(cfg, account) -> tuple[bool, str]:
     return account_allowed(account, mode=cfg.mode, live_ack=cfg.live_ack)
 
 
-def _budget_view(cfg, journal, selected, accounts) -> dict | None:
-    code = (selected or {}).get("code") or cfg.profile_code
-    if not code:
-        return None
-    balance = None
-    for row in accounts:
-        if row.get("code") == code:
-            balance = Decimal(row["total"])
-            break
-    if balance is None:
-        balance = Decimal("0")
-    try:
-        absolute, fraction, max_bots = effective_budget(
-            cfg, parse_budget_override(journal.get_setting("account_budgets"), code)
-        )
-    except ValueError:
-        return None
-    return budget_for(
-        balance=balance,
-        absolute=absolute,
-        fraction=fraction,
-        max_bots=max_bots,
-        bots=journal.warp_bots(code),
-    ).to_public()
+def _budget_view(cfg, journal, selected, accounts) -> dict:
+    return {
+        "sleeve_usdt": _text(cfg.sleeve_usdt),
+        "sleeve_pct": _text(cfg.sleeve_pct),
+        "allocation_ceiling": _text(cfg.allocation_ceiling),
+        "reserve_floor": _text(cfg.min_reserve),
+        "per_deal_ceiling": _text(cfg.per_deal_ceiling),
+        "max_deals": cfg.max_deals,
+        "deal_stop_risk": _text(cfg.deal_stop_risk),
+        "aggregate_stop_risk": _text(cfg.aggregate_stop_risk),
+        "daily_loss_halt": _text(cfg.trade_daily_loss),
+        "drawdown_halt": _text(cfg.trade_drawdown),
+        "min_score": cfg.min_score,
+        "review_days": cfg.review_days,
+    }
 
 
 def bearer_authorized(header: str | None) -> bool:

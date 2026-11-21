@@ -8,7 +8,6 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import httpx
-from test_core import evidence
 from test_failures import ExplodingBroker, Markets, Research
 
 from warp3c.accounts import (
@@ -17,15 +16,11 @@ from warp3c.accounts import (
     account_allowed,
     budget_decision,
     budget_for,
-    clamp_leverage,
 )
-from warp3c.bots import BotTemplate, build_futures_dca_payload, build_grid_payload
 from warp3c.config import Settings
 from warp3c.engine import Engine
 from warp3c.forward import evaluate_due, is_hit, summary
 from warp3c.httpapi import dispatch
-from warp3c.levels import derive_levels
-from warp3c.models import PlannedOrder
 from warp3c.operator import RUNTIME
 from warp3c.ownership import NotOwned, apply_action
 from warp3c.papercheck import run_roundtrip
@@ -96,23 +91,21 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(found["real1"].to_public(selectable=False, reason="paper_requires_demo")["badge"], "REAL")
         with self.assertRaises(IntegrationError):
             api.get_account("fut1", "BINANCE_FUTURES")
-        loaded = api.get_account("fut1", "BINANCE_FUTURES", market="futures")
-        self.assertTrue(loaded.demo)
-        self.assertEqual(loaded.market, "futures")
-        self.assertEqual(loaded.exchange_code, "BINANCE_FUTURES")
+        self.assertEqual(account_allowed(found["fut1"], mode="paper", live_ack="")[1], "spot_only")
         api.close()
 
     def test_selection_keeps_the_live_ack_gate(self):
         demo = account()
         real = account(code="real1", name="CUAN.RAKYAT16K", demo=False, market="spot", exchange_code="BINANCE", exchange_name="BINANCE-SPOT")
-        cross = account(margin_mode="cross")
+        self.assertEqual(account_allowed(demo, mode="paper", live_ack=""), (False, "spot_only"))
         self.assertEqual(account_allowed(real, mode="paper", live_ack=LIVE_ACK), (False, "paper_requires_demo"))
         self.assertEqual(account_allowed(real, mode="observe", live_ack=LIVE_ACK), (False, "observe_refuses_real"))
         self.assertEqual(account_allowed(real, mode="live", live_ack="nope"), (False, "live_ack_required"))
         self.assertEqual(account_allowed(real, mode="live", live_ack=LIVE_ACK)[0], True)
-        self.assertEqual(account_allowed(demo, mode="live", live_ack=LIVE_ACK), (False, "live_refuses_demo"))
-        self.assertEqual(account_allowed(demo, mode="paper", live_ack="")[0], True)
-        self.assertEqual(account_allowed(cross, mode="paper", live_ack="")[1], "futures_requires_isolated")
+        spot_demo = account(market="spot", exchange_code="BINANCE", exchange_name="BINANCE-SPOT")
+        self.assertEqual(account_allowed(spot_demo, mode="live", live_ack=LIVE_ACK), (False, "live_refuses_demo"))
+        spot = account(market="spot", exchange_code="BINANCE", exchange_name="BINANCE-SPOT")
+        self.assertEqual(account_allowed(spot, mode="paper", live_ack="")[0], True)
         usdc = account(quote="USDC", market="spot", exchange_code="BINANCE")
         self.assertEqual(account_allowed(usdc, mode="paper", live_ack="")[1], "quote_not_usdt")
 
@@ -138,8 +131,7 @@ class AccountTests(unittest.TestCase):
                 self.assertEqual(refused[0], 403)
                 self.assertIn("paper_requires_demo", refused[2].decode())
                 self.assertIsNone(journal.get_setting("target_account"))
-                demo = account()
-                engine.last_accounts = [demo]
+                engine.last_accounts = [account(market="spot", exchange_code="BINANCE", exchange_name="BINANCE-SPOT")]
                 saved = dispatch("POST", "/api/accounts/select", headers, json.dumps({"code": "demo1"}).encode())
                 self.assertEqual(saved[0], 200)
                 self.assertIn(b'"places_orders":false', saved[2])
@@ -150,60 +142,6 @@ class AccountTests(unittest.TestCase):
                 RUNTIME["engine"] = None
                 journal.close()
 
-
-class FuturesPayloadTests(unittest.TestCase):
-    def test_futures_dca_is_long_isolated_and_capped(self):
-        cfg = Settings(profile_code="p123", max_leverage=3)
-        plan = PlannedOrder("BTCUSDT", Decimal("20"), Decimal("40"), Decimal("0.9"))
-        template = BotTemplate("dca", "dca_bot", "conservative", "futures", 1, "fut1")
-        payload = build_futures_dca_payload(
-            cfg, plan, "warp3c-" + "ab" * 16, template,
-            exchange_code="BINANCE_FUTURES", profile_code="fut1", name="WARP-abcd1234",
-        )
-        self.assertEqual(payload["dcaTradingType"], "long")
-        self.assertEqual(payload["marginMode"], "isolated")
-        self.assertEqual(payload["leverage"], 1)
-        self.assertEqual(payload["exchangeLeverage"], 1)
-        self.assertEqual(payload["exchangeCode"], "BINANCE_FUTURES")
-        self.assertEqual(payload["pairsCodes"], ["BTCUSDT"])
-        self.assertNotIn("_", payload["pairsCodes"][0])
-        self.assertEqual(payload["amountPerTradeMultiplier"], 1)
-        with self.assertRaises(ValueError):
-            clamp_leverage(4, 3)
-        with self.assertRaises(ValueError):
-            clamp_leverage(True, 3)
-        self.assertEqual(clamp_leverage(3, 3), 3)
-        with self.assertRaises(ValueError):
-            Settings(max_leverage=10)
-
-    def test_grid_futures_uses_the_derivative_market(self):
-        seen = []
-
-        def handler(req):
-            seen.append((req.method, req.url.path, req.url.params.get("gridMarket")))
-            return httpx.Response(200, json={"code": "grid1"})
-
-        api = ThreeCommas("https://trade.3commas.io", "key", "secret", transport=httpx.MockTransport(handler))
-        api.create_grid_bot({"name": "WARP-abcd1234"}, market="futures")
-        api.create_grid_bot({"name": "spot"})
-        self.assertEqual(seen[0][2], "derivative")
-        self.assertEqual(seen[1][2], "spot")
-        api.close()
-        cfg = Settings(profile_code="p123")
-        levels = derive_levels(evidence(), cfg)
-        payload, _total = build_grid_payload(
-            cfg,
-            PlannedOrder("BTCUSDT", Decimal("20"), Decimal("40"), Decimal("0.9")),
-            levels,
-            "warp3c-" + "ab" * 16,
-            BotTemplate("grid", "grid_bot", "moderate", "futures", 2),
-            name="WARP-abcd1234",
-            exchange_code="BINANCE_FUTURES",
-            profile_code="fut1",
-        )
-        self.assertEqual(payload["gridTradingType"], "long")
-        self.assertEqual(payload["leverage"], 2)
-        self.assertEqual(payload["marginMode"], "isolated")
 
 
 class OwnershipTests(unittest.TestCase):
@@ -317,14 +255,14 @@ class BudgetTests(unittest.TestCase):
             cfg = Settings(
                 mode="paper", db_path=os.path.join(tmp, "warp.db"),
                 api_key="k", api_secret="s", profile_code="p123",
-                budget_usdt=Decimal("1"),
+                sleeve_pct=Decimal("0.10"),
             )
             journal = OrderJournal(cfg.db_path)
             broker = ExplodingBroker()
             Engine(cfg, broker, Research(), journal, Markets()).cycle()
             self.assertEqual(broker.creates, 0)
             reasons = [row["reason"] for row in journal.recent_decisions()]
-            self.assertIn("budget", reasons)
+            self.assertTrue(any(reason in {"no_feasible_ladder", "no_capital", "score"} for reason in reasons))
             journal.close()
 
 
@@ -374,9 +312,9 @@ class PaperCheckTests(unittest.TestCase):
                 return {}
 
             def assert_safe(self, payload):
-                if payload["dcaTradingType"] != "long" or payload["marginMode"] != "isolated":
+                if payload["dcaTradingType"] != "long" or not payload.get("stopLoss"):
                     raise AssertionError(payload)
-                if payload["leverage"] != 1 or not str(payload["name"]).startswith("WARP-"):
+                if not str(payload["name"]).startswith("WARP-"):
                     raise AssertionError(payload)
 
             def list_dca_bots(self):
@@ -395,16 +333,16 @@ class PaperCheckTests(unittest.TestCase):
             cfg = Settings(
                 mode="paper", db_path=os.path.join(tmp, "warp.db"),
                 api_key="super-secret-key", api_secret="s", profile_code="demo1",
-                budget_usdt=Decimal("100"), budget_fraction=Decimal("1"),
+                sleeve_pct=Decimal("1"),
             )
             journal = OrderJournal(cfg.db_path)
-            real = Broker([account(demo=False, market="spot", exchange_code="BINANCE")])
+            real = Broker([account(demo=False, market="spot", exchange_code="BINANCE", exchange_name="BINANCE-SPOT")])
             refused = run_roundtrip(cfg, real, journal)
             self.assertFalse(refused["ok"])
             self.assertFalse(refused["places_orders"])
             self.assertEqual(real.writes, [])
             self.assertNotIn("super-secret-key", json.dumps(refused))
-            demo = Broker([account()])
+            demo = Broker([account(market="spot", exchange_code="BINANCE", exchange_name="BINANCE-SPOT")])
             report = run_roundtrip(cfg, demo, journal)
             self.assertTrue(report["ok"], report)
             self.assertEqual(demo.writes, ["create", "pause", "delete"])

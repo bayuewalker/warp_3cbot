@@ -113,10 +113,35 @@ class Settings:
     openrouter_api_key: str = field(default="", repr=False)
     dashboard_password: str = field(default="", repr=False)
     session_secret: str = field(default="", repr=False)
-    max_leverage: int = 3
-    budget_usdt: Decimal = Decimal("100")
-    budget_fraction: Decimal = Decimal("0.10")
-    max_warp_bots: int = 2
+    sleeve_usdt: Decimal = Decimal("0")
+    sleeve_pct: Decimal = Decimal("0.10")
+    allocation_ceiling: Decimal = Decimal("0.75")
+    per_deal_ceiling: Decimal = Decimal("0.25")
+    max_deals: int = 3
+    deal_stop_risk: Decimal = Decimal("0.025")
+    aggregate_stop_risk: Decimal = Decimal("0.065")
+    trade_daily_loss: Decimal = Decimal("0.03")
+    trade_drawdown: Decimal = Decimal("0.08")
+    stop_slippage: Decimal = Decimal("0.005")
+    stress_shock: Decimal = Decimal("0.30")
+    stress_slippage: Decimal = Decimal("0.01")
+    stress_cap: Decimal = Decimal("0.08")
+    corr_min: Decimal = Decimal("0.85")
+    max_alts: int = 2
+    min_score: int = 80
+    tp_min: Decimal = Decimal("0.012")
+    tp_fee_multiple: Decimal = Decimal("3")
+    trade_min_volume: Decimal = Decimal("10000000")
+    trade_max_spread: Decimal = Decimal("0.0025")
+    trade_max_surge: Decimal = Decimal("0.20")
+    cooldown_stop_hours: int = 24
+    cooldown_tp_hours: int = 2
+    streak_pause_hours: int = 12
+    stop_streak: int = 2
+    review_days: int = 10
+    paper_min_days: int = 30
+    paper_min_deals: int = 30
+    virtual_drop: Decimal = Decimal("0.35")
 
     def __post_init__(self) -> None:
         if self.mode not in {"observe", "paper", "live"}:
@@ -125,13 +150,40 @@ class Settings:
             raise ValueError("Live trading requires WARP_LIVE_EXECUTION_ACK")
         if self.mode != "observe" and not all((self.api_key, self.api_secret, self.profile_code)):
             raise ValueError("3Commas credentials and API profile are required")
-        if type(self.max_leverage) is not int or not 1 <= self.max_leverage <= 3:
-            raise ValueError("WARP_MAX_LEVERAGE must be 1, 2, or 3")
-        if self.budget_usdt <= 0 or not self.budget_usdt.is_finite():
-            raise ValueError("Invalid WARP_BUDGET_USDT")
-        _fraction("budget_fraction", self.budget_fraction)
-        if type(self.max_warp_bots) is not int or self.max_warp_bots < 1:
-            raise ValueError("Invalid WARP_MAX_WARP_BOTS")
+        if self.sleeve_usdt < 0 or self.sleeve_pct < 0 or self.sleeve_pct > 1:
+            raise ValueError("Invalid strategy sleeve")
+        if self.sleeve_usdt == 0 and self.sleeve_pct == 0:
+            raise ValueError("Strategy sleeve is unset")
+        for name in (
+            "allocation_ceiling",
+            "per_deal_ceiling",
+            "deal_stop_risk",
+            "aggregate_stop_risk",
+            "trade_daily_loss",
+            "trade_drawdown",
+            "stop_slippage",
+            "stress_shock",
+            "stress_slippage",
+            "stress_cap",
+            "corr_min",
+            "tp_min",
+            "trade_max_spread",
+            "trade_max_surge",
+            "virtual_drop",
+        ):
+            _fraction(name, getattr(self, name))
+        if type(self.max_deals) is not int or not 1 <= self.max_deals <= 3:
+            raise ValueError("WARP_MAX_DEALS must be 1, 2, or 3")
+        if type(self.max_alts) is not int or self.max_alts < 0:
+            raise ValueError("Invalid alt cap")
+        if type(self.min_score) is not int or not 1 <= self.min_score <= 100:
+            raise ValueError("Invalid score threshold")
+        if self.tp_fee_multiple < 1 or self.trade_min_volume <= 0:
+            raise ValueError("Invalid take-profit or volume gate")
+        if min(self.cooldown_stop_hours, self.cooldown_tp_hours, self.streak_pause_hours, self.review_days) < 1:
+            raise ValueError("Invalid cooldown")
+        if self.paper_min_days < 1 or self.paper_min_deals < 1 or self.stop_streak < 1:
+            raise ValueError("Invalid go/no-go window")
         if self.cycle_seconds < 60 or self.max_signal_age < 1 or self.max_account_age < 30:
             raise ValueError("Invalid cadence or freshness window")
         if self.discovery not in {"static", "auto", "screener"}:
@@ -311,8 +363,33 @@ class Settings:
             openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
             dashboard_password=os.getenv("WARP_DASHBOARD_PASSWORD", ""),
             session_secret=os.getenv("WARP_SESSION_SECRET", ""),
-            max_leverage=int(os.getenv("WARP_MAX_LEVERAGE", "3")),
-            budget_usdt=dec("WARP_BUDGET_USDT", "100"),
-            budget_fraction=dec("WARP_BUDGET_FRACTION", "0.10"),
-            max_warp_bots=int(os.getenv("WARP_MAX_WARP_BOTS", "2")),
+            sleeve_usdt=dec("WARP_SLEEVE_USDT", "0"),
+            sleeve_pct=dec("WARP_SLEEVE_PCT", "0.10"),
+            allocation_ceiling=dec("WARP_ALLOCATION_CEILING", "0.75"),
+            per_deal_ceiling=dec("WARP_PER_DEAL_CEILING", "0.25"),
+            max_deals=int(os.getenv("WARP_MAX_DEALS", "3")),
+            deal_stop_risk=dec("WARP_DEAL_STOP_RISK", "0.025"),
+            aggregate_stop_risk=dec("WARP_AGGREGATE_STOP_RISK", "0.065"),
+            trade_daily_loss=dec("WARP_TRADE_DAILY_LOSS", "0.03"),
+            trade_drawdown=dec("WARP_TRADE_DRAWDOWN", "0.08"),
+            stop_slippage=dec("WARP_STOP_SLIPPAGE", "0.005"),
+            stress_shock=dec("WARP_STRESS_SHOCK", "0.30"),
+            stress_slippage=dec("WARP_STRESS_SLIPPAGE", "0.01"),
+            stress_cap=dec("WARP_STRESS_CAP", "0.08"),
+            corr_min=dec("WARP_CORR_MIN", "0.85"),
+            max_alts=int(os.getenv("WARP_MAX_ALTS", "2")),
+            min_score=int(os.getenv("WARP_MIN_SCORE", "80")),
+            tp_min=dec("WARP_TP_MIN", "0.012"),
+            tp_fee_multiple=dec("WARP_TP_FEE_MULTIPLE", "3"),
+            trade_min_volume=dec("WARP_TRADE_MIN_VOLUME", "10000000"),
+            trade_max_spread=dec("WARP_TRADE_MAX_SPREAD", "0.0025"),
+            trade_max_surge=dec("WARP_TRADE_MAX_SURGE", "0.20"),
+            cooldown_stop_hours=int(os.getenv("WARP_COOLDOWN_STOP_HOURS", "24")),
+            cooldown_tp_hours=int(os.getenv("WARP_COOLDOWN_TP_HOURS", "2")),
+            streak_pause_hours=int(os.getenv("WARP_STREAK_PAUSE_HOURS", "12")),
+            stop_streak=int(os.getenv("WARP_STOP_STREAK", "2")),
+            review_days=int(os.getenv("WARP_REVIEW_DAYS", "10")),
+            paper_min_days=int(os.getenv("WARP_PAPER_MIN_DAYS", "30")),
+            paper_min_deals=int(os.getenv("WARP_PAPER_MIN_DEALS", "30")),
+            virtual_drop=dec("WARP_VIRTUAL_STOP", "0.35"),
         )

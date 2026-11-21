@@ -392,6 +392,15 @@ function Signals({ lang }: { lang: Lang }) {
             <Metric label={t(lang, "stop")} value={card.stop} />
             <Metric label={t(lang, "target")} value={card.take} />
           </div>
+          {card.score ? (
+            <p className="mt-3 text-sm text-zinc-300">
+              {t(lang, "score")} {card.score.total}
+              {card.score_warning ? ` · ${t(lang, "scoreWarning")}` : ""}
+              <span className="mt-1 block text-xs text-zinc-500">
+                {card.score.trend}/{card.score.reversal}/{card.score.liquidity}/{card.score.structure}/{card.score.event}
+              </span>
+            </p>
+          ) : null}
           <p className="mt-3 text-sm text-zinc-300">
             {t(lang, "confidence")} {card.confidence}
             {card.model_action !== card.action ? ` · ${t(lang, "model")} ${card.model_action}` : ""}
@@ -423,14 +432,28 @@ function helpKey(preset: "conservative" | "moderate" | "aggressive"): Key {
 
 function Bots({ lang }: { lang: Lang }) {
   const loaded = useLoad<{
-    template: { kind: string; preset: string; market?: string; leverage?: number; account_code?: string };
+    template: {
+      kind: string;
+      preset: string;
+      market?: string;
+      account_code?: string;
+      stop_enabled?: boolean;
+      take_profit_enabled?: boolean;
+      trailing_enabled?: boolean;
+      min_score?: number;
+      weights?: { trend: number; reversal: number; liquidity: number; structure: number; event: number };
+    };
     preview: Preview;
     max_leverage?: number;
   }>("/api/bots");
   const [kind, setKind] = useState("dca");
   const [preset, setPreset] = useState("moderate");
   const [market, setMarket] = useState("spot");
-  const [leverage, setLeverage] = useState(1);
+  const [stopOn, setStopOn] = useState(true);
+  const [takeOn, setTakeOn] = useState(true);
+  const [trailingOn, setTrailingOn] = useState(false);
+  const [minScore, setMinScore] = useState(80);
+  const [weights, setWeights] = useState({ trend: 25, reversal: 25, liquidity: 20, structure: 20, event: 10 });
   const [accountCode, setAccountCode] = useState("");
   const [preview, setPreview] = useState<Preview | null>(null);
   const [note, setNote] = useState("");
@@ -440,18 +463,34 @@ function Bots({ lang }: { lang: Lang }) {
     setKind(loaded.data.template.kind);
     setPreset(loaded.data.template.preset);
     setMarket(loaded.data.template.market || "spot");
-    setLeverage(loaded.data.template.leverage || 1);
+    setStopOn(loaded.data.template.stop_enabled !== false);
+    setTakeOn(loaded.data.template.take_profit_enabled !== false);
+    setTrailingOn(loaded.data.template.trailing_enabled === true);
+    setMinScore(loaded.data.template.min_score || 80);
+    setWeights(loaded.data.template.weights || { trend: 25, reversal: 25, liquidity: 20, structure: 20, event: 10 });
     setAccountCode(loaded.data.template.account_code || "");
     setPreview(loaded.data.preview);
   }, [loaded.data]);
-  async function refresh(nextKind: string, nextPreset: string, nextMarket = market, nextLeverage = leverage) {
+  function templateBody(nextKind = kind, nextPreset = preset) {
+    return {
+      kind: nextKind,
+      preset: nextPreset,
+      market: "spot",
+      stop_enabled: stopOn,
+      take_profit_enabled: takeOn,
+      trailing_enabled: trailingOn,
+      min_score: minScore,
+      weights,
+      account_code: accountCode,
+    };
+  }
+  async function refresh(nextKind: string, nextPreset: string) {
     setKind(nextKind);
     setPreset(nextPreset);
-    setMarket(nextMarket);
-    setLeverage(nextLeverage);
+    setMarket("spot");
     const row = await api<{ preview: Preview }>("/api/bots/preview", {
       method: "POST",
-      body: JSON.stringify({ kind: nextKind, preset: nextPreset, market: nextMarket, leverage: nextLeverage }),
+      body: JSON.stringify({ ...templateBody(nextKind, nextPreset), kind: nextKind, preset: nextPreset }),
     });
     setPreview(row.preview);
   }
@@ -460,16 +499,21 @@ function Bots({ lang }: { lang: Lang }) {
       setAsk(true);
       return;
     }
+    const weightSum = Object.values(weights).reduce((sum, value) => sum + Number(value), 0);
+    if (weightSum !== 100 || minScore < 50 || minScore > 100) {
+      setNote(t(lang, "weightsSum"));
+      return;
+    }
     await api("/api/bots/template", {
       method: "POST",
-      body: JSON.stringify({ kind, preset, market, leverage, account_code: accountCode }),
+      body: JSON.stringify(templateBody()),
     });
     setAsk(false);
     setNote(t(lang, "saved"));
   }
   if (loaded.error) return <Empty lang={lang} text={t(lang, "error")} />;
   if (!preview) return <p className="text-sm text-zinc-400">{t(lang, "loading")}</p>;
-  const cap = loaded.data?.max_leverage || 3;
+  const weightSum = Object.values(weights).reduce((sum, value) => sum + Number(value), 0);
   return (
     <div className="space-y-4">
       <AccountsPanel lang={lang} />
@@ -478,33 +522,42 @@ function Bots({ lang }: { lang: Lang }) {
         <h2 className="font-semibold">{t(lang, "bots")}</h2>
         <p className="mt-1 text-xs text-zinc-500">{t(lang, "places")}</p>
         <div className="mt-4 grid grid-cols-2 gap-2">
-          {(["spot", "futures"] as const).map((item) => (
+          {([
+            ["stop", stopOn, setStopOn, "stopToggle"],
+            ["take", takeOn, setTakeOn, "takeToggle"],
+            ["trail", trailingOn, setTrailingOn, "trailToggle"],
+          ] as const).map(([key, value, setter, label]) => (
             <button
-              key={item}
-              className={`rounded-xl border p-3 text-left ${market === item ? "border-emerald-400" : "border-white/10"}`}
-              onClick={() => refresh(kind, preset, item, leverage)}
+              key={key}
+              className={`rounded-xl border p-3 text-left ${value ? "border-emerald-400" : "border-amber-400"}`}
+              onClick={() => setter(!value)}
               type="button"
             >
-              <p className="font-medium">{t(lang, item)}</p>
-              <p className="text-xs text-zinc-500">{item === "futures" ? t(lang, "longOnly") : t(lang, "dcaHelp")}</p>
+              <p className="font-medium">{t(lang, label)}</p>
+              <p className="text-xs text-zinc-500">{value ? t(lang, "on") : t(lang, "off")}</p>
             </button>
           ))}
         </div>
-        {market === "futures" ? (
-          <div className="mt-3">
-            <Field label={t(lang, "leverage")} hint={t(lang, "leverageHelp")}>
-              <select
+        {!stopOn ? <p className="mt-3"><Badge tone="warn">{t(lang, "noSl")}</Badge></p> : null}
+        {!takeOn && !trailingOn ? <p className="mt-3"><Badge tone="warn">{t(lang, "manualExit")}</Badge></p> : null}
+        <div className="mt-4">
+          <Field label={t(lang, "minScore")} hint="50–100">
+            <input className={inputClass} value={minScore} onChange={(event) => setMinScore(Number(event.target.value))} />
+          </Field>
+          {minScore < 80 ? <p className="mt-2"><Badge tone="warn">{t(lang, "scoreWarning")}</Badge></p> : null}
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          {(Object.keys(weights) as (keyof typeof weights)[]).map((key) => (
+            <Field key={key} label={t(lang, key === "trend" ? "weightTrend" : key === "reversal" ? "weightReversal" : key === "liquidity" ? "weightLiquidity" : key === "structure" ? "weightStructure" : "weightEvent")}>
+              <input
                 className={inputClass}
-                value={leverage}
-                onChange={(event) => refresh(kind, preset, market, Number(event.target.value))}
-              >
-                {Array.from({ length: cap }, (_, index) => index + 1).map((value) => (
-                  <option key={value} value={value}>{value}x</option>
-                ))}
-              </select>
+                value={weights[key]}
+                onChange={(event) => setWeights({ ...weights, [key]: Number(event.target.value) })}
+              />
             </Field>
-          </div>
-        ) : null}
+          ))}
+        </div>
+        <p className={`mt-2 text-xs ${weightSum === 100 ? "text-zinc-500" : "text-amber-200"}`}>{t(lang, "weightsSum")} {weightSum}</p>
         <div className="mt-4 grid grid-cols-2 gap-2">
           {(["dca", "grid"] as const).map((item) => (
             <button
