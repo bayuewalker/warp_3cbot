@@ -8,25 +8,9 @@ from decimal import Decimal
 import httpx
 
 from .models import positive
+from .universe import excluded_base, excluded_symbol
 
 COLUMNS = ["name", "close", "change", "volume", "Recommend.All", "RSI", "24h_vol|5"]
-# Quote-like bases. They dominate raw volume and are not spot swing candidates.
-_STABLE_BASES = {
-    "USDC",
-    "FDUSD",
-    "TUSD",
-    "USDP",
-    "DAI",
-    "USD1",
-    "BUSD",
-    "USDE",
-    "USDS",
-    "RLUSD",
-    "PYUSD",
-    "EUR",
-    "AEUR",
-    "EURI",
-}
 
 
 class ScreenerError(RuntimeError):
@@ -235,10 +219,7 @@ def apply_filters(hits: list[ScreenerHit], filters: ScreenerFilters) -> list[Scr
         if hit.symbol in seen or not hit.symbol.endswith(filters.quote):
             continue
         base = hit.symbol[: -len(filters.quote)]
-        leveraged = base.endswith(("DOWN", "BULL", "BEAR")) or (
-            len(base) > 4 and base.endswith("UP")
-        )
-        if base in _STABLE_BASES or leveraged:
+        if excluded_base(base):
             continue
         if hit.quote_volume < filters.min_quote_volume:
             continue
@@ -261,7 +242,7 @@ def select_symbols(hits: list[ScreenerHit], *, allow: set[str], deny: set[str], 
             continue
         if allow and hit.symbol not in allow:
             continue
-        if not hit.symbol.isalnum() or not hit.symbol.endswith("USDT"):
+        if excluded_symbol(hit.symbol):
             continue
         chosen.append(hit.symbol)
         if len(chosen) >= limit:

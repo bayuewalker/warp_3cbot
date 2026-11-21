@@ -175,8 +175,24 @@ class SafeVibePipelineTests(unittest.TestCase):
         }
         self.assertEqual(classify(candidate("USDCUSDT"), **opts), "excluded_spot_instrument")
         self.assertEqual(classify(candidate("BTCUPUSDT"), **opts), "excluded_spot_instrument")
+        self.assertEqual(classify(candidate("SOXLBUSDT"), **opts), "excluded_spot_instrument")
+        self.assertEqual(classify(candidate("NVDABUSDT"), **opts), "excluded_spot_instrument")
+        self.assertEqual(classify(candidate("UUSDT"), **opts), "excluded_spot_instrument")
         self.assertEqual(classify(candidate("JUPUSDT"), **opts), "eligible")
         self.assertEqual(classify(candidate("BTCUSDT"), **opts), "eligible")
+        self.assertEqual(classify(candidate("ARBUSDT"), **opts), "eligible")
+        self.assertEqual(classify(candidate("BNBUSDT"), **opts), "eligible")
+        self.assertEqual(classify(candidate("SHIBUSDT"), **opts), "eligible")
+        tagged = Candidate(
+            "ZZZUSDT",
+            Decimal("25000000"),
+            Decimal("0.001"),
+            True,
+            Decimal("5"),
+            2,
+            True,
+        )
+        self.assertEqual(classify(tagged, **opts), "excluded_spot_instrument")
 
     def test_legacy_scanner_config_can_be_omitted(self):
         self.assertEqual(Settings().screener_url, "")

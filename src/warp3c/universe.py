@@ -10,8 +10,13 @@ from decimal import Decimal
 _STABLE_BASES = frozenset({
     "USDC", "FDUSD", "TUSD", "USDP", "DAI", "USD1", "BUSD",
     "USDE", "USDS", "RLUSD", "PYUSD", "EUR", "AEUR", "EURI",
+    # United Stables. UUSDT is a USD-pegged coin, not a crypto market.
+    "U",
 })
-_LEVERAGED_SUFFIXES = ("UP", "DOWN", "BULL", "BEAR")
+# Spot USDT bases that end in B and are not Binance bStocks (checked 2026-11-21).
+_CRYPTO_B_SUFFIX = frozenset({"ARB", "BB", "BNB", "CKB", "DGB", "SHIB", "TRB", "YB"})
+# Binance groups every bStock (ticker + B, including leveraged ETFs such as SOXLB) here.
+BSTOCK_PERMISSION = "TRD_GRP_261"
 
 
 @dataclass(frozen=True)
@@ -22,6 +27,33 @@ class Candidate:
     tradable: bool
     min_notional: Decimal
     quote_precision: int
+    tokenized_equity: bool = False
+
+
+def excluded_base(base: str) -> str | None:
+    """Quote-like coins, leveraged tokens, and tokenized equities or ETFs."""
+    if base in _STABLE_BASES:
+        return "excluded_spot_instrument"
+    leveraged = base.endswith(("DOWN", "BULL", "BEAR", "3L", "3S", "5L", "5S")) or (
+        len(base) > 4 and base.endswith("UP")
+    )
+    if leveraged:
+        return "excluded_spot_instrument"
+    # bStocks are the equity or ETF ticker plus B: NVDA -> NVDAB, SOXL -> SOXLB.
+    if (
+        base.endswith("B")
+        and base not in _CRYPTO_B_SUFFIX
+        and base[:-1].isalpha()
+        and 1 <= len(base[:-1]) <= 5
+    ):
+        return "excluded_spot_instrument"
+    return None
+
+
+def excluded_symbol(symbol: str) -> bool:
+    if not symbol.isalnum() or not symbol.endswith("USDT"):
+        return True
+    return excluded_base(symbol[:-4]) is not None
 
 
 def classify(
@@ -37,10 +69,7 @@ def classify(
     base = candidate.symbol[:-4]
     # "JUP" is a legitimate spot ticker; do not drop all 3-letter names
     # just because the name happens to end in UP.
-    leveraged = base.endswith(("DOWN", "BULL", "BEAR")) or (
-        len(base) > 4 and base.endswith("UP")
-    )
-    if base in _STABLE_BASES or leveraged:
+    if candidate.tokenized_equity or excluded_base(base):
         return "excluded_spot_instrument"
     if not candidate.tradable:
         return "market_not_trading"

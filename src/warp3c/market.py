@@ -10,7 +10,7 @@ import httpx
 
 from .config import Settings
 from .models import MarketEvidence, positive
-from .universe import Candidate, select_universe
+from .universe import BSTOCK_PERMISSION, Candidate, select_universe
 
 
 class MarketDataError(RuntimeError):
@@ -303,6 +303,10 @@ class MarketData:
                 spread = None
                 quote_precision = -1
                 min_notional = Decimal("0")
+            permissions: set[str] = set()
+            for group in row.get("permissionSets") or []:
+                if isinstance(group, list):
+                    permissions.update(item for item in group if isinstance(item, str))
             candidates.append(
                 Candidate(
                     symbol=symbol,
@@ -311,6 +315,7 @@ class MarketData:
                     tradable=row.get("status") == "TRADING",
                     min_notional=min_notional,
                     quote_precision=quote_precision,
+                    tokenized_equity=BSTOCK_PERMISSION in permissions,
                 )
             )
         return select_universe(
