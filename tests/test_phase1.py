@@ -364,6 +364,154 @@ class AuthTests(unittest.TestCase):
                 client.close()
 
 
+class HaltFreshnessTests(unittest.TestCase):
+    def test_halt_file_wins_before_the_next_publish_and_the_snapshot_stays_frozen(self):
+        from fastapi.testclient import TestClient
+
+        from warp3c.__main__ import HEALTH
+        from warp3c.operator import SNAPSHOT
+        from warp3c.webapi import create_app
+
+        previous = {
+            "WARP_DASHBOARD_PASSWORD": os.environ.get("WARP_DASHBOARD_PASSWORD"),
+            "WARP_OPERATOR_TOKEN": os.environ.get("WARP_OPERATOR_TOKEN"),
+            "WARP_COOKIE_SECURE": os.environ.get("WARP_COOKIE_SECURE"),
+        }
+        os.environ["WARP_DASHBOARD_PASSWORD"] = "correct-horse-battery"
+        os.environ["WARP_OPERATOR_TOKEN"] = "operator-token-16"
+        os.environ["WARP_COOKIE_SECURE"] = "0"
+        note_login_success()
+        saved = dict(HEALTH)
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Settings(db_path=os.path.join(tmp, "warp.db"), api_key="k", api_secret="s", profile_code="p123")
+            journal = OrderJournal(cfg.db_path)
+            from test_failures import Markets, Research
+
+            engine = Engine(cfg, _Quiet(), Research(), journal, Markets())
+            engine.monitor()
+            engine.status.execution_permitted = True
+            engine.status.risk_permitted = True
+            engine.status.reason = "ok"
+            publish(cfg, journal, engine)
+            HEALTH["halt_path"] = os.path.join(tmp, "HALT")
+            client = TestClient(create_app())
+            try:
+                self.assertEqual(client.post("/api/login", json={"password": "correct-horse-battery"}).status_code, 200)
+                first = client.get("/api/status")
+                second = client.get("/api/status")
+                self.assertEqual(first.status_code, 200)
+                self.assertFalse(first.json()["halt"])
+                self.assertTrue(first.json()["execution_permitted"])
+                published = first.json()["published_at"]
+                self.assertEqual(second.json()["published_at"], published)
+                self.assertEqual(SNAPSHOT["/api/status"]["published_at"], published)
+                paused = client.post("/api/pause")
+                self.assertEqual(paused.json()["halt"], True)
+                held = client.get("/api/status").json()
+                self.assertTrue(held["halt"])
+                self.assertFalse(held["execution_permitted"])
+                self.assertEqual(held["pipeline"]["risk"]["reason"], "halt")
+                self.assertEqual(held["published_at"], published)
+                self.assertFalse(SNAPSHOT["/api/status"]["halt"])
+                self.assertTrue(SNAPSHOT["/api/status"]["execution_permitted"])
+                self.assertEqual(client.get("/api/breakers").json()["halt"], True)
+                resumed = client.post("/api/resume")
+                self.assertEqual(resumed.json()["halt"], False)
+                client.post("/api/pause")
+                again = client.get("/api/status").json()
+                self.assertTrue(again["halt"])
+                self.assertEqual(again["published_at"], published)
+                client.post("/api/resume")
+                released = client.get("/api/status").json()
+                self.assertFalse(released["halt"])
+                self.assertTrue(released["execution_permitted"])
+                self.assertEqual(released["published_at"], published)
+                self.assertNotEqual(released["pipeline"]["risk"]["reason"], "halt")
+            finally:
+                HEALTH.clear()
+                HEALTH.update(saved)
+                journal.close()
+                client.close()
+                for key, value in previous.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+                note_login_success()
+
+    def test_resume_after_a_halted_publish_waits_for_the_worker(self):
+        from fastapi.testclient import TestClient
+
+        from warp3c.__main__ import HEALTH
+        from warp3c.operator import SNAPSHOT
+        from warp3c.webapi import create_app
+
+        previous = {
+            "WARP_DASHBOARD_PASSWORD": os.environ.get("WARP_DASHBOARD_PASSWORD"),
+            "WARP_OPERATOR_TOKEN": os.environ.get("WARP_OPERATOR_TOKEN"),
+            "WARP_COOKIE_SECURE": os.environ.get("WARP_COOKIE_SECURE"),
+        }
+        os.environ["WARP_DASHBOARD_PASSWORD"] = "correct-horse-battery"
+        os.environ["WARP_OPERATOR_TOKEN"] = "operator-token-16"
+        os.environ["WARP_COOKIE_SECURE"] = "0"
+        note_login_success()
+        saved = dict(HEALTH)
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Settings(db_path=os.path.join(tmp, "warp.db"), api_key="k", api_secret="s", profile_code="p123")
+            journal = OrderJournal(cfg.db_path)
+            from test_failures import Markets, Research
+
+            engine = Engine(cfg, _Quiet(), Research(), journal, Markets())
+            engine.monitor()
+            halt = os.path.join(tmp, "HALT")
+            HEALTH["halt_path"] = halt
+            Path(halt).write_text("pause\n", encoding="utf-8")
+            engine.status.execution_permitted = False
+            engine.status.risk_permitted = False
+            engine.status.reason = "halt"
+            publish(cfg, journal, engine)
+            client = TestClient(create_app())
+            try:
+                self.assertEqual(client.post("/api/login", json={"password": "correct-horse-battery"}).status_code, 200)
+                before = client.get("/api/status").json()
+                self.assertTrue(before["halt"])
+                self.assertEqual(before["gating"], "halt")
+                self.assertFalse(before["execution_permitted"])
+                self.assertFalse(before["risk_permitted"])
+                self.assertEqual(before["pipeline"]["risk"], {"state": "blocked", "reason": "halt"})
+                published = before["published_at"]
+                resumed = client.post("/api/resume")
+                self.assertEqual(resumed.json()["halt"], False)
+                self.assertFalse(os.path.exists(halt))
+                after = client.get("/api/status").json()
+                self.assertFalse(after["halt"])
+                self.assertEqual(after["gating"], "awaiting_worker")
+                self.assertFalse(after["execution_permitted"])
+                self.assertFalse(after["risk_permitted"])
+                self.assertEqual(after["reason"], "awaiting_worker")
+                self.assertEqual(after["pipeline"]["risk"]["state"], "blocked")
+                self.assertEqual(after["pipeline"]["risk"]["reason"], "awaiting_worker")
+                self.assertNotEqual(after["pipeline"]["risk"]["reason"], "halt")
+                self.assertEqual(after["published_at"], published)
+                stored = SNAPSHOT["/api/status"]
+                self.assertTrue(stored["halt"])
+                self.assertEqual(stored["reason"], "halt")
+                self.assertEqual(stored["pipeline"]["risk"]["reason"], "halt")
+                self.assertFalse(stored["execution_permitted"])
+                self.assertEqual(client.get("/api/breakers").json()["gating"], "awaiting_worker")
+            finally:
+                HEALTH.clear()
+                HEALTH.update(saved)
+                journal.close()
+                client.close()
+                for key, value in previous.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+                note_login_success()
+
+
 class LlmTests(unittest.TestCase):
     def test_openrouter_fallback_strips_prices_and_the_cap_holds(self):
         item = evidence()

@@ -3,20 +3,19 @@
 ## Responsibility boundary
 
 - **Public market data**: Binance spot klines, 24h quote volume, and `exchangeInfo` filters from `WARP_MARKET_DATA_URL` (default `https://data-api.binance.vision`). This is the only numeric evidence that can make a signal executable. `api.binance.com` returned HTTP 451 from the build environment; the vision host served the same `/api/v3` routes.
-- **Screener**: `POST https://scanner.tradingview.com/crypto/scan`, then Binance `GET /api/v3/ticker/24hr` if that call fails. Filters live in the SQLite `settings` table. A screener failure does not fall back to the static symbol list when discovery mode is `screener`.
+- **Screener**: Binance public spot `GET /api/v3/ticker/24hr` for dashboard ranking; automatic entry discovery uses Binance `exchangeInfo`, quote volume, spread, precision, minimum notional and spot/trading-status gates (`WARP_DISCOVERY=auto`). The unofficial TradingView scanner request is disabled; TradingView charts are reference-only. Discovery fails closed when the public exchange data is missing. TradingView usage restrictions: https://www.tradingview.com/policies/.
 - **Analysis**: NVIDIA and OpenRouter chat-completions. The NVIDIA model defaults to `nvidia/nemotron-3.5-lightning-30b-a3b` (`WARP_NVIDIA_MODEL`; `NVIDIA_MODEL` is the fallback). The prompt forbids prices. `strip_price_fields` drops any price-like keys before `Signal.parse`, and `as_of` is taken from the candle snapshot. A daily call cap and a flat USD estimate live in the process. The cap resets on restart. HTTP 404 or 410 parks that provider for one hour and the dashboard status shows it as cooling down. Vibe-Trading's HTTP client is still in the tree for `WARP_ANALYSIS=vibe` or `auto` when no LLM key is set. The image does not install the fork. The audited pin remains `bayuewalker/Vibe-Trading` @ `61d20c9a3a5954dcb52ce2bb758ca0ac4d6c71a4`.
 - **Levels and backtest**: entry is the last trade. The stop fraction is `min(configured stop, max(2 * volatility, 1%))`. The target fraction is the configured take-profit. The backtest is long-only on closed candles and treats a bar that touches the stop as a loss. It is required only when `WARP_REQUIRE_BACKTEST=1`.
 - **WARP risk worker**: reads balances and strategies, applies deterministic limits, and is the only component that can POST to 3Commas. Confirmed grid or cabinet-DCA rows that are not on the strategy list still count against the pair cap.
 - **3Commas**: the default write is `POST /open_api/strategies/trade` (spot DCA ladder, returns `strategyId`). Grid uses `POST /open_api/grid_bots/create?gridMarket=spot`. Cabinet DCA uses `POST /open_api/dca_bots/create`. A write without an id stays `unknown` and blocks new entries. POSTs are not retried.
 - **Dashboard**: FastAPI or the stdlib server, same dispatcher. Password session plus the existing bearer token. The React app is built in the image and served from `web/dist`.
-- **Fly.io**: one always-on Machine, one volume, region `sin`. `fly.toml` stays in observe, turns the screener on, and requires the backtest gate.
+- **Fly.io**: one always-on Machine, one volume, region `sin`. `fly.toml` stays in observe, enables Binance auto discovery, and requires the backtest gate. Real orders remain disabled.
 
 AI output cannot skip the risk engine. A failed or stale read fails closed and blocks new entries.
 
 ```mermaid
 flowchart LR
-  tv[TradingView scanner] --> screen[Screener]
-  exchange[Binance public spot] --> screen
+  exchange[Binance public spot] --> screen[Screener]
   exchange --> candles[OHLCV evidence]
   screen --> analysis[NVIDIA then OpenRouter]
   candles --> analysis

@@ -208,9 +208,57 @@ def _filters(cfg, journal) -> ScreenerFilters:
         return ScreenerFilters.from_settings(cfg)
 
 
+def _card_fresh(card: dict, now: datetime, max_age_minutes: int) -> bool:
+    """Fail closed unless both model response and exchange evidence are recent."""
+    for field in ("as_of", "evidence_as_of"):
+        raw = card.get(field)
+        if not isinstance(raw, str) or not raw:
+            return False
+        try:
+            timestamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if timestamp.tzinfo is None:
+            return False
+        age = (now - timestamp.astimezone(timezone.utc)).total_seconds()
+        if not -60 <= age <= max_age_minutes * 60:
+            return False
+    return True
+
+
 def publish(cfg, journal, engine) -> None:
     status = engine.status
     decision = getattr(engine, "last_decision", None)
+    # Retained cards must prove BOTH model and exchange data freshness.
+    # An otherwise recent LLM answer about an older candle stays stale.
+    cards = []
+    now = datetime.now(timezone.utc)
+    for card in getattr(engine, "last_opportunities", []) or []:
+        if not isinstance(card, dict):
+            continue
+        cards.append({**card, "fresh": _card_fresh(card, now, cfg.max_signal_age)})
+    current_cards = [card for card in cards if card["fresh"]]
+    discovered = list(getattr(engine, "universe", ()))
+    pipeline = {
+        "screening": {
+            "state": "ready" if discovered and status.market_data_fresh else "blocked",
+            "source": "binance_spot_public",
+            "count": len(discovered),
+        },
+        "analysis": {
+            "state": "ready" if current_cards and status.dependencies_healthy else "pending",
+            "count": len(current_cards),
+            "mode": cfg.analysis,
+        },
+        "risk": {
+            "state": "pass" if status.risk_permitted else "blocked",
+            "reason": status.reason,
+        },
+        "opportunities": {
+            "state": "ready" if current_cards else "pending",
+            "count": len(current_cards),
+        },
+    }
     SNAPSHOT["/api/status"] = {
         "alive": True,
         "mode": cfg.mode,
@@ -225,6 +273,8 @@ def publish(cfg, journal, engine) -> None:
         "pnl_today": _pnl_today(journal),
         "equity": None if decision is None or decision.equity is None else _text(decision.equity),
         "providers": _provider_health(cfg, engine),
+        "pipeline": pipeline,
+        "published_at": now.isoformat(),
     }
     SNAPSHOT["/api/risk"] = {
         "reason": status.reason,
@@ -245,7 +295,7 @@ def publish(cfg, journal, engine) -> None:
     SNAPSHOT["/api/config"] = public_config(cfg)
     template = _template(journal)
     equity = None if decision is None else decision.equity
-    SNAPSHOT["/api/opportunities"] = {"cards": list(getattr(engine, "last_opportunities", []) or [])}
+    SNAPSHOT["/api/opportunities"] = {"cards": cards}
     SNAPSHOT["/api/screener"] = {
         "filters": _filters(cfg, journal).to_dict(),
         "hits": [hit.to_dict() for hit in getattr(engine, "screener_hits", []) or []],

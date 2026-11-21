@@ -136,6 +136,11 @@ def signal_executable(signal: Signal, cfg: Settings, now: datetime) -> bool:
         return False
     if evidence.as_of.tzinfo is None or signal.as_of.tzinfo is None:
         return False
+    # A model signal can be old even if a later market refresh is fresh.
+    # Both timestamps must independently satisfy the configured age gate.
+    signal_age = (now - signal.as_of.astimezone(timezone.utc)).total_seconds()
+    if signal_age < -60 or signal_age > cfg.max_signal_age * 60:
+        return False
     evidence_age = (now - evidence.as_of.astimezone(timezone.utc)).total_seconds()
     if evidence_age < -60 or evidence_age > cfg.max_signal_age * 60:
         return False

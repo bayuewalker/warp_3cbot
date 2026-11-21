@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing, nullcontext
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -331,8 +332,14 @@ class OrderJournal:
         row = self.db.execute("SELECT state FROM submissions WHERE client_id=?", (client_id,)).fetchone()
         return None if row is None else str(row[0])
 
-    def get_setting(self, key: str) -> str | None:
-        row = self.db.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    def get_setting(self, key: str, *, request_local: bool = False) -> str | None:
+        """HTTP handlers must read through a connection owned by their thread."""
+        connection = (
+            closing(sqlite3.connect(self.path, isolation_level=None, timeout=30))
+            if request_local else nullcontext(self.db)
+        )
+        with connection as db:
+            row = db.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
         return None if row is None else str(row[0])
 
     def set_setting(self, key: str, value: str) -> None:

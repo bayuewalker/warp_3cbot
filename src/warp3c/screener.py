@@ -1,4 +1,4 @@
-"""Scheduled crypto screener. TradingView first, public Binance tickers if it fails."""
+"""Read-only spot screener. Automated discovery uses Binance public data only."""
 
 from __future__ import annotations
 
@@ -45,6 +45,15 @@ class ScreenerFilters:
     min_recommendation: Decimal = Decimal("-1")
     limit: int = 12
 
+    def require_binance_filters(self) -> None:
+        """Reject unavailable RSI/recommendation filters instead of ignoring them."""
+        if (self.rsi_min != 0 or self.rsi_max != 100
+                or self.min_recommendation != -1):
+            raise ValueError(
+                "Binance 24h ticker has no RSI/recommendation; reset those filters "
+                "to RSI 0..100 and recommendation -1"
+            )
+
     def to_dict(self) -> dict:
         return {
             "exchange": self.exchange,
@@ -74,9 +83,9 @@ class ScreenerFilters:
         min_volume = positive(raw.get("min_quote_volume", "1000000"), "min quote volume", allow_zero=False)
         min_change = Decimal(str(raw.get("min_change_pct", "-8")))
         max_change = Decimal(str(raw.get("max_change_pct", "20")))
-        rsi_min = Decimal(str(raw.get("rsi_min", "40")))
-        rsi_max = Decimal(str(raw.get("rsi_max", "72")))
-        recommendation = Decimal(str(raw.get("min_recommendation", "0.1")))
+        rsi_min = Decimal(str(raw.get("rsi_min", "0")))
+        rsi_max = Decimal(str(raw.get("rsi_max", "100")))
+        recommendation = Decimal(str(raw.get("min_recommendation", "-1")))
         limit = int(raw.get("limit", 12))
         if not min_change.is_finite() or not max_change.is_finite() or min_change >= max_change:
             raise ValueError("Invalid change band")
@@ -226,7 +235,10 @@ def apply_filters(hits: list[ScreenerHit], filters: ScreenerFilters) -> list[Scr
         if hit.symbol in seen or not hit.symbol.endswith(filters.quote):
             continue
         base = hit.symbol[: -len(filters.quote)]
-        if base in _STABLE_BASES:
+        leveraged = base.endswith(("DOWN", "BULL", "BEAR")) or (
+            len(base) > 4 and base.endswith("UP")
+        )
+        if base in _STABLE_BASES or leveraged:
             continue
         if hit.quote_volume < filters.min_quote_volume:
             continue
@@ -258,13 +270,14 @@ def select_symbols(hits: list[ScreenerHit], *, allow: set[str], deny: set[str], 
 
 
 class Screener:
+    """Read-only Binance screener; TradingView automation is deliberately disabled.
+
+    The constructor keeps its legacy positional arguments for backwards
+    compatibility, but does not open or call a TradingView HTTP client.
+    Unofficial TradingView scanner endpoints are not a licensed bot feed.
+    """
+
     def __init__(self, scanner_url: str, market_url: str, *, scanner_transport=None, market_transport=None):
-        self.scanner = httpx.Client(
-            base_url=scanner_url.rstrip("/"),
-            timeout=12,
-            transport=scanner_transport,
-            headers={"User-Agent": "warp3c", "Accept": "application/json"},
-        )
         self.market = httpx.Client(
             base_url=market_url.rstrip("/"),
             timeout=12,
@@ -274,25 +287,23 @@ class Screener:
         self.source = ""
 
     def close(self) -> None:
-        self.scanner.close()
         self.market.close()
 
     def scan(self, filters: ScreenerFilters) -> list[ScreenerHit]:
+        """Return Binance-sourced ranking or raise; never use an unofficial TV API."""
+        self.source = ""
         try:
-            hits = self._tradingview(filters)
-            self.source = "tradingview"
-        except ScreenerError:
-            hits = self._binance()
-            self.source = "binance"
-        return apply_filters(hits, filters)
+            filters.require_binance_filters()
+        except ValueError as exc:
+            raise ScreenerError("Unsupported Binance ticker screener filters") from exc
+        hits = self._binance()
+        selected = apply_filters(hits, filters)
+        self.source = "binance"
+        return selected
 
     def _tradingview(self, filters: ScreenerFilters) -> list[ScreenerHit]:
-        try:
-            response = self.scanner.post("/crypto/scan", json=scan_body(filters))
-            response.raise_for_status()
-            return parse_tradingview(response.json())
-        except (httpx.HTTPError, ValueError) as exc:
-            raise ScreenerError("TradingView screener unavailable") from exc
+        """Legacy method fails closed; cannot be used to bypass licensed data access."""
+        raise ScreenerError("Automated TradingView scanner access is disabled")
 
     def _binance(self) -> list[ScreenerHit]:
         try:
@@ -300,4 +311,4 @@ class Screener:
             response.raise_for_status()
             return parse_binance_tickers(response.json())
         except (httpx.HTTPError, ValueError) as exc:
-            raise ScreenerError("Binance screener fallback unavailable") from exc
+            raise ScreenerError("Binance public spot screener unavailable") from exc
