@@ -387,6 +387,66 @@ export function WarpBotsPanel({ lang, status }: { lang: Lang; status: Status | n
   );
 }
 
+export function PaperDeals({ lang }: { lang: Lang }) {
+  const loaded = useLoad<{
+    switches_live: boolean;
+    error?: string | null;
+    open: { id: number; symbol: string; status: string; avg_price: string; cost: string; pnl: string }[];
+    closed_deals: number;
+    win_rate: string | null;
+    net_pnl: string | null;
+    net_pnl_pct: string | null;
+    net_pnl_reason: string | null;
+    expectancy: string | null;
+    max_drawdown: string | null;
+    open_exposure: string | null;
+    paper_days: number;
+    gate_pass: boolean;
+    gate_reasons: string[];
+    as_of?: string | null;
+  }>("/api/paper", true);
+  if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
+  const row = loaded.data;
+  if (!row) return <Loading lang={lang} />;
+  const missing = (value: string | null | undefined, reason?: string | null) =>
+    value == null ? `${t(lang, "unknown")}${reason ? ` · ${reason}` : ""}` : value;
+  return (
+    <Card>
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="font-semibold">{t(lang, "paperDeals")}</h2>
+        <Badge tone={row.gate_pass ? "good" : "warn"}>{t(lang, "paperGate")}</Badge>
+      </div>
+      <p className="panel-note">{t(lang, "paperHelp")}</p>
+      <p className="panel-note">
+        {t(lang, "paperClosed")} {row.closed_deals} · {t(lang, "paperWin")} {missing(row.win_rate)} · {t(lang, "paperPnl")}{" "}
+        {missing(row.net_pnl, row.net_pnl_reason)}
+        {row.net_pnl_pct ? ` (${row.net_pnl_pct})` : ""}
+      </p>
+      <p className="panel-note">
+        {t(lang, "paperExpectancy")} {missing(row.expectancy)} · {t(lang, "paperDrawdown")} {missing(row.max_drawdown)} ·{" "}
+        {t(lang, "paperOpen")} {missing(row.open_exposure)}
+      </p>
+      <p className="panel-note">
+        {row.paper_days}d · {row.gate_reasons.length ? row.gate_reasons.join(", ") : t(lang, "passed")}
+      </p>
+      {row.open.length ? (
+        <ul className="event-log">
+          {row.open.map((deal) => (
+            <li key={deal.id}>
+              <span>{deal.symbol}</span>
+              <span>
+                {deal.avg_price} · {deal.cost}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="panel-note">{t(lang, "paperNone")}</p>
+      )}
+    </Card>
+  );
+}
+
 export function ForwardPanel({ lang }: { lang: Lang }) {
   const loaded = useLoad<ForwardStats>("/api/forward", true);
   if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;

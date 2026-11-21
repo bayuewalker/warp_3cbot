@@ -34,7 +34,7 @@ from .market import MarketData, MarketDataError
 from .models import Signal
 from .ownership import warp_name
 from .qualify import qualify
-from .risk import GlobalRisk, pair_symbols
+from .risk import GlobalRisk, pair_symbols, signal_executable
 from .screener import ScreenerError, ScreenerFilters, select_symbols
 from .state import OrderJournal
 from .telemetry import log_event
@@ -154,7 +154,9 @@ class Engine:
     def refresh_market(self, now: datetime) -> None:
         self._refresh_screener()
         self.universe = self._select_universe(now)
-        self.evidence = self.market.scan(self.universe, now=now) if self.universe else {}
+        held = tuple(row["symbol"] for row in self._paper().open_deals())
+        symbols = tuple(dict.fromkeys((*self.universe, *held)))
+        self.evidence = self.market.scan(symbols, now=now) if symbols else {}
         self._mark_fresh(now)
 
     def _refresh_screener(self) -> None:
@@ -297,6 +299,8 @@ class Engine:
             self.status.execution_permitted = False
             self.status.risk_permitted = False
             self.status.reason = "halt" if paused else "observe_without_account"
+            if self.cfg.mode == "observe" and not paused:
+                self._shadow(deduped, None, now)
             self._record(notes)
             log_event("halt" if paused else "observe", signals=len(deduped), fresh=self.status.market_data_fresh)
             return 0
@@ -353,6 +357,8 @@ class Engine:
 
         opened = 0
         self.last_aegis = []
+        if self.cfg.mode == "observe" and not paused:
+            self._shadow(deduped, account, now)
         symbols = [str(plan.symbol) for plan in decision.orders]
         self._load_trade_book(symbols, now)
         for plan in decision.orders:
@@ -735,6 +741,182 @@ class Engine:
                 "warnings": list(getattr(book, "warnings", [])),
                 "nav": format(book.nav, "f"),
             }
+        )
+
+    def _paper(self):
+        book = getattr(self, "_paper_book", None)
+        if book is None:
+            from .paper import PaperBook
+
+            book = PaperBook(str(Path(self.cfg.db_path).with_name("paper.sqlite")))
+            self._paper_book = book
+        return book
+
+    def paper_view(self, now: datetime | None = None) -> dict:
+        moment = now or datetime.now(timezone.utc)
+        view = self._paper().metrics(Policy.from_settings(self.cfg), moment, self._report_sleeve())
+        view["switches_live"] = False
+        view["error"] = getattr(self, "paper_error", None)
+        return view
+
+    def _report_sleeve(self) -> Decimal | None:
+        stored = getattr(self, "paper_sleeve", None)
+        if stored is not None and stored > 0:
+            return stored
+        if self.cfg.sleeve_usdt <= 0:
+            return None
+        from .capital import sleeve_nav
+
+        policy = Policy.from_settings(self.cfg)
+        return sleeve_nav(
+            account_usdt=self.cfg.sleeve_usdt,
+            free_usdt=self.cfg.sleeve_usdt,
+            warp_owned=Decimal("0"),
+            non_warp_spent=Decimal("0"),
+            non_warp_future_so=Decimal("0"),
+            policy=policy,
+        ).eligible
+
+    def _shadow(self, signals, account, now: datetime) -> None:
+        """Simulate an approved spot ladder. This does not call the broker."""
+        from .capital import Decision
+
+        policy = Policy.from_settings(self.cfg)
+        cash = self._paper_cash(account)
+        book = self._paper()
+        candles = getattr(self.market, "last_candles", {}) or {}
+        for deal in book.open_deals():
+            book.advance(deal["symbol"], candles.get(deal["symbol"], []), policy, now)
+        if cash is None:
+            self.paper_error = "sleeve_unset"
+            self.paper_sleeve = None
+            return
+        account_usdt, free_usdt = cash
+        from .capital import sleeve_nav
+
+        self.paper_sleeve = sleeve_nav(
+            account_usdt=account_usdt,
+            free_usdt=free_usdt,
+            warp_owned=Decimal("0"),
+            non_warp_spent=Decimal("0"),
+            non_warp_future_so=Decimal("0"),
+            policy=policy,
+        ).eligible
+        names = [signal.symbol for signal in signals] + [row["symbol"] for row in book.open_deals()]
+        self._load_trade_book(names, now)
+        if self._trade_book_error or not self._trade_book:
+            self.paper_error = self._trade_book_error or "market_data"
+            return
+        self.paper_error = None
+        exits = self._exits()
+        for signal in signals:
+            evidence = self.evidence.get(signal.symbol)
+            if signal.action == "SKIP" and evidence is not None and evidence.last_price > 0:
+                book.invalidate(signal.symbol, evidence.last_price, policy, now, "invalidated")
+                continue
+            if signal.action != "BUY" or evidence is None or evidence.last_price <= 0 or not evidence.passed:
+                continue
+            checked = replace(signal, evidence=evidence)
+            if not signal_executable(checked, self.cfg, now):
+                log_event("paper_veto", symbol=signal.symbol, status="ineligible", reasons="signal_not_executable")
+                continue
+            if book.has_open(signal.symbol):
+                continue
+            decision = self._approve_shadow(signal, evidence, account_usdt, free_usdt, book, policy, now)
+            if not isinstance(decision, Decision) or decision.decision != "APPROVED" or decision.ladder is None:
+                log_event(
+                    "paper_veto",
+                    symbol=signal.symbol,
+                    status=getattr(decision, "decision", "unavailable"),
+                    reasons=",".join(getattr(decision, "reasons", [])),
+                )
+                continue
+            book.open_ladder(
+                symbol=signal.symbol,
+                ladder=decision.ladder,
+                entry=evidence.last_price,
+                exits=exits,
+                policy=policy,
+                now=now,
+                sleeve=decision.nav,
+            )
+            self._remember_aegis(signal.symbol, decision, account)
+            log_event("paper_opened", symbol=signal.symbol, status="APPROVED_PAPER")
+
+    def _paper_cash(self, account) -> tuple[Decimal, Decimal] | None:
+        if account is not None and account.total_usdt > 0:
+            return account.total_usdt, account.free_usdt
+        if self.cfg.sleeve_usdt > 0:
+            return self.cfg.sleeve_usdt, self.cfg.sleeve_usdt
+        return None
+
+    def _exits(self) -> Exits:
+        template = self._template()
+        return Exits(
+            stop=template.stop_enabled,
+            take_profit=template.take_profit_enabled,
+            trailing=template.trailing_enabled,
+        )
+
+    def _approve_shadow(self, signal, evidence, account_usdt, free_usdt, book, policy, now):
+        template = self._template()
+        from .capital import Decision
+
+        loaded = self._trade_book or {}
+        gate = (loaded.get("gates") or {}).get(signal.symbol)
+        if gate is None:
+            return Decision("WAIT_DATA_INCOMPLETE", ["market_data"])
+        tape = loaded.get("tape")
+        table = loaded.get("correlation") or {}
+
+        def lookup(left: str, right: str, table=table):
+            return table.get((left, right))
+
+        score = score_candidate(
+            regime=evidence.regime,
+            rsi=evidence.rsi,
+            quote_volume=gate["quote_volume"],
+            spread=gate.get("spread"),
+            change_24h=gate.get("change_24h"),
+            tradable=bool(gate.get("tradable")),
+            volatility=evidence.volatility,
+            policy=policy,
+            weights=template.weight_map(),
+        )
+        quote_age = gate.get("quote_age")
+        evidence_age = (now - evidence.as_of.astimezone(timezone.utc)).total_seconds()
+        return approve(
+            policy=policy,
+            account_usdt=account_usdt,
+            free_usdt=free_usdt,
+            warp_owned=Decimal("0"),
+            warp_committed=book.commitment(),
+            warp_pending_so=book.pending_safety(),
+            non_warp_spent=Decimal("0"),
+            non_warp_future_so=Decimal("0"),
+            open_deals=len(book.open_deals()),
+            open_stop_risk=book.stop_risk(),
+            open_symbols=[row["symbol"] for row in book.open_deals()],
+            price=evidence.last_price,
+            minimum=gate.get("min_notional") or evidence.min_notional,
+            model_buy=True,
+            score=score,
+            symbol=signal.symbol,
+            now=now,
+            min_score=template.min_score,
+            exits=self._exits(),
+            tape=tape,
+            events=book.events(),
+            corr=lookup,
+            tradable=bool(gate.get("tradable")),
+            on_binance_spot=bool(gate.get("on_binance_spot")),
+            quote_volume=gate["quote_volume"],
+            spread=gate.get("spread"),
+            change_24h=gate.get("change_24h"),
+            listed_days=gate.get("listed_days"),
+            require_listing=True,
+            atr_1h_pct=gate.get("atr_1h_pct"),
+            stale=quote_age is None or quote_age > 30 or evidence_age > 300,
         )
 
     def _approve(self, account, plan, now):

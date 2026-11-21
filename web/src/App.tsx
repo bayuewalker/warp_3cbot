@@ -24,7 +24,7 @@ import {
   type Status,
 } from "./api";
 import { Key, Lang, t } from "./i18n";
-import { AccountsPanel, BudgetForm, ForwardPanel, PaperCheck, RulesPage, WarpBotsPanel } from "./desk";
+import { AccountsPanel, BudgetForm, ForwardPanel, PaperCheck, PaperDeals, RulesPage, WarpBotsPanel } from "./desk";
 import { Badge, Button, Card, Field, Loading, Problem, inputClass } from "./ui";
 import { Overview, Providers } from "./monitor";
 import { useLoad } from "./snapshot";
@@ -299,6 +299,7 @@ function Workspace({
           {page === "signals" && (
             <div className="monitor-col">
               <Signals lang={lang} />
+              <PaperDeals lang={lang} />
               <ForwardPanel lang={lang} />
             </div>
           )}
