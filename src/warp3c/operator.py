@@ -191,6 +191,24 @@ def _filters(cfg, journal) -> ScreenerFilters:
         return ScreenerFilters.from_settings(cfg)
 
 
+def _card_fresh(card: dict, now: datetime, max_age_minutes: int) -> bool:
+    """Fail closed unless both model response and exchange evidence are recent."""
+    for field in ("as_of", "evidence_as_of"):
+        raw = card.get(field)
+        if not isinstance(raw, str) or not raw:
+            return False
+        try:
+            timestamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if timestamp.tzinfo is None:
+            return False
+        age = (now - timestamp.astimezone(timezone.utc)).total_seconds()
+        if not -60 <= age <= max_age_minutes * 60:
+            return False
+    return True
+
+
 def publish(cfg, journal, engine) -> None:
     status = engine.status
     decision = getattr(engine, "last_decision", None)
