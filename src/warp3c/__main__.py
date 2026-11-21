@@ -42,7 +42,9 @@ class HealthHandler(BaseHTTPRequestHandler):
         from .httpapi import authorized
         from .live import BUS, iter_server_events
 
-        if not authorized(self.headers.get("Authorization"), self.headers.get("Cookie")):
+        header = self.headers.get("Authorization")
+        cookie = self.headers.get("Cookie")
+        if not authorized(header, cookie):
             payload = b'{"error":"unauthorized"}'
             self.send_response(401)
             self.send_header("Content-Type", "application/json")
@@ -65,7 +67,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         stop = threading.Event()
         try:
-            for chunk in iter_server_events(inbox, BUS, stop):
+            for chunk in iter_server_events(inbox, BUS, stop, lambda: authorized(header, cookie)):
                 self.wfile.write(chunk)
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, TimeoutError):

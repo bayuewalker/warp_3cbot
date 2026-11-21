@@ -234,21 +234,29 @@ def _set_risk(view: dict, *, state: str | None = None, reason: str | None = None
     view["pipeline"] = pipeline
 
 
+def broadcast_live(routes: dict | None = None) -> None:
+    """Push dashboard routes with the HALT file applied, same as GET /api/status."""
+    from .live import BUS
+    from .operator import ROUTES, SNAPSHOT
+
+    chosen = dict(routes) if routes is not None else {key: SNAPSHOT[key] for key in ROUTES if key in SNAPSHOT}
+    for key in ("/api/status", "/api/breakers"):
+        if isinstance(chosen.get(key), dict):
+            chosen[key] = _authoritative_halt(chosen[key])
+    BUS.emit_snapshot(chosen)
+
+
 def _pause() -> tuple[int, list[tuple[str, str]], bytes]:
     if not pause_new_entries(HEALTH.get("halt_path")):
         return _json(503, {"error": "halt_path_unconfigured"})
-    from .live import BUS
-
-    BUS.publish("halt", {"halt": True})
+    broadcast_live()
     return _json(200, {"paused": True, "closes_positions": False, "halt": True})
 
 
 def _resume() -> tuple[int, list[tuple[str, str]], bytes]:
     if not resume_new_entries(HEALTH.get("halt_path")):
         return _json(503, {"error": "halt_path_unconfigured"})
-    from .live import BUS
-
-    BUS.publish("halt", {"halt": False, "gating": "awaiting_worker"})
+    broadcast_live()
     return _json(200, {"resumed": True, "closes_positions": False, "halt": False})
 
 

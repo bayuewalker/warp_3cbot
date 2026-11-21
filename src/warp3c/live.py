@@ -117,13 +117,22 @@ def _offer(inbox: queue.Queue, payload: bytes) -> None:
             return
 
 
-def iter_server_events(inbox: queue.Queue, bus: LiveBus, stop: threading.Event):
+def iter_server_events(inbox: queue.Queue, bus: LiveBus, stop: threading.Event, alive=None):
+    """Yield events until stop, or until alive() is false. alive() is the session check."""
+    if alive is not None and not alive():
+        return
     yield encode_event("hello", {"ts": _now()})
     while not stop.is_set():
+        if alive is not None and not alive():
+            return
         try:
             payload = inbox.get(timeout=bus.heartbeat)
         except queue.Empty:
+            if alive is not None and not alive():
+                return
             payload = encode_event("heartbeat", {"ts": _now()})
+        if alive is not None and not alive():
+            return
         yield payload
 
 

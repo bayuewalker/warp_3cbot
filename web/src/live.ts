@@ -69,13 +69,22 @@ function connect() {
     notify();
   });
   source.addEventListener("halt", (ev) => {
-    const data = JSON.parse((ev as MessageEvent).data) as { halt?: boolean; gating?: string };
+    const data = JSON.parse((ev as MessageEvent).data) as {
+      halt?: boolean;
+      gating?: string;
+      execution_permitted?: boolean;
+      risk_permitted?: boolean;
+      pipeline?: unknown;
+      reason?: string;
+    };
     const status = routes.get("/api/status");
     if (status && status.data && typeof status.data === "object") {
-      routes.set("/api/status", {
-        data: { ...(status.data as object), halt: Boolean(data.halt), gating: data.gating },
-        at: Date.now(),
-      });
+      const next = { ...(status.data as object), ...data };
+      if (data.halt) {
+        next.execution_permitted = false;
+        next.risk_permitted = false;
+      }
+      routes.set("/api/status", { data: next, at: Date.now() });
       notify();
     }
   });

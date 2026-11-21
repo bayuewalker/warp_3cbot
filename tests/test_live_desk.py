@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -107,6 +109,85 @@ class LiveDeskTests(unittest.TestCase):
             if inbox is not None:
                 BUS.unsubscribe(inbox)
             BUS.heartbeat = 15
+            if previous is None:
+                os.environ.pop("WARP_OPERATOR_TOKEN", None)
+            else:
+                os.environ["WARP_OPERATOR_TOKEN"] = previous
+
+    def test_streamed_status_applies_the_halt_file(self):
+        from warp3c.httpapi import broadcast_live
+        from warp3c.operator import HEALTH, SNAPSHOT
+
+        previous = SNAPSHOT.get("/api/status")
+        halt = HEALTH.get("halt_path")
+        inbox = BUS.subscribe()
+        self.assertIsNotNone(inbox)
+        try:
+            with __import__("tempfile").TemporaryDirectory() as tmp:
+                path = os.path.join(tmp, "HALT")
+                HEALTH["halt_path"] = path
+                SNAPSHOT["/api/status"] = {
+                    "halt": False,
+                    "execution_permitted": True,
+                    "risk_permitted": True,
+                    "reason": "ok",
+                    "pipeline": {"risk": {"state": "pass", "reason": "ok"}},
+                }
+                Path(path).write_text("pause\n", encoding="utf-8")
+                broadcast_live()
+                raw = inbox.get(timeout=1).decode()
+                body = json.loads(raw.split("data: ", 1)[1])
+                status = body["routes"]["/api/status"]
+                self.assertTrue(status["halt"])
+                self.assertFalse(status["execution_permitted"])
+                self.assertEqual(status["pipeline"]["risk"]["reason"], "halt")
+                self.assertTrue(SNAPSHOT["/api/status"]["execution_permitted"])
+        finally:
+            if previous is None:
+                SNAPSHOT.pop("/api/status", None)
+            else:
+                SNAPSHOT["/api/status"] = previous
+            if halt is None:
+                HEALTH.pop("halt_path", None)
+            else:
+                HEALTH["halt_path"] = halt
+            BUS.unsubscribe(inbox)
+
+    def test_stream_stops_when_the_cookie_session_expires(self):
+        import warp3c.auth as auth
+        from warp3c.httpapi import authorized
+        from warp3c.live import iter_server_events
+
+        previous = os.environ.get("WARP_OPERATOR_TOKEN")
+        os.environ["WARP_OPERATOR_TOKEN"] = "operator-token-16"
+        inbox = BUS.subscribe()
+        stop = threading.Event()
+        clock = {"now": time.time()}
+        original = auth.time.time
+        auth.time.time = lambda: clock["now"]
+        BUS.heartbeat = 0.01
+        try:
+            token = auth.issue_session()
+            cookie = f"warp_session={token}"
+            self.assertTrue(authorized(None, cookie))
+            chunks: list[bytes] = []
+
+            def alive() -> bool:
+                return authorized(None, cookie)
+
+            stream = iter_server_events(inbox, BUS, stop, alive)
+            chunks.append(next(stream))
+            clock["now"] += auth.MAX_AGE + 5
+            self.assertFalse(authorized(None, cookie))
+            with self.assertRaises(StopIteration):
+                next(stream)
+            self.assertIn(b"event: hello", chunks[0])
+            self.assertNotIn(b"heartbeat", b"".join(chunks))
+        finally:
+            auth.time.time = original
+            BUS.heartbeat = 15
+            if inbox is not None:
+                BUS.unsubscribe(inbox)
             if previous is None:
                 os.environ.pop("WARP_OPERATOR_TOKEN", None)
             else:

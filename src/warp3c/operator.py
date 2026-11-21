@@ -348,7 +348,9 @@ def publish(cfg, journal, engine) -> None:
     RUNTIME["journal"] = journal
     RUNTIME["cfg"] = cfg
     RUNTIME["engine"] = engine
-    BUS.emit_snapshot({key: SNAPSHOT[key] for key in ROUTES if key in SNAPSHOT})
+    from .httpapi import broadcast_live
+
+    broadcast_live()
 
 
 def _mark_assets(accounts: list[dict]) -> None:

@@ -15,7 +15,9 @@ def create_app():
         from .httpapi import authorized
         from .live import BUS, iter_server_events
 
-        if not authorized(request.headers.get("authorization"), request.headers.get("cookie")):
+        header = request.headers.get("authorization")
+        cookie = request.headers.get("cookie")
+        if not authorized(header, cookie):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
         inbox = BUS.subscribe()
         if inbox is None:
@@ -24,7 +26,7 @@ def create_app():
 
         def chunks():
             try:
-                yield from iter_server_events(inbox, BUS, stop)
+                yield from iter_server_events(inbox, BUS, stop, lambda: authorized(header, cookie))
             finally:
                 BUS.unsubscribe(inbox)
 
