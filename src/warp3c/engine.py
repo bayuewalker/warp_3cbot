@@ -297,6 +297,8 @@ class Engine:
             self.status.execution_permitted = False
             self.status.risk_permitted = False
             self.status.reason = "halt" if paused else "observe_without_account"
+            if self.cfg.mode == "observe" and not paused:
+                self._shadow(deduped, None, now)
             self._record(notes)
             log_event("halt" if paused else "observe", signals=len(deduped), fresh=self.status.market_data_fresh)
             return 0
@@ -353,6 +355,8 @@ class Engine:
 
         opened = 0
         self.last_aegis = []
+        if self.cfg.mode == "observe" and not paused:
+            self._shadow(deduped, account, now)
         symbols = [str(plan.symbol) for plan in decision.orders]
         self._load_trade_book(symbols, now)
         for plan in decision.orders:
@@ -735,6 +739,138 @@ class Engine:
                 "warnings": list(getattr(book, "warnings", [])),
                 "nav": format(book.nav, "f"),
             }
+        )
+
+    def _paper(self):
+        book = getattr(self, "_paper_book", None)
+        if book is None:
+            from .paper import PaperBook
+
+            book = PaperBook(str(Path(self.cfg.db_path).with_name("paper.sqlite")))
+            self._paper_book = book
+        return book
+
+    def paper_view(self, now: datetime | None = None) -> dict:
+        moment = now or datetime.now(timezone.utc)
+        sleeve = self.cfg.sleeve_usdt if self.cfg.sleeve_usdt > 0 else None
+        view = self._paper().metrics(Policy.from_settings(self.cfg), moment, sleeve)
+        view["switches_live"] = False
+        view["error"] = getattr(self, "paper_error", None)
+        return view
+
+    def _shadow(self, signals, account, now: datetime) -> None:
+        """Simulate an approved spot ladder. This does not call the broker."""
+        from .capital import Decision
+
+        policy = Policy.from_settings(self.cfg)
+        cash = self._paper_cash(account)
+        book = self._paper()
+        candles = getattr(self.market, "last_candles", {}) or {}
+        for deal in book.open_deals():
+            book.advance(deal["symbol"], candles.get(deal["symbol"], []), policy, now)
+        if cash is None:
+            self.paper_error = "sleeve_unset"
+            return
+        self.paper_error = None
+        account_usdt, free_usdt = cash
+        exits = self._exits()
+        for signal in signals:
+            evidence = self.evidence.get(signal.symbol)
+            if signal.action == "SKIP" and evidence is not None and evidence.last_price > 0:
+                book.invalidate(signal.symbol, evidence.last_price, policy, now, "invalidated")
+                continue
+            if signal.action != "BUY" or evidence is None or evidence.last_price <= 0:
+                continue
+            if book.has_open(signal.symbol):
+                continue
+            decision = self._approve_shadow(signal, evidence, account_usdt, free_usdt, book, policy, now)
+            if not isinstance(decision, Decision) or decision.decision != "APPROVED" or decision.ladder is None:
+                log_event(
+                    "paper_veto",
+                    symbol=signal.symbol,
+                    status=getattr(decision, "decision", "unavailable"),
+                    reasons=",".join(getattr(decision, "reasons", [])),
+                )
+                continue
+            book.open_ladder(
+                symbol=signal.symbol,
+                ladder=decision.ladder,
+                entry=evidence.last_price,
+                exits=exits,
+                policy=policy,
+                now=now,
+                sleeve=decision.nav,
+            )
+            self._remember_aegis(signal.symbol, decision, account)
+            log_event("paper_opened", symbol=signal.symbol, status="APPROVED_PAPER")
+
+    def _paper_cash(self, account) -> tuple[Decimal, Decimal] | None:
+        if account is not None and account.total_usdt > 0:
+            return account.total_usdt, account.free_usdt
+        if self.cfg.sleeve_usdt > 0:
+            return self.cfg.sleeve_usdt, self.cfg.sleeve_usdt
+        return None
+
+    def _exits(self) -> Exits:
+        template = self._template()
+        return Exits(
+            stop=template.stop_enabled,
+            take_profit=template.take_profit_enabled,
+            trailing=template.trailing_enabled,
+        )
+
+    def _approve_shadow(self, signal, evidence, account_usdt, free_usdt, book, policy, now):
+        template = self._template()
+        score = score_candidate(
+            regime=evidence.regime,
+            rsi=evidence.rsi,
+            quote_volume=evidence.quote_volume,
+            spread=None,
+            change_24h=None,
+            tradable=evidence.tradable,
+            volatility=evidence.volatility,
+            policy=policy,
+            weights=template.weight_map(),
+        )
+        tape = None
+        corr = None
+        loaded = self._trade_book or {}
+        if loaded:
+            tape = loaded.get("tape")
+            table = loaded.get("correlation") or {}
+
+            def lookup(left: str, right: str, table=table):
+                return table.get((left, right))
+
+            corr = lookup
+        return approve(
+            policy=policy,
+            account_usdt=account_usdt,
+            free_usdt=free_usdt,
+            warp_owned=Decimal("0"),
+            warp_committed=book.exposure(),
+            warp_pending_so=Decimal("0"),
+            non_warp_spent=Decimal("0"),
+            non_warp_future_so=Decimal("0"),
+            open_deals=len(book.open_deals()),
+            open_stop_risk=book.stop_risk(),
+            open_symbols=[row["symbol"] for row in book.open_deals()],
+            price=evidence.last_price,
+            minimum=evidence.min_notional,
+            model_buy=True,
+            score=score,
+            symbol=signal.symbol,
+            now=now,
+            min_score=template.min_score,
+            exits=self._exits(),
+            tape=tape,
+            events=book.events(),
+            corr=corr,
+            tradable=evidence.tradable,
+            on_binance_spot=True,
+            quote_volume=evidence.quote_volume,
+            spread=None,
+            change_24h=None,
         )
 
     def _approve(self, account, plan, now):
