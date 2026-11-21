@@ -9,7 +9,7 @@ from decimal import Decimal
 # leveraged-token behavior inconsistent with the long-only spot playbook.
 _STABLE_BASES = frozenset({
     "USDC", "FDUSD", "TUSD", "USDP", "DAI", "USD1", "BUSD",
-    "USDE", "USDS", "RLUSD", "PYUSD", "EUR", "AEUR", "EURI",
+    "USDE", "USDS", "RLUSD", "PYUSD", "RWUSD", "EUR", "AEUR", "EURI",
     # United Stables. UUSDT is a USD-pegged coin, not a crypto market.
     "U",
 })
@@ -30,9 +30,16 @@ class Candidate:
     tokenized_equity: bool = False
 
 
+def _quote_like(base: str) -> bool:
+    """Stables and other dollar pegs. A bare 'US' prefix is not enough: USUAL is crypto."""
+    if base in _STABLE_BASES:
+        return True
+    return "USD" in base
+
+
 def excluded_base(base: str) -> str | None:
     """Quote-like coins, leveraged tokens, and tokenized equities or ETFs."""
-    if base in _STABLE_BASES:
+    if _quote_like(base):
         return "excluded_spot_instrument"
     leveraged = base.endswith(("DOWN", "BULL", "BEAR", "3L", "3S", "5L", "5S")) or (
         len(base) > 4 and base.endswith("UP")
