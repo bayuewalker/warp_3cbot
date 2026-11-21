@@ -199,6 +199,7 @@ def _save_filters(body: bytes) -> tuple[int, list[tuple[str, str]], bytes]:
         return _json(503, {"error": "journal_unavailable"})
     try:
         filters = ScreenerFilters.from_mapping(_body(body))
+        filters.require_binance_filters()
     except (ValueError, TypeError):
         return _json(400, {"error": "invalid_filters"})
     journal.set_setting("screener_filters", json.dumps(filters.to_dict()))
