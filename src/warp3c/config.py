@@ -102,7 +102,8 @@ class Settings:
     require_backtest: bool = False
     blend_confidence: bool = False
     backtest_min_trades: int = 3
-    screener_url: str = "https://scanner.tradingview.com"
+    # Legacy scanner URL is accepted but never contacted by the research worker.
+    screener_url: str = ""
     nvidia_model: str = "nvidia/nemotron-3-nano-30b-a3b"
     openrouter_model: str = "deepseek/deepseek-v4-pro"
     llm_timeout: int = 40
@@ -198,9 +199,10 @@ class Settings:
             raise ValueError("Dashboard password must be at least 12 characters")
         if self.session_secret and len(self.session_secret) < 16:
             raise ValueError("Session secret must be at least 16 characters")
-        scanner = urlparse(self.screener_url)
-        if scanner.scheme != "https" or not scanner.netloc:
-            raise ValueError("Screener URL must be https")
+        if self.screener_url:
+            scanner = urlparse(self.screener_url)
+            if scanner.scheme != "https" or not scanner.netloc:
+                raise ValueError("Screener URL must be https")
         if not self.symbols or len(set(self.symbols)) != len(self.symbols):
             raise ValueError("Symbol universe empty or duplicated")
         if any(not (s.isalnum() and s.endswith("USDT")) for s in self.symbols):
@@ -352,7 +354,7 @@ class Settings:
             require_backtest=os.getenv("WARP_REQUIRE_BACKTEST", "0") == "1",
             blend_confidence=os.getenv("WARP_BLEND_CONFIDENCE", "0") == "1",
             backtest_min_trades=int(os.getenv("WARP_BACKTEST_MIN_TRADES", "3")),
-            screener_url=os.getenv("WARP_SCREENER_URL", "https://scanner.tradingview.com"),
+            screener_url=os.getenv("WARP_SCREENER_URL", ""),
             nvidia_model=os.getenv("NVIDIA_MODEL", "nvidia/nemotron-3-nano-30b-a3b"),
             openrouter_model=os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-v4-pro"),
             llm_timeout=int(os.getenv("WARP_LLM_TIMEOUT_SECONDS", "40")),

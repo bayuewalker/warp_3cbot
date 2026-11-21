@@ -34,7 +34,7 @@ Region: Singapore (`sin`). One Machine, 2 GB, volume `warp_data` mounted at `/da
 8. Confirm `fly status`, `fly logs`, and `curl https://<app>.fly.dev/live`. The JSON field `execution_permitted` must be false while `TRADING_MODE=observe`.
 9. Allocate app-scoped static egress IPs and whitelist them on the 3Commas key. The public inbound address is not the outbound address. See [Fly app-scoped egress IP migration](https://fly.io/changelog/app-scoped-egress-ip-migration/).
 
-The image builds the React dashboard and does not install Vibe-Trading. The Machine stays at 2 GB so the screener and LLM client have headroom. Scale the one Machine vertically, not horizontally. `WARP_HTTP=fastapi`, `WARP_DISCOVERY=screener`, `WARP_REQUIRE_BACKTEST=1`, and `WARP_COOKIE_SECURE=1` come from `fly.toml`. `TRADING_MODE` stays `observe`.
+The image builds the React dashboard and does not install Vibe-Trading. The Machine stays at 2 GB so the screener and LLM client have headroom. Scale the one Machine vertically, not horizontally. `WARP_HTTP=fastapi`, `WARP_DISCOVERY=auto` (verified Binance Spot, not TradingView scanner), `WARP_REQUIRE_BACKTEST=1`, and `WARP_COOKIE_SECURE=1` come from `fly.toml`. `TRADING_MODE` stays `observe`.
 
 ## Rollback
 

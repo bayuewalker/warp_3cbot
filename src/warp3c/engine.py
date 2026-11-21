@@ -199,7 +199,13 @@ class Engine:
                 return ()
             return selected
         if self.cfg.discovery != "auto":
-            return self.cfg.symbols
+            # The global denylist is a safety policy, not an auto-discovery option.
+            # Static mode must never bypass it (including through old saved presets).
+            chosen = tuple(symbol for symbol in self.cfg.symbols if symbol not in self.cfg.deny_symbols)
+            if not chosen:
+                self._discovery_block = "no_eligible_market"
+                self._record([(now.isoformat(), "*", "universe", "no_eligible_market", "fail_closed")])
+            return chosen
         try:
             selected, rejected = self.market.discover(now=now)
         except MarketDataError:
@@ -242,6 +248,15 @@ class Engine:
             enriched = replace(signal, evidence=self.evidence.get(signal.symbol))
             candles = getattr(self.market, "last_candles", {}).get(signal.symbol)
             gated, card = qualify(enriched, enriched.evidence, candles, self.cfg, template)
+            # Timestamp/provenance let the dashboard flag old research instead of
+            # presenting a retained card as an actionable live opportunity.
+            card["as_of"] = gated.as_of.astimezone(timezone.utc).isoformat()
+            card["evidence_as_of"] = (
+                enriched.evidence.as_of.astimezone(timezone.utc).isoformat()
+                if enriched.evidence is not None and enriched.evidence.as_of.tzinfo is not None
+                else None
+            )
+            card["source"] = gated.source
             if enriched.evidence is not None:
                 card["score"] = score_candidate(
                     regime=enriched.evidence.regime,
@@ -281,7 +296,7 @@ class Engine:
             log_event("halt" if paused else "observe", signals=len(deduped), fresh=self.status.market_data_fresh)
             return 0
 
-        prices, price_problem = self._price_map(account, positions)
+        prices, price_problem = self._price_map(account, positions, now)
         if price_problem:
             self.status.dependencies_healthy = True
             self.status.execution_permitted = False
@@ -566,17 +581,33 @@ class Engine:
                     needed.add(f"{asset}USDT")
         return needed
 
-    def _price_map(self, account, positions) -> tuple[dict, str | None]:
+    def _price_map(self, account, positions, now: datetime) -> tuple[dict, str | None]:
+        """Never mark a held asset from a stale candle snapshot.
+
+        Active positions and wallet assets need fresher quote marks than signal
+        research. Fetch a new public quote if their cached market snapshot is
+        older than the account freshness ceiling; fail closed on lookup errors.
+        """
         prices = {symbol: item.last_price for symbol, item in self.evidence.items()}
-        missing = [symbol for symbol in sorted(self._needed_symbols(account, positions)) if symbol not in prices]
+        required = sorted(self._needed_symbols(account, positions))
         quote = getattr(self.market, "last_price", None)
-        for symbol in missing:
+        for symbol in required:
+            item = self.evidence.get(symbol)
+            age = None if item is None or item.as_of.tzinfo is None else (
+                now - item.as_of.astimezone(timezone.utc)
+            ).total_seconds()
+            if (age is not None and -60 <= age <= self.cfg.max_account_age
+                    and item.last_price.is_finite() and item.last_price > 0):
+                continue
             if quote is None:
                 return prices, "mark_unavailable"
             try:
-                prices[symbol] = quote(symbol)
-            except MarketDataError:
+                fresh = Decimal(str(quote(symbol)))
+            except (MarketDataError, ValueError, TypeError):
                 return prices, "mark_unavailable"
+            if not fresh.is_finite() or fresh <= 0:
+                return prices, "mark_unavailable"
+            prices[symbol] = fresh
         return prices, None
 
     def _fresh(self, now: datetime) -> bool:
