@@ -346,15 +346,20 @@ function Overview({ lang }: { lang: Lang }) {
       <Card>
         <h2 className="mb-3 font-semibold">{t(lang, "pipeline")}</h2>
         <ol className="space-y-3">
-          {[
-            ["stepScreen", "stepScreenBody"],
-            ["stepAnalysis", "stepAnalysisBody"],
-            ["stepRisk", "stepRiskBody"],
-            ["stepDesk", "stepDeskBody"],
-          ].map(([title, body]) => (
+          {([
+            ["stepScreen", "stepScreenBody", row.pipeline?.screening.state, row.pipeline?.screening.count],
+            ["stepAnalysis", "stepAnalysisBody", row.pipeline?.analysis.state, row.pipeline?.analysis.count],
+            ["stepRisk", "stepRiskBody", row.pipeline?.risk.state, undefined],
+            ["stepDesk", "stepDeskBody", row.pipeline?.opportunities.state, row.pipeline?.opportunities.count],
+          ] as const).map(([title, body, stage, count]) => (
             <li key={title} className="rounded-xl bg-black/20 p-3">
-              <p className="font-medium">{t(lang, title as "stepScreen")}</p>
-              <p className="text-sm text-zinc-400">{t(lang, body as "stepScreenBody")}</p>
+              <div className="flex items-center justify-between gap-3">
+                <p className="font-medium">{t(lang, title)}</p>
+                <Badge tone={stage === "ready" || stage === "pass" ? "good" : "warn"}>
+                  {stage || "pending"}{count === undefined ? "" : ` · ${count}`}
+                </Badge>
+              </div>
+              <p className="text-sm text-zinc-400">{t(lang, body)}</p>
             </li>
           ))}
         </ol>
@@ -387,7 +392,10 @@ function Signals({ lang }: { lang: Lang }) {
               <h2 className="text-lg font-semibold">{card.symbol}</h2>
               <p className="text-xs text-zinc-500">{card.regime} · RSI {card.rsi ?? "—"}</p>
             </div>
-            <Badge tone={card.action === "BUY" ? "good" : card.action === "SKIP" ? "bad" : "warn"}>{card.action}</Badge>
+            <div className="flex flex-col items-end gap-1">
+              <Badge tone={card.action === "BUY" ? "good" : card.action === "SKIP" ? "bad" : "warn"}>{card.action}</Badge>
+              {card.fresh === false ? <Badge tone="warn">Stale evidence</Badge> : null}
+            </div>
           </div>
           <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
             <Metric label={t(lang, "entry")} value={card.entry} />
@@ -410,6 +418,11 @@ function Signals({ lang }: { lang: Lang }) {
           <p className="mt-1 text-xs text-zinc-500">
             {t(lang, "backtest")}: {card.backtest_passed ? t(lang, "passed") : t(lang, "failed")} ({card.backtest_reason})
           </p>
+          {card.as_of ? (
+            <p className="mt-2 text-xs text-zinc-500">
+              {card.source || "research"} · {card.as_of}
+            </p>
+          ) : null}
           <p className="mt-3 text-sm leading-6 text-zinc-200">{lang === "id" ? card.why_id : card.why}</p>
         </Card>
       ))}
