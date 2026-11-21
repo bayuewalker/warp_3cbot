@@ -661,6 +661,11 @@ function ScreenerPage({ lang }: { lang: Lang }) {
       <Card>
         <h2 className="font-semibold">{t(lang, "filters")}</h2>
         <p className="mt-1 text-xs text-zinc-500">{t(lang, "source")}: {loaded.data.source || "—"} {loaded.data.error || ""}</p>
+        <p className="mt-2 text-xs text-amber-200/80">
+          {lang === "id"
+            ? "Ticker Binance tidak menyediakan RSI/rekomendasi TradingView. RSI diverifikasi nanti dari candle yang sudah close sebelum validasi risiko."
+            : "Binance ticker data has no TradingView RSI/recommendation. RSI is evaluated later from closed exchange candles before risk validation."}
+        </p>
         <form className="mt-4 space-y-3" onSubmit={save}>
           <Field label={t(lang, "minVolume")}>
             <input className={inputClass} value={form.min_quote_volume} onChange={(event) => setForm({ ...form, min_quote_volume: event.target.value })} />
@@ -675,10 +680,10 @@ function ScreenerPage({ lang }: { lang: Lang }) {
           </div>
           <div className="grid grid-cols-2 gap-2">
             <Field label={t(lang, "rsi")} hint="0–100">
-              <input className={inputClass} value={form.rsi_min} onChange={(event) => setForm({ ...form, rsi_min: event.target.value })} />
+              <input disabled aria-disabled="true" className={inputClass} value={form.rsi_min} onChange={(event) => setForm({ ...form, rsi_min: event.target.value })} />
             </Field>
             <Field label=" ">
-              <input className={inputClass} value={form.rsi_max} onChange={(event) => setForm({ ...form, rsi_max: event.target.value })} />
+              <input disabled aria-disabled="true" className={inputClass} value={form.rsi_max} onChange={(event) => setForm({ ...form, rsi_max: event.target.value })} />
             </Field>
           </div>
           <Field label={t(lang, "limit")}>
