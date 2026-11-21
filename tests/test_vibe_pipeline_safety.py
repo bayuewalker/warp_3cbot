@@ -36,16 +36,27 @@ class SafeVibePipelineTests(unittest.TestCase):
         self.assertFalse(_card_fresh({"as_of": signal_time}, now, 30))
         self.assertTrue(_card_fresh({**card, "evidence_as_of": recent_candle}, now, 30))
 
-    def test_unsupported_legacy_tradingview_filters_fail_closed(self):
+    def test_missing_scanner_does_not_substitute_binance(self):
         values = ScreenerFilters.from_mapping({"rsi_min": "50", "rsi_max": "65"})
-        screener = Screener("", "https://data-api.binance.vision")
+        called = {"binance": 0}
+
+        def binance(_request):
+            called["binance"] += 1
+            return httpx.Response(200, json=[])
+
+        screener = Screener(
+            "",
+            "https://data-api.binance.vision",
+            market_transport=httpx.MockTransport(binance),
+        )
         try:
-            with self.assertRaisesRegex(ScreenerError, "Unsupported Binance"):
+            with self.assertRaisesRegex(ScreenerError, "not configured"):
                 screener.scan(values)
+            self.assertEqual(called["binance"], 0)
         finally:
             screener.close()
-        normalized = ScreenerFilters.from_mapping({"min_quote_volume": "2500000", "limit": 5})
-        normalized.require_binance_filters()
+        with self.assertRaises(ValueError):
+            ScreenerFilters.from_mapping({"rsi_min": "50"}).require_binance_filters()
 
     def test_stale_signal_rejected_even_if_market_snapshot_is_fresh(self):
         now = datetime.now(timezone.utc)
@@ -123,38 +134,46 @@ class SafeVibePipelineTests(unittest.TestCase):
             finally:
                 store.close()
 
-    def test_binance_screener_does_not_call_tradingview(self):
-        called = {"scanner": 0, "binance": 0}
+    def test_tradingview_screener_excludes_bstocks_and_does_not_use_binance(self):
+        called = {"binance": 0}
 
-        def blocked_scanner(request):
-            called["scanner"] += 1
-            raise AssertionError("Unlicensed TradingView scanner endpoint contacted")
+        def scanner(request):
+            self.assertTrue(request.url.path.endswith("/crypto/scan"))
+            return httpx.Response(200, json={"data": [
+                {"s": "BINANCE:BTCUSDT", "d": ["BTCUSDT", 90000, 2, 1, 0.4, 55, 80000000]},
+                {"s": "BINANCE:SOXLBUSDT", "d": ["SOXLBUSDT", 40, 3, 1, 0.2, 60, 90000000]},
+                {"s": "BINANCE:RWUSDUSDT", "d": ["RWUSDUSDT", 1, 0, 1, 0, 50, 70000000]},
+            ]})
 
-        def binance(request):
+        def binance(_request):
             called["binance"] += 1
-            self.assertEqual(request.url.path, "/api/v3/ticker/24hr")
-            return httpx.Response(200, json=[
-                {
-                    "symbol": "BTCUSDT",
-                    "lastPrice": "90000",
-                    "quoteVolume": "80000000",
-                    "priceChangePercent": "2",
-                },
-            ])
+            return httpx.Response(200, json=[])
 
         screener = Screener(
             "https://scanner.tradingview.com",
             "https://data-api.binance.vision",
-            scanner_transport=httpx.MockTransport(blocked_scanner),
+            scanner_transport=httpx.MockTransport(scanner),
             market_transport=httpx.MockTransport(binance),
         )
         try:
             hits = screener.scan(ScreenerFilters())
-            self.assertEqual(screener.source, "binance")
+            self.assertEqual(screener.source, "tradingview")
             self.assertEqual([hit.symbol for hit in hits], ["BTCUSDT"])
-            self.assertEqual(called, {"scanner": 0, "binance": 1})
-            with self.assertRaises(ScreenerError):
-                screener._tradingview(ScreenerFilters())
+            self.assertEqual(hits[0].rsi, Decimal("55"))
+            self.assertTrue(screener.fetched_at)
+            self.assertEqual(called["binance"], 0)
+            down = Screener(
+                "https://scanner.tradingview.com",
+                "https://data-api.binance.vision",
+                scanner_transport=httpx.MockTransport(lambda _request: httpx.Response(503, json={})),
+                market_transport=httpx.MockTransport(binance),
+            )
+            try:
+                with self.assertRaisesRegex(ScreenerError, "TradingView"):
+                    down.scan(ScreenerFilters())
+            finally:
+                down.close()
+            self.assertEqual(called["binance"], 0)
         finally:
             screener.close()
 
@@ -198,7 +217,7 @@ class SafeVibePipelineTests(unittest.TestCase):
         self.assertEqual(classify(tagged, **opts), "excluded_spot_instrument")
 
     def test_legacy_scanner_config_can_be_omitted(self):
-        self.assertEqual(Settings().screener_url, "")
+        self.assertEqual(Settings().screener_url, "https://scanner.tradingview.com")
         with self.assertRaises(ValueError):
             Settings(screener_url="http://scanner.tradingview.com")
 

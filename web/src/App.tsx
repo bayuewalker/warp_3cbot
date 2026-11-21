@@ -27,7 +27,8 @@ import { Key, Lang, t } from "./i18n";
 import { AccountsPanel, BudgetForm, ForwardPanel, PaperCheck, RulesPage, WarpBotsPanel } from "./desk";
 import { Badge, Button, Card, Field, Loading, Problem, inputClass } from "./ui";
 import { Overview, Providers } from "./monitor";
-import { useLoad } from "./snapshot";
+import { Age } from "./age";
+import { useLiveState, useLoad } from "./snapshot";
 
 const nav = [
   { id: "overview", short: "overview", icon: LayoutDashboard },
@@ -244,6 +245,7 @@ function Workspace({
             <Brand />
           </div>
           <div className="toolbar">
+            <LiveBadge lang={lang} />
             {status.data?.halt && <Badge tone="bad">HALT</Badge>}
             <Badge tone={row?.halt || row?.mode === "live" ? "bad" : row?.mode === "paper" ? "warn" : "info"}>
               {row?.mode?.toUpperCase() ?? "—"}
@@ -462,10 +464,16 @@ function Signals({ lang }: { lang: Lang }) {
               {t(lang, "source")} <b>{card.source || "—"}</b>
             </span>
             <span>
-              {t(lang, "exchange")} <b>—</b>
+              {t(lang, "exchange")}{" "}
+              <b>
+                {t(lang, "unavailable")} · {t(lang, "notInSnapshot")}
+              </b>
             </span>
             <span>
-              {t(lang, "riskScore")} <b>—</b>
+              {t(lang, "riskScore")}{" "}
+              <b>
+                {t(lang, "unavailable")} · {t(lang, "notInSnapshot")}
+              </b>
             </span>
             <span>
               {t(lang, "signalTime")} <time>{card.as_of ?? "—"}</time>
@@ -766,11 +774,19 @@ function Positions({ lang }: { lang: Lang }) {
   );
 }
 
+function LiveBadge({ lang }: { lang: Lang }) {
+  const on = useLiveState();
+  return <Badge tone={on ? "good" : "warn"}>{t(lang, on ? "streamOn" : "reconnecting")}</Badge>;
+}
+
 function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean }) {
-  const loaded = useLoad<{ filters: Filters; hits: Hit[]; error: string | null; source: string }>(
-    "/api/screener",
-    true,
-  );
+  const loaded = useLoad<{
+    filters: Filters;
+    hits: Hit[];
+    error: string | null;
+    source: string;
+    fetched_at?: string | null;
+  }>("/api/screener", true);
   const [draft, setForm] = useState<Filters | null>(null);
   const form = draft ?? loaded.data?.filters;
   const [note, setNote] = useState("");
@@ -780,11 +796,7 @@ function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean
   async function save(event: FormEvent) {
     event.preventDefault();
     if (!form) return;
-    // Old TradingView-backed configurations may retain unsupported RSI/rec
-    // constraints. Normalize to what the Binance ticker API actually provides.
-    const supported = { ...form, rsi_min: "0", rsi_max: "100", min_recommendation: "-1" };
-    await api("/api/screener/filters", { method: "POST", body: JSON.stringify(supported) });
-    setForm(supported);
+    await api("/api/screener/filters", { method: "POST", body: JSON.stringify(form) });
     setNote(t(lang, "saved"));
   }
   const result = loaded.data;
@@ -796,8 +808,11 @@ function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean
             <ListFilter />
             {t(lang, "candidates")}
           </h2>
-          <Badge>{result.source || t(lang, "unknown")}</Badge>
+          <Badge>{result.source || t(lang, "unavailable")}</Badge>
         </div>
+        <p className="panel-note">
+          {t(lang, "fetched")} <Age at={result.fetched_at} limit={60} lang={lang} reason={result.error} />
+        </p>
         {result.error && (
           <p role="alert" className="alert">
             {result.error}
@@ -816,6 +831,8 @@ function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean
                     t(lang, "price"),
                     t(lang, "momentum"),
                     t(lang, "volume") + " (USDT)",
+                    "RSI",
+                    t(lang, "recommendation"),
                   ].map((label) => (
                     <th key={label} scope="col">
                       {label}
@@ -829,8 +846,10 @@ function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean
                     <td>{index + 1}</td>
                     <th scope="row">{hit.symbol}</th>
                     <td>{pretty(hit.last)}</td>
-                    <td>{hit.change_pct == null ? "—" : pretty(hit.change_pct) + "%"}</td>
-                    <td>{compact(hit.quote_volume)}</td>
+                    <td>{hit.change_pct == null ? t(lang, "unavailable") : pretty(hit.change_pct) + "%"}</td>
+                    <td>{hit.quote_volume == null ? t(lang, "unavailable") : compact(hit.quote_volume)}</td>
+                    <td>{hit.rsi == null ? t(lang, "unavailable") : pretty(hit.rsi)}</td>
+                    <td>{hit.recommendation == null ? t(lang, "unavailable") : pretty(hit.recommendation)}</td>
                   </tr>
                 ))}
               </tbody>

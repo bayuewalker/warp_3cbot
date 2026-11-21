@@ -107,8 +107,7 @@ class Settings:
     require_backtest: bool = False
     blend_confidence: bool = False
     backtest_min_trades: int = 3
-    # Legacy scanner URL is accepted but never contacted by the research worker.
-    screener_url: str = ""
+    screener_url: str = "https://scanner.tradingview.com"
     nvidia_model: str = DEFAULT_NVIDIA_MODEL
     openrouter_model: str = "deepseek/deepseek-v4-pro"
     llm_timeout: int = 40
@@ -359,7 +358,7 @@ class Settings:
             require_backtest=os.getenv("WARP_REQUIRE_BACKTEST", "0") == "1",
             blend_confidence=os.getenv("WARP_BLEND_CONFIDENCE", "0") == "1",
             backtest_min_trades=int(os.getenv("WARP_BACKTEST_MIN_TRADES", "3")),
-            screener_url=os.getenv("WARP_SCREENER_URL", ""),
+            screener_url=os.getenv("WARP_SCREENER_URL", "https://scanner.tradingview.com"),
             nvidia_model=(
                 os.getenv("WARP_NVIDIA_MODEL") or os.getenv("NVIDIA_MODEL") or DEFAULT_NVIDIA_MODEL
             ).strip(),

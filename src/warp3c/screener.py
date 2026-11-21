@@ -1,8 +1,9 @@
-"""Read-only spot screener. Automated discovery uses Binance public data only."""
+"""Dashboard ranking uses the TradingView crypto scanner. Discovery stays on Binance."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import httpx
@@ -251,14 +252,18 @@ def select_symbols(hits: list[ScreenerHit], *, allow: set[str], deny: set[str], 
 
 
 class Screener:
-    """Read-only Binance screener; TradingView automation is deliberately disabled.
+    """Dashboard ranking from the TradingView crypto scanner for Binance spot.
 
-    The constructor keeps its legacy positional arguments for backwards
-    compatibility, but does not open or call a TradingView HTTP client.
-    Unofficial TradingView scanner endpoints are not a licensed bot feed.
+    A failed scanner read raises. It does not substitute another feed.
     """
 
     def __init__(self, scanner_url: str, market_url: str, *, scanner_transport=None, market_transport=None):
+        self.scanner_url = scanner_url.rstrip("/")
+        self.scanner = (
+            httpx.Client(timeout=12, transport=scanner_transport, headers={"User-Agent": "warp3c", "Accept": "application/json"})
+            if self.scanner_url
+            else None
+        )
         self.market = httpx.Client(
             base_url=market_url.rstrip("/"),
             timeout=12,
@@ -266,27 +271,33 @@ class Screener:
             headers={"User-Agent": "warp3c", "Accept": "application/json"},
         )
         self.source = ""
+        self.fetched_at = ""
 
     def close(self) -> None:
         self.market.close()
+        if self.scanner is not None:
+            self.scanner.close()
 
     def scan(self, filters: ScreenerFilters) -> list[ScreenerHit]:
-        """Return Binance-sourced ranking or raise; never use an unofficial TV API."""
-        self.source = ""
-        try:
-            filters.require_binance_filters()
-        except ValueError as exc:
-            raise ScreenerError("Unsupported Binance ticker screener filters") from exc
-        hits = self._binance()
+        """Return TradingView rows after the spot-crypto exclusions, or raise."""
+        hits = self._tradingview(filters)
         selected = apply_filters(hits, filters)
-        self.source = "binance"
+        self.source = "tradingview"
+        self.fetched_at = datetime.now(timezone.utc).isoformat()
         return selected
 
     def _tradingview(self, filters: ScreenerFilters) -> list[ScreenerHit]:
-        """Legacy method fails closed; cannot be used to bypass licensed data access."""
-        raise ScreenerError("Automated TradingView scanner access is disabled")
+        if self.scanner is None:
+            raise ScreenerError("TradingView scanner is not configured")
+        try:
+            response = self.scanner.post(self.scanner_url + "/crypto/scan", json=scan_body(filters))
+            response.raise_for_status()
+            return parse_tradingview(response.json())
+        except (httpx.HTTPError, ValueError) as exc:
+            raise ScreenerError("TradingView scanner unavailable") from exc
 
     def _binance(self) -> list[ScreenerHit]:
+        """Explicit labelled helper. scan() does not call this."""
         try:
             response = self.market.get("/api/v3/ticker/24hr")
             response.raise_for_status()

@@ -8,6 +8,7 @@ import {
   type Status,
 } from "./api";
 import { Key, Lang, t } from "./i18n";
+import { Age } from "./age";
 import { useLoad } from "./snapshot";
 import { Badge, Button, Card, Field, Loading, Problem, inputClass } from "./ui";
 
@@ -23,29 +24,26 @@ function reasonLabel(reason: string, lang: Lang): string {
   return key ? t(lang, key) : reason.replaceAll("_", " ");
 }
 
+type AccountsPayload = {
+  accounts: BrokerAccount[];
+  selected: { code?: string } | null;
+  as_of?: string | null;
+  error?: string | null;
+  sleeve?: { eligible: string | null; sleeve: string | null; reason: string | null; basis?: string };
+  readonly?: boolean;
+};
+
 export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code: string) => void }) {
-  const [rows, setRows] = useState<BrokerAccount[] | null>(null);
+  const loaded = useLoad<AccountsPayload>("/api/accounts", true);
+  const rows = loaded.data?.accounts;
   const [selected, setSelected] = useState("");
   const [note, setNote] = useState("");
-  const [error, setError] = useState("");
-
-  async function load() {
-    setError("");
-    try {
-      const payload = await api<{ accounts: BrokerAccount[]; selected: { code?: string } | null }>(
-        "/api/accounts",
-      );
-      setRows(payload.accounts);
-      setSelected(payload.selected?.code || "");
-      onSelect(payload.selected?.code || "");
-    } catch {
-      setError(t(lang, "error"));
-    }
-  }
 
   useEffect(() => {
-    void load();
-  }, []);
+    const code = loaded.data?.selected?.code || "";
+    setSelected(code);
+    onSelect(code);
+  }, [loaded.data?.selected?.code]);
 
   async function choose(code: string) {
     setNote("");
@@ -53,7 +51,7 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
       await api("/api/accounts/select", { method: "POST", body: JSON.stringify({ code }) });
       setSelected(code);
       setNote(t(lang, "saved"));
-      await load();
+      loaded.reload();
     } catch (err) {
       setNote(reasonLabel((err as Error).message, lang));
     }
@@ -64,18 +62,28 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
       <Card>
         <div className="flex items-center justify-between gap-3">
           <h2 className="font-semibold">{t(lang, "accounts")}</h2>
-          <Button variant="outline" size="sm" type="button" onClick={() => void load()}>
+          <Button variant="outline" size="sm" type="button" onClick={loaded.reload}>
             {t(lang, "refresh")}
           </Button>
         </div>
         <p className="mt-2 text-xs text-zinc-500">{t(lang, "accountHelp")}</p>
+        <p className="panel-note">
+          <Age
+            at={loaded.data?.as_of}
+            limit={90}
+            lang={lang}
+            reason={loaded.data?.error || (rows ? null : t(lang, "noAccounts"))}
+          />
+        </p>
+        <p className="panel-note">
+          {t(lang, "sleeve")}{" "}
+          {loaded.data?.sleeve?.eligible
+            ? `${loaded.data.sleeve.eligible} USDT`
+            : `${t(lang, "unavailable")} · ${loaded.data?.sleeve?.reason || t(lang, "noSnapshot")}`}
+        </p>
       </Card>
-      {error ? (
-        <Card>
-          <p className="text-sm text-red-300">{error}</p>
-        </Card>
-      ) : null}
-      {!rows && !error && <Loading lang={lang} />}
+      {loaded.error ? <Problem lang={lang} retry={loaded.reload} /> : null}
+      {!rows && !loaded.error && <Loading lang={lang} />}
       {rows && rows.length === 0 ? (
         <Card>
           <p className="text-sm text-zinc-400">{t(lang, "noAccounts")}</p>
@@ -93,6 +101,22 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
           <p className="mt-3 text-sm text-zinc-200">
             {t(lang, "balance")} {row.total} {row.quote}
           </p>
+          {row.assets?.length ? (
+            <ul className="event-log">
+              {row.assets.map((asset) => (
+                <li key={asset.asset}>
+                  <span>
+                    {asset.asset} {asset.total}
+                  </span>
+                  <span>
+                    {asset.usd == null
+                      ? `${t(lang, "unavailable")} · ${asset.usd_reason || t(lang, "usdUnavailable")}`
+                      : `${asset.usd} USD`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
           <p className="mt-1 text-xs text-zinc-500">
             {row.market === "spot" ? t(lang, "spot") : t(lang, "notSpot")} · {row.exchange_code}
           </p>
@@ -155,7 +179,8 @@ export function BudgetForm({ lang, code }: { lang: Lang; code: string }) {
       <h2 className="font-semibold">{t(lang, "budget")}</h2>
       {!budget.error && view ? (
         <p className="mt-2 text-sm text-zinc-300">
-          {t(lang, "budgetUsed")} {view.used ?? "—"} · {t(lang, "budgetLeft")} {view.remaining ?? "—"}
+          {t(lang, "budgetUsed")} {view.used ?? t(lang, "unavailable")} · {t(lang, "budgetLeft")}{" "}
+          {view.remaining ?? t(lang, "unavailable")}
         </p>
       ) : null}
       {budget.error && <Problem lang={lang} retry={budget.reload} />}

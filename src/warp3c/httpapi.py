@@ -237,12 +237,18 @@ def _set_risk(view: dict, *, state: str | None = None, reason: str | None = None
 def _pause() -> tuple[int, list[tuple[str, str]], bytes]:
     if not pause_new_entries(HEALTH.get("halt_path")):
         return _json(503, {"error": "halt_path_unconfigured"})
+    from .live import BUS
+
+    BUS.publish("halt", {"halt": True})
     return _json(200, {"paused": True, "closes_positions": False, "halt": True})
 
 
 def _resume() -> tuple[int, list[tuple[str, str]], bytes]:
     if not resume_new_entries(HEALTH.get("halt_path")):
         return _json(503, {"error": "halt_path_unconfigured"})
+    from .live import BUS
+
+    BUS.publish("halt", {"halt": False, "gating": "awaiting_worker"})
     return _json(200, {"resumed": True, "closes_positions": False, "halt": False})
 
 

@@ -1,0 +1,99 @@
+"""Live stream, TradingView screener failures, and the production fixture ban."""
+
+from __future__ import annotations
+
+import os
+import unittest
+from pathlib import Path
+
+from warp3c.config import Settings
+from warp3c.engine import Engine
+from warp3c.live import BUS, encode_event, parse_tickers
+from warp3c.operator import _sleeve_view
+from warp3c.screener import ScreenerError
+from warp3c.state import OrderJournal
+
+
+class LiveDeskTests(unittest.TestCase):
+    def test_event_encoding_and_ticker_parser(self):
+        payload = encode_event("prices", {"symbols": {}})
+        self.assertTrue(payload.startswith(b"event: prices\n"))
+        self.assertTrue(payload.endswith(b"\n\n"))
+        rows = parse_tickers(
+            [{"symbol": "BTCUSDT", "lastPrice": "100.5", "priceChangePercent": "-1.2"}],
+            {"BTCUSDT"},
+        )
+        self.assertEqual(rows["BTCUSDT"]["last"], "100.5")
+        self.assertEqual(rows["BTCUSDT"]["change_pct"], "-1.2")
+
+    def test_missing_account_sleeve_is_unavailable(self):
+        view = _sleeve_view(Settings(), [], None)
+        self.assertIsNone(view["eligible"])
+        self.assertEqual(view["reason"], "account_unavailable")
+
+    def test_screener_error_keeps_the_last_tradingview_rows(self):
+        with __import__("tempfile").TemporaryDirectory() as tmp:
+            cfg = Settings(db_path=os.path.join(tmp, "warp.db"))
+            journal = OrderJournal(cfg.db_path)
+            try:
+                from test_failures import Markets, Research
+
+                engine = Engine(cfg, object(), Research(), journal, Markets(), screener=object())
+
+                class Down:
+                    def scan(self, _filters):
+                        raise ScreenerError("TradingView scanner unavailable")
+
+                engine.screener = Down()
+                engine.screener_hits = ["kept"]
+                engine.screener_source = "tradingview"
+                engine.screener_fetched_at = "2020-01-01T00:00:00+00:00"
+                engine._refresh_screener()
+                self.assertEqual(engine.screener_hits, ["kept"])
+                self.assertEqual(engine.screener_source, "tradingview")
+                self.assertIn("TradingView", engine.screener_error)
+            finally:
+                journal.close()
+
+    def test_stream_requires_auth_then_heartbeats(self):
+        from fastapi.testclient import TestClient
+
+        from warp3c.webapi import create_app
+
+        previous = os.environ.get("WARP_OPERATOR_TOKEN")
+        os.environ["WARP_OPERATOR_TOKEN"] = "operator-token-16"
+        BUS.heartbeat = 0.05
+        client = TestClient(create_app())
+        try:
+            denied = client.get("/api/stream")
+            self.assertEqual(denied.status_code, 401)
+            self.assertNotIn("accounts", denied.text)
+            with client.stream(
+                "GET",
+                "/api/stream",
+                headers={"Authorization": "Bearer operator-token-16"},
+            ) as response:
+                self.assertEqual(response.status_code, 200)
+                self.assertIn("text/event-stream", response.headers["content-type"])
+                chunks: list[str] = []
+                for chunk in response.iter_text():
+                    chunks.append(chunk)
+                    if "heartbeat" in "".join(chunks):
+                        break
+            text = "".join(chunks)
+            self.assertIn("event: hello", text)
+            self.assertIn("event: heartbeat", text)
+        finally:
+            BUS.heartbeat = 15
+            if previous is None:
+                os.environ.pop("WARP_OPERATOR_TOKEN", None)
+            else:
+                os.environ["WARP_OPERATOR_TOKEN"] = previous
+
+    def test_production_code_has_no_mock_fixtures(self):
+        banned = ("MockTransport", "lorem ipsum", "sample_price", "hardcoded_equity")
+        root = Path(__file__).resolve().parents[1] / "src" / "warp3c"
+        for path in root.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            for token in banned:
+                self.assertNotIn(token, text, f"{path.name} contains {token}")

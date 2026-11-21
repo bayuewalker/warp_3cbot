@@ -34,6 +34,7 @@ from warp3c.qualify import blend_confidence, qualify
 from warp3c.risk import GlobalRisk, make_trade_payload
 from warp3c.screener import (
     Screener,
+    ScreenerError,
     ScreenerFilters,
     ScreenerHit,
     apply_filters,
@@ -96,22 +97,12 @@ class ScreenerTests(unittest.TestCase):
         self.assertIsNone(kept[0].rsi)
         self.assertEqual(kept[0].source, "binance")
 
-    def test_scanner_http_failure_uses_binance(self):
+    def test_scanner_http_failure_is_not_relabelled_as_binance(self):
         def scanner(_request):
             return httpx.Response(503, json={"error": "down"})
 
         def market(_request):
-            return httpx.Response(
-                200,
-                json=[
-                    {
-                        "symbol": "BTCUSDT",
-                        "lastPrice": "100",
-                        "priceChangePercent": "1",
-                        "quoteVolume": "5000000",
-                    }
-                ],
-            )
+            raise AssertionError("Binance was used as a silent screener fallback")
 
         screener = Screener(
             "https://scanner.tradingview.com",
@@ -119,10 +110,12 @@ class ScreenerTests(unittest.TestCase):
             scanner_transport=httpx.MockTransport(scanner),
             market_transport=httpx.MockTransport(market),
         )
-        hits = screener.scan(ScreenerFilters())
-        self.assertEqual(screener.source, "binance")
-        self.assertEqual(hits[0].symbol, "BTCUSDT")
-        screener.close()
+        try:
+            with self.assertRaisesRegex(ScreenerError, "TradingView"):
+                screener.scan(ScreenerFilters())
+            self.assertNotEqual(screener.source, "binance")
+        finally:
+            screener.close()
 
     def test_allow_and_deny_lists_bound_the_universe(self):
         hits = [

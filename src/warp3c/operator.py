@@ -82,6 +82,8 @@ ROUTES = (
     "/api/forward",
     "/api/warp-bots",
     "/api/decisions",
+    "/api/events",
+    "/api/prices",
 )
 
 
@@ -283,7 +285,11 @@ def publish(cfg, journal, engine) -> None:
         "equity": None if decision is None or decision.equity is None else _text(decision.equity),
         "equity_reliable": None if decision is None else decision.equity_reliable,
     }
-    SNAPSHOT["/api/positions"] = {"positions": _positions(engine)}
+    SNAPSHOT["/api/positions"] = {
+        "positions": _positions(engine),
+        "as_of": getattr(engine, "positions_at", "") or None,
+        "error": getattr(engine, "positions_error", None),
+    }
     SNAPSHOT["/api/signals"] = {"decisions": journal.recent_decisions(30)}
     SNAPSHOT["/api/journal"] = {"submissions": journal.recent_submissions(30)}
     SNAPSHOT["/api/breakers"] = {
@@ -301,14 +307,35 @@ def publish(cfg, journal, engine) -> None:
         "hits": [hit.to_dict() for hit in getattr(engine, "screener_hits", []) or []],
         "error": getattr(engine, "screener_error", None),
         "source": getattr(engine, "screener_source", ""),
+        "fetched_at": getattr(engine, "screener_fetched_at", "") or None,
     }
     accounts = []
     for row in getattr(engine, "last_accounts", []) or []:
         if hasattr(row, "to_public"):
             allowed, reason = _account_reason(cfg, row)
             accounts.append(row.to_public(selectable=allowed, reason=reason))
+    _mark_assets(accounts)
     selected = _selected(journal)
-    SNAPSHOT["/api/accounts"] = {"accounts": accounts, "selected": selected, "places_orders": False}
+    SNAPSHOT["/api/accounts"] = {
+        "accounts": accounts,
+        "selected": selected,
+        "places_orders": False,
+        "as_of": getattr(engine, "accounts_at", "") or None,
+        "error": getattr(engine, "accounts_error", None),
+        "sleeve": _sleeve_view(cfg, accounts, selected),
+        "readonly": True,
+    }
+    from .live import recent_events
+
+    SNAPSHOT["/api/events"] = {"events": recent_events()[-20:], "as_of": now.isoformat()}
+    from .live import BUS
+
+    SNAPSHOT["/api/prices"] = {
+        "symbols": BUS.prices,
+        "as_of": BUS.prices_at,
+        "error": BUS.prices_error or ("price_feed_unavailable" if not BUS.prices else None),
+        "limit_seconds": 30,
+    }
     SNAPSHOT["/api/forward"] = summary(journal)
     SNAPSHOT["/api/decisions"] = {"decisions": list(getattr(engine, "last_aegis", []) or [])}
     bots = journal.warp_bots()
@@ -321,6 +348,59 @@ def publish(cfg, journal, engine) -> None:
     RUNTIME["journal"] = journal
     RUNTIME["cfg"] = cfg
     RUNTIME["engine"] = engine
+    BUS.emit_snapshot({key: SNAPSHOT[key] for key in ROUTES if key in SNAPSHOT})
+
+
+def _mark_assets(accounts: list[dict]) -> None:
+    from .live import BUS
+
+    for account in accounts:
+        marked = []
+        for asset in account.get("assets") or []:
+            name = str(asset.get("asset") or "")
+            total = asset.get("total")
+            usd = None
+            reason = None
+            if name in ("USDT", "USDC", "USD"):
+                usd = total
+            else:
+                price = BUS.prices.get(f"{name}USDT")
+                last = price.get("last") if isinstance(price, dict) else None
+                if last:
+                    usd = format(Decimal(str(total)) * Decimal(str(last)), "f")
+                else:
+                    reason = "usd_mark_unavailable"
+            marked.append({**asset, "usd": usd, "usd_reason": reason})
+        account["assets"] = marked
+
+
+def _sleeve_view(cfg, accounts: list[dict], selected: dict | None) -> dict:
+    from .capital import Policy, sleeve_nav
+
+    code = (selected or {}).get("code")
+    account = next((row for row in accounts if row.get("code") == code), None)
+    if account is None:
+        return {"eligible": None, "sleeve": None, "reason": "account_unavailable"}
+    if account.get("quote") not in ("USDT", "USDC"):
+        return {"eligible": None, "sleeve": None, "reason": "quote_unavailable"}
+    try:
+        view = sleeve_nav(
+            account_usdt=Decimal(str(account["total"])),
+            free_usdt=Decimal(str(account["free"])),
+            warp_owned=Decimal("0"),
+            non_warp_spent=Decimal("0"),
+            non_warp_future_so=Decimal("0"),
+            policy=Policy.from_settings(cfg),
+        )
+    except (ArithmeticError, ValueError) as exc:
+        return {"eligible": None, "sleeve": None, "reason": str(exc)[:160]}
+    return {
+        "eligible": format(view.eligible, "f"),
+        "sleeve": format(view.sleeve, "f"),
+        "account_usdt": format(view.account_usdt, "f"),
+        "reason": None,
+        "basis": "min(configured sleeve, free quote). Unpriced coins are not added.",
+    }
 
 
 def _selected(journal) -> dict | None:
