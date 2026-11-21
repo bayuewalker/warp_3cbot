@@ -38,6 +38,7 @@ export type Status = {
   risk_permitted: boolean;
   execution_permitted: boolean;
   halt: boolean;
+  published_at?: string | null;
   equity: string | null;
   pnl_today: string | null;
   universe: string[];

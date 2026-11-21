@@ -37,6 +37,27 @@ const nav = [
   { id: "preferences", short: "minisettings", icon: SlidersHorizontal },
 ] as const;
 type Page = (typeof nav)[number]["id"];
+const WORKER_STALE_MS = 15 * 60 * 1000;
+
+function WorkerStamp({ lang, publishedAt }: { lang: Lang; publishedAt?: string | null }) {
+  const parsed = publishedAt ? Date.parse(publishedAt) : Number.NaN;
+  const known = Number.isFinite(parsed);
+  const stale = known && Date.now() - parsed > WORKER_STALE_MS;
+  return (
+    <span>
+      {t(lang, "workerSnapshot")}{" "}
+      {known ? (
+        <time dateTime={publishedAt ?? undefined}>
+          {new Date(parsed).toLocaleTimeString(lang, { hour12: false, timeZone: "UTC" })} UTC
+        </time>
+      ) : (
+        t(lang, "workerTimeUnavailable")
+      )}
+      {stale ? <Badge tone="warn">{t(lang, "workerStale")}</Badge> : null}
+    </span>
+  );
+}
+
 function Brand() {
   return (
     <div className="brand">
@@ -258,10 +279,13 @@ function Workspace({
             </div>
             <div className="snapshot-clock">
               <Clock3 size={14} />
-              <span>
-                {t(lang, "received")}{" "}
-                <time>{status.received?.toLocaleTimeString(lang, { hour12: false }) ?? "—"}</time>
-              </span>
+              <div className="snapshot-facts">
+                <span>
+                  {t(lang, "received")}{" "}
+                  <time>{status.received?.toLocaleTimeString(lang, { hour12: false }) ?? "—"}</time>
+                </span>
+                <WorkerStamp lang={lang} publishedAt={status.data?.published_at} />
+              </div>
               <button
                 className="icon-button"
                 onClick={status.reload}

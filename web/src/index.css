@@ -246,6 +246,14 @@ h1:focus {
 }
 .snapshot-clock {
   gap: 7px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.snapshot-facts {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
 }
 .snapshot-clock time {
   font: 12px var(--mono);

@@ -60,7 +60,7 @@ function RiskControls({ lang, row, reload }: { lang: Lang; row: Status; reload: 
     try {
       await api(action === "halt" ? "/api/pause" : "/api/resume", { method: "POST" });
       setAction(null);
-      setNote("ack");
+      setNote(action === "halt" ? "haltAck" : "resumeAck");
       reload();
     } catch {
       setNote("error");
@@ -76,11 +76,11 @@ function RiskControls({ lang, row, reload }: { lang: Lang; row: Status; reload: 
       </h2>
       <div className="ledger">
         <span>{t(lang, "riskGate")}</span>
-        <b>{t(lang, row.risk_permitted ? "riskOn" : "riskOff")}</b>
+        <b>{row.halt ? "HALT" : t(lang, row.risk_permitted ? "riskOn" : "riskOff")}</b>
       </div>
       <div className="ledger">
         <span>{t(lang, "execution")}</span>
-        <b>{t(lang, row.execution_permitted ? "on" : "off")}</b>
+        <b>{t(lang, row.halt || !row.execution_permitted ? "off" : "on")}</b>
       </div>
       <p className="panel-note">{t(lang, "haltHelp")}</p>
       <div className="action-row">
