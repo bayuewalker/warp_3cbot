@@ -121,6 +121,27 @@ class LiveDeskTests(unittest.TestCase):
         )
         self.assertEqual(Decimal(overridden["eligible"]), Decimal("50"))
 
+    def test_account_reads_do_not_block_the_caller(self):
+        from warp3c.live import DashboardReads
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def refresh():
+            started.set()
+            release.wait(2)
+
+        reader = DashboardReads(refresh, 30)
+        began = time.monotonic()
+        reader.start()
+        try:
+            self.assertTrue(started.wait(1))
+            self.assertLess(time.monotonic() - began, 0.5)
+            self.assertTrue(reader.running)
+        finally:
+            release.set()
+            reader.stop()
+
     def test_missing_account_sleeve_is_unavailable(self):
         view = _sleeve_view(Settings(), [], None)
         self.assertIsNone(view["eligible"])

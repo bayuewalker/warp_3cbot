@@ -98,8 +98,8 @@ def run_health(server: ThreadingHTTPServer):
 
 
 def _refresh_live(engine, market, cfg: Settings, live_at: dict) -> None:
-    """Price, screener, and read-only account refresh on the worker thread."""
-    from .live import ACCOUNT_SECONDS, BUS, PRICE_SECONDS, SCREEN_SECONDS, poll_prices
+    """Price and screener refresh on the worker thread. Account reads stay off this thread."""
+    from .live import BUS, PRICE_SECONDS, SCREEN_SECONDS, poll_prices
 
     now = time.monotonic()
     if market is not None and now - live_at["price"] >= PRICE_SECONDS:
@@ -114,10 +114,9 @@ def _refresh_live(engine, market, cfg: Settings, live_at: dict) -> None:
         engine._refresh_screener()
         publish(cfg, engine.journal, engine)
         live_at["screen"] = now
-    if engine is not None and now - live_at["books"] >= ACCOUNT_SECONDS:
-        engine.refresh_readonly()
+    if engine is not None and getattr(engine, "accounts_at", "") not in {"", live_at.get("accounts_at")}:
         publish(cfg, engine.journal, engine)
-        live_at["books"] = now
+        live_at["accounts_at"] = engine.accounts_at
 
 
 def _build_research(cfg: Settings):
@@ -246,11 +245,14 @@ def main():
         journal = OrderJournal(cfg.db_path)
         screener, analyst = _build_research(cfg)
         engine = Engine(cfg, broker, research, journal, market, screener=screener, analyst=analyst)
-        engine.refresh_readonly()
+        from .live import ACCOUNT_SECONDS, DashboardReads
+
+        accounts = DashboardReads(engine.refresh_readonly, ACCOUNT_SECONDS)
+        accounts.start()
         publish(cfg, journal, engine)
         gate = ResearchGate()
         clocks = Clocks()
-        live_at = {"price": 0.0, "screen": time.monotonic(), "books": time.monotonic()}
+        live_at = {"price": 0.0, "screen": time.monotonic(), "accounts_at": ""}
         log_event("worker_started", mode=cfg.mode, symbols=",".join(cfg.symbols), discovery=cfg.discovery)
         while not STOP.is_set():
             if vibe_process and vibe_process.poll() is not None:
@@ -285,6 +287,8 @@ def main():
     finally:
         HEALTH["alive"] = False
         HEALTH["execution_permitted"] = False
+        if "accounts" in locals():
+            accounts.stop()
         _stop_http(server)
         if journal:
             journal.close()
