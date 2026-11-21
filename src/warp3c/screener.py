@@ -226,7 +226,10 @@ def apply_filters(hits: list[ScreenerHit], filters: ScreenerFilters) -> list[Scr
         if hit.symbol in seen or not hit.symbol.endswith(filters.quote):
             continue
         base = hit.symbol[: -len(filters.quote)]
-        if base in _STABLE_BASES:
+        leveraged = base.endswith(("DOWN", "BULL", "BEAR")) or (
+            len(base) > 4 and base.endswith("UP")
+        )
+        if base in _STABLE_BASES or leveraged:
             continue
         if hit.quote_volume < filters.min_quote_volume:
             continue
