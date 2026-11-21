@@ -45,6 +45,15 @@ class ScreenerFilters:
     min_recommendation: Decimal = Decimal("-1")
     limit: int = 12
 
+    def require_binance_filters(self) -> None:
+        """Reject unavailable RSI/recommendation filters instead of ignoring them."""
+        if (self.rsi_min != 0 or self.rsi_max != 100
+                or self.min_recommendation != -1):
+            raise ValueError(
+                "Binance 24h ticker has no RSI/recommendation; reset those filters "
+                "to RSI 0..100 and recommendation -1"
+            )
+
     def to_dict(self) -> dict:
         return {
             "exchange": self.exchange,
@@ -74,9 +83,9 @@ class ScreenerFilters:
         min_volume = positive(raw.get("min_quote_volume", "1000000"), "min quote volume", allow_zero=False)
         min_change = Decimal(str(raw.get("min_change_pct", "-8")))
         max_change = Decimal(str(raw.get("max_change_pct", "20")))
-        rsi_min = Decimal(str(raw.get("rsi_min", "40")))
-        rsi_max = Decimal(str(raw.get("rsi_max", "72")))
-        recommendation = Decimal(str(raw.get("min_recommendation", "0.1")))
+        rsi_min = Decimal(str(raw.get("rsi_min", "0")))
+        rsi_max = Decimal(str(raw.get("rsi_max", "100")))
+        recommendation = Decimal(str(raw.get("min_recommendation", "-1")))
         limit = int(raw.get("limit", 12))
         if not min_change.is_finite() or not max_change.is_finite() or min_change >= max_change:
             raise ValueError("Invalid change band")
@@ -283,6 +292,10 @@ class Screener:
     def scan(self, filters: ScreenerFilters) -> list[ScreenerHit]:
         """Return Binance-sourced ranking or raise; never use an unofficial TV API."""
         self.source = ""
+        try:
+            filters.require_binance_filters()
+        except ValueError as exc:
+            raise ScreenerError("Unsupported Binance ticker screener filters") from exc
         hits = self._binance()
         selected = apply_filters(hits, filters)
         self.source = "binance"
