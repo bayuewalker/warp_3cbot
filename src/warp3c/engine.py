@@ -248,6 +248,10 @@ class Engine:
             enriched = replace(signal, evidence=self.evidence.get(signal.symbol))
             candles = getattr(self.market, "last_candles", {}).get(signal.symbol)
             gated, card = qualify(enriched, enriched.evidence, candles, self.cfg, template)
+            # Timestamp/provenance let the dashboard flag old research instead of
+            # presenting a retained card as an actionable live opportunity.
+            card["as_of"] = gated.as_of.astimezone(timezone.utc).isoformat()
+            card["source"] = gated.source
             if enriched.evidence is not None:
                 card["score"] = score_candidate(
                     regime=enriched.evidence.regime,
