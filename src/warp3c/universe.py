@@ -35,7 +35,12 @@ def classify(
     if not candidate.symbol.isalnum() or not candidate.symbol.endswith("USDT"):
         return "not_usdt_spot"
     base = candidate.symbol[:-4]
-    if base in _STABLE_BASES or base.endswith(_LEVERAGED_SUFFIXES):
+    # "JUP" is a legitimate spot ticker; do not drop all 3-letter names
+    # just because the name happens to end in UP.
+    leveraged = base.endswith(("DOWN", "BULL", "BEAR")) or (
+        len(base) > 4 and base.endswith("UP")
+    )
+    if base in _STABLE_BASES or leveraged:
         return "excluded_spot_instrument"
     if not candidate.tradable:
         return "market_not_trading"
