@@ -519,3 +519,23 @@ class PaperCheckTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JournalThreadTests(unittest.TestCase):
+    def test_journal_reads_from_another_thread(self):
+        import threading
+
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = OrderJournal(os.path.join(tmp, "warp.db"))
+            errors: list[BaseException] = []
+
+            def read() -> None:
+                try:
+                    list(journal.equity_marks())
+                except BaseException as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            worker = threading.Thread(target=read)
+            worker.start()
+            worker.join(timeout=5)
+            self.assertEqual(errors, [])
