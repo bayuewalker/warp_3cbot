@@ -194,6 +194,44 @@ def _filters(cfg, journal) -> ScreenerFilters:
 def publish(cfg, journal, engine) -> None:
     status = engine.status
     decision = getattr(engine, "last_decision", None)
+    # Never label an old cached research card as current. Cards are retained
+    # across monitor cycles so the user can diagnose an upstream outage.
+    cards = []
+    now = datetime.now(timezone.utc)
+    for card in getattr(engine, "last_opportunities", []) or []:
+        if not isinstance(card, dict):
+            continue
+        fresh = False
+        try:
+            timestamp = datetime.fromisoformat(str(card.get("as_of") or ""))
+            if timestamp.tzinfo is not None:
+                age = (now - timestamp.astimezone(timezone.utc)).total_seconds()
+                fresh = -60 <= age <= cfg.max_signal_age * 60
+        except ValueError:
+            pass
+        cards.append({**card, "fresh": fresh})
+    current_cards = [card for card in cards if card["fresh"]]
+    discovered = list(getattr(engine, "universe", ()))
+    pipeline = {
+        "screening": {
+            "state": "ready" if discovered and status.market_data_fresh else "blocked",
+            "source": "binance_spot_public",
+            "count": len(discovered),
+        },
+        "analysis": {
+            "state": "ready" if current_cards and status.dependencies_healthy else "pending",
+            "count": len(current_cards),
+            "mode": cfg.analysis,
+        },
+        "risk": {
+            "state": "pass" if status.risk_permitted else "blocked",
+            "reason": status.reason,
+        },
+        "opportunities": {
+            "state": "ready" if current_cards else "pending",
+            "count": len(current_cards),
+        },
+    }
     SNAPSHOT["/api/status"] = {
         "alive": True,
         "mode": cfg.mode,
@@ -207,6 +245,7 @@ def publish(cfg, journal, engine) -> None:
         "halt": engine._halted(),
         "pnl_today": _pnl_today(journal),
         "equity": None if decision is None or decision.equity is None else _text(decision.equity),
+        "pipeline": pipeline,
     }
     SNAPSHOT["/api/risk"] = {
         "reason": status.reason,
@@ -227,7 +266,7 @@ def publish(cfg, journal, engine) -> None:
     SNAPSHOT["/api/config"] = public_config(cfg)
     template = _template(journal)
     equity = None if decision is None else decision.equity
-    SNAPSHOT["/api/opportunities"] = {"cards": list(getattr(engine, "last_opportunities", []) or [])}
+    SNAPSHOT["/api/opportunities"] = {"cards": cards}
     SNAPSHOT["/api/screener"] = {
         "filters": _filters(cfg, journal).to_dict(),
         "hits": [hit.to_dict() for hit in getattr(engine, "screener_hits", []) or []],
