@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
-import { ensureLive, liveConnected, liveRoute, onLive } from "./live";
+import { ensureLive, liveConnected, liveRoute, onLive, rememberRoute } from "./live";
+import { liveReadDecision } from "./live-policy";
 
 /** Prefer the live snapshot. Poll only while the stream is down. */
 export function useLoad<T>(path: string, poll = false) {
@@ -11,14 +12,14 @@ export function useLoad<T>(path: string, poll = false) {
   const reload = useCallback(() => setTick((value) => value + 1), []);
   useEffect(() => {
     return onLive(() => {
-    const frame = liveRoute<T>(path);
-    if (frame) {
+      const decision = liveReadDecision(liveConnected(), liveRoute<T>(path) != null, poll);
+      if (decision.startPoll) setTick((value) => value + 1);
+      if (!decision.applyCachedFrame) return;
+      const frame = liveRoute<T>(path);
+      if (!frame) return;
       setData(frame.data);
       setError(false);
       setReceived(new Date(frame.at));
-    } else if (poll && !liveConnected()) {
-      setTick((value) => value + 1);
-    }
     });
   }, [path, poll]);
   useEffect(() => {
@@ -26,23 +27,27 @@ export function useLoad<T>(path: string, poll = false) {
     const controller = new AbortController();
     let timer: number | undefined;
     async function read() {
+      const decision = liveReadDecision(liveConnected(), liveRoute<T>(path) != null, poll);
       const frame = liveRoute<T>(path);
-      if (frame && !controller.signal.aborted) {
+      if (decision.applyCachedFrame && frame && !controller.signal.aborted) {
         setData(frame.data);
         setError(false);
         setReceived(new Date(frame.at));
       }
       try {
         const row = await api<T>(path, { signal: controller.signal });
-        if (!controller.signal.aborted && !liveRoute<T>(path)) {
+        const next = liveReadDecision(liveConnected(), liveRoute<T>(path) != null, poll);
+        if (!controller.signal.aborted && next.acceptHttp) {
           setData(row);
           setError(false);
           setReceived(new Date());
+          if (!liveConnected()) rememberRoute(path, row);
         }
       } catch {
         if (!controller.signal.aborted && !liveRoute<T>(path)) setError(true);
       } finally {
-        if (poll && !liveConnected() && !controller.signal.aborted) timer = window.setTimeout(read, 5000);
+        const again = liveReadDecision(liveConnected(), liveRoute<T>(path) != null, poll);
+        if (again.startPoll && !controller.signal.aborted) timer = window.setTimeout(read, 5000);
       }
     }
     void read();

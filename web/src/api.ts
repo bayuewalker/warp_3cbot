@@ -133,7 +133,13 @@ export type BrokerAccount = {
   free: string;
   used: string;
   total: string;
-  assets?: { asset: string; total: string; usd: string | null; usd_reason?: string | null }[];
+  assets?: {
+    asset: string;
+    total: string;
+    usd: string | null;
+    usd_reason?: string | null;
+    quote_age_seconds?: number | null;
+  }[];
   selectable: boolean;
   reason: string;
 };

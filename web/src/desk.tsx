@@ -110,7 +110,9 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
                   </span>
                   <span>
                     {asset.usd == null
-                      ? `${t(lang, "unavailable")} · ${asset.usd_reason || t(lang, "usdUnavailable")}`
+                      ? `${t(lang, "unavailable")} · ${asset.usd_reason || t(lang, "usdUnavailable")}${
+                          asset.quote_age_seconds != null ? ` · ${asset.quote_age_seconds}s` : ""
+                        }`
                       : `${asset.usd} USD`}
                   </span>
                 </li>

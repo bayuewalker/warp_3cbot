@@ -352,8 +352,10 @@ def publish(cfg, journal, engine) -> None:
 
 
 def _mark_assets(accounts: list[dict]) -> None:
-    from .live import BUS
+    from .live import BUS, quote_age_seconds, quote_is_fresh
 
+    fresh = quote_is_fresh(BUS.prices_at)
+    age = quote_age_seconds(BUS.prices_at)
     for account in accounts:
         marked = []
         for asset in account.get("assets") or []:
@@ -366,11 +368,14 @@ def _mark_assets(accounts: list[dict]) -> None:
             else:
                 price = BUS.prices.get(f"{name}USDT")
                 last = price.get("last") if isinstance(price, dict) else None
-                if last:
+                if last and fresh:
                     usd = format(Decimal(str(total)) * Decimal(str(last)), "f")
                 else:
                     reason = "usd_mark_unavailable"
-            marked.append({**asset, "usd": usd, "usd_reason": reason})
+            row = {**asset, "usd": usd, "usd_reason": reason}
+            if reason == "usd_mark_unavailable" and age is not None and last:
+                row["quote_age_seconds"] = age
+            marked.append(row)
         account["assets"] = marked
 
 

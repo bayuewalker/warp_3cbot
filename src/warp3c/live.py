@@ -28,6 +28,25 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def quote_age_seconds(as_of: str | None, now: datetime | None = None) -> int | None:
+    if not as_of:
+        return None
+    try:
+        stamp = datetime.fromisoformat(as_of)
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    moment = now or datetime.now(timezone.utc)
+    return max(0, int((moment - stamp).total_seconds()))
+
+
+def quote_is_fresh(as_of: str | None, limit: int = QUOTE_FRESH_SECONDS, now: datetime | None = None) -> bool:
+    """A retained ticker is not a current mark once it is older than the quote limit."""
+    age = quote_age_seconds(as_of, now)
+    return age is not None and age <= limit
+
+
 def encode_event(event: str, data: dict) -> bytes:
     body = json.dumps(data, default=str, separators=(",", ":"))
     return f"event: {event}\ndata: {body}\n\n".encode()

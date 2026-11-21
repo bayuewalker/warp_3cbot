@@ -26,6 +26,10 @@ export function liveRoute<T>(path: string): { data: T; at: number } | null {
   return frame ? { data: frame.data as T, at: frame.at } : null;
 }
 
+export function rememberRoute(path: string, data: unknown) {
+  routes.set(path, { data, at: Date.now() });
+}
+
 export function liveConnected() {
   return connected;
 }

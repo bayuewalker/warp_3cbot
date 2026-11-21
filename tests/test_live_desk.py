@@ -26,6 +26,29 @@ class LiveDeskTests(unittest.TestCase):
         self.assertEqual(rows["BTCUSDT"]["last"], "100.5")
         self.assertEqual(rows["BTCUSDT"]["change_pct"], "-1.2")
 
+    def test_stale_quote_does_not_mark_coin_usd(self):
+        from datetime import datetime, timedelta, timezone
+
+        from warp3c.operator import _mark_assets
+
+        saved = (dict(BUS.prices), BUS.prices_at, BUS.prices_error)
+        try:
+            BUS.note_prices({"SOLUSDT": {"last": "100", "change_pct": "1"}}, None)
+            BUS.prices_at = (datetime.now(timezone.utc) - timedelta(seconds=31)).isoformat()
+            accounts = [{"assets": [{"asset": "SOL", "total": "2"}, {"asset": "USDT", "total": "5"}]}]
+            _mark_assets(accounts)
+            sol, usdt = accounts[0]["assets"]
+            self.assertIsNone(sol["usd"])
+            self.assertEqual(sol["usd_reason"], "usd_mark_unavailable")
+            self.assertGreaterEqual(sol["quote_age_seconds"], 31)
+            self.assertEqual(usdt["usd"], "5")
+            BUS.prices_at = datetime.now(timezone.utc).isoformat()
+            _mark_assets(accounts)
+            self.assertEqual(accounts[0]["assets"][0]["usd"], "200")
+            self.assertIsNone(accounts[0]["assets"][0]["usd_reason"])
+        finally:
+            BUS.prices, BUS.prices_at, BUS.prices_error = saved
+
     def test_missing_account_sleeve_is_unavailable(self):
         view = _sleeve_view(Settings(), [], None)
         self.assertIsNone(view["eligible"])
