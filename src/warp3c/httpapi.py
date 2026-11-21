@@ -184,11 +184,21 @@ def _file_halt() -> bool | None:
     return Path(path).is_file()
 
 
+def _published_under_halt(payload: dict) -> bool:
+    if payload.get("halt") is True or payload.get("reason") == "halt":
+        return True
+    pipeline = payload.get("pipeline")
+    risk = pipeline.get("risk") if isinstance(pipeline, dict) else None
+    return isinstance(risk, dict) and risk.get("reason") == "halt"
+
+
 def _authoritative_halt(payload: object) -> object:
     """Serve the HALT file on top of the last worker snapshot.
 
     publish() refreshes the snapshot on a later cycle. Pause and resume must
-    not wait for that cycle before the dashboard tells the truth.
+    not wait for that cycle before the dashboard tells the truth. Removing the
+    file does not reopen entries: a snapshot taken under HALT stays blocked
+    until the worker publishes a new evaluation.
     """
     halted = _file_halt()
     if halted is None or not isinstance(payload, dict) or not payload:
@@ -197,15 +207,31 @@ def _authoritative_halt(payload: object) -> object:
     view["halt"] = halted
     if halted:
         view["execution_permitted"] = False
-        pipeline = view.get("pipeline")
-        if isinstance(pipeline, dict):
-            pipeline = dict(pipeline)
-            risk = dict(pipeline.get("risk") or {})
-            risk["state"] = "blocked"
-            risk["reason"] = "halt"
-            pipeline["risk"] = risk
-            view["pipeline"] = pipeline
+        view["gating"] = "halt"
+        _set_risk(view, state="blocked", reason="halt")
+        return view
+    if _published_under_halt(payload):
+        view["gating"] = "awaiting_worker"
+        if view.get("reason") == "halt":
+            view["reason"] = "awaiting_worker"
+        _set_risk(view, reason="awaiting_worker")
+    else:
+        view["gating"] = "current"
     return view
+
+
+def _set_risk(view: dict, *, state: str | None = None, reason: str | None = None) -> None:
+    pipeline = view.get("pipeline")
+    if not isinstance(pipeline, dict):
+        return
+    pipeline = dict(pipeline)
+    risk = dict(pipeline.get("risk") or {})
+    if state is not None:
+        risk["state"] = state
+    if reason is not None:
+        risk["reason"] = reason
+    pipeline["risk"] = risk
+    view["pipeline"] = pipeline
 
 
 def _pause() -> tuple[int, list[tuple[str, str]], bytes]:

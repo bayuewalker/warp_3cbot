@@ -76,7 +76,13 @@ function RiskControls({ lang, row, reload }: { lang: Lang; row: Status; reload: 
       </h2>
       <div className="ledger">
         <span>{t(lang, "riskGate")}</span>
-        <b>{row.halt ? "HALT" : t(lang, row.risk_permitted ? "riskOn" : "riskOff")}</b>
+        <b>
+          {row.halt
+            ? "HALT"
+            : row.gating === "awaiting_worker"
+              ? t(lang, "awaitingWorker")
+              : t(lang, row.risk_permitted ? "riskOn" : "riskOff")}
+        </b>
       </div>
       <div className="ledger">
         <span>{t(lang, "execution")}</span>
@@ -196,7 +202,13 @@ function Pipeline({ lang, row }: { lang: Lang; row: Status }) {
                         {t(lang, "outputs")} <b>{stage.count}</b>
                       </span>
                     )}
-                    {stage && "reason" in stage && <span>{stage.reason.replaceAll("_", " ")}</span>}
+                    {stage && "reason" in stage && (
+                      <span>
+                        {stage.reason === "awaiting_worker"
+                          ? t(lang, "awaitingWorker")
+                          : stage.reason.replaceAll("_", " ")}
+                      </span>
+                    )}
                     {key === "stepScreen" && (
                       <span>{t(lang, row.market_data_fresh ? "fresh" : "stale")}</span>
                     )}

@@ -38,6 +38,7 @@ export type Status = {
   risk_permitted: boolean;
   execution_permitted: boolean;
   halt: boolean;
+  gating?: "halt" | "awaiting_worker" | "current";
   published_at?: string | null;
   equity: string | null;
   pnl_today: string | null;
