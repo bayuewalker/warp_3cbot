@@ -16,7 +16,10 @@ class OrderJournal:
     def __init__(self, filename: str):
         Path(filename).parent.mkdir(parents=True, exist_ok=True)
         self.path = filename
-        self.db = sqlite3.connect(filename, isolation_level=None, timeout=30)
+        # The dashboard reads the journal from HTTP worker threads as well as the
+        # monitoring loop. Autocommit mode and SQLite's serialized threading make a
+        # shared connection safe; without this flag /api/accounts raised a 500.
+        self.db = sqlite3.connect(filename, isolation_level=None, timeout=30, check_same_thread=False)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.execute(
