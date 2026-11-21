@@ -44,6 +44,7 @@ _ACTIONS = {
     "/api/accounts/budget",
     "/api/warp-bots/action",
     "/api/paper/roundtrip",
+    "/api/rules",
 }
 
 _TYPES = {
@@ -113,6 +114,10 @@ def dispatch(method: str, path: str, headers, body: bytes) -> tuple[int, list[tu
             return _save_budget(body)
         if method == "POST" and clean == "/api/warp-bots/action":
             return _bot_action(body)
+        if method == "GET" and clean == "/api/rules":
+            return _rules()
+        if method == "POST" and clean == "/api/rules":
+            return _save_rules(body)
         if method == "POST" and clean == "/api/paper/roundtrip":
             return _paper_roundtrip(body)
     return _json(404, {"error": "not_found"})
@@ -327,6 +332,37 @@ def PathHalt(cfg) -> bool:
     from pathlib import Path
 
     return Path(cfg.db_path).parent.joinpath("HALT").exists()
+
+
+def _rules() -> tuple[int, list[tuple[str, str]], bytes]:
+    from .capital import Policy, apply_rule_edits, rules_document
+
+    journal, cfg = _journal()
+    if journal is None or cfg is None:
+        return _json(503, {"error": "journal_unavailable"})
+    policy = Policy.from_settings(cfg)
+    raw = journal.get_setting("trade_rules")
+    if raw:
+        try:
+            policy = apply_rule_edits(policy, json.loads(raw))
+        except (ValueError, json.JSONDecodeError):
+            return _json(200, {"values": {}, "error": "invalid_rules", "places_orders": False})
+    return _json(200, rules_document(policy))
+
+
+def _save_rules(body: bytes) -> tuple[int, list[tuple[str, str]], bytes]:
+    from .capital import Policy, apply_rule_edits, rules_document
+
+    journal, cfg = _journal()
+    if journal is None or cfg is None:
+        return _json(503, {"error": "journal_unavailable"})
+    try:
+        payload = _body(body)
+        policy = apply_rule_edits(Policy.from_settings(cfg), payload)
+    except (ValueError, TypeError):
+        return _json(400, {"error": "invalid_rules", "places_orders": False})
+    journal.set_setting("trade_rules", json.dumps(rules_document(policy)["values"]))
+    return _json(200, {"saved": True, "places_orders": False, "values": rules_document(policy)["values"]})
 
 
 def _paper_roundtrip(body: bytes) -> tuple[int, list[tuple[str, str]], bytes]:

@@ -19,7 +19,7 @@ Verdict for this pass: **observe and paper paths are implemented and unit-tested
 - Stop-loss and take-profit are dashboard toggles, both on by default. Turning the stop off sizes the deal against a virtual stop and shows **No SL**. Turning take-profit off without a trailing exit shows **Manual exit**.
 - The minimum score defaults to 80 and can be set from 50 to 100 on the bot preset. Below 80 shows a warning. Rubric weights are editable and must sum to 100.
 - Every create is stored in `warp_bots` under a `WARP-` name. Pause, resume, close, and delete load that row, re-read the remote bot, and refuse the call unless the remote name matches. Open API strategy orders stay on the old client id and do not have a cabinet pause route.
-- Verdicts are stored with the market price at decision time. A later cycle fills 4h, 24h, and 72h moves from Binance 1h closes. BUY hits when price rises, SKIP when it falls, WAIT when the move stays inside 0.5%.
+- Verdicts are stored with the market price at decision time. A later cycle fills 4h, 24h, and 72h moves from Binance 1h closes, net of round-trip fees. The Signals page shows hit rate. The Bots page shows DEMO/REAL accounts. The Rules page lists every active threshold and the last cycle's AEGIS status.
 - `python -m warp3c.papercheck` is the demo round trip. It is not a live approval.
 
 ## Still open before any live use

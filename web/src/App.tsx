@@ -20,10 +20,10 @@ import {
   type Status,
 } from "./api";
 import { Key, Lang, t } from "./i18n";
-import { AccountsPanel, BudgetForm, ForwardPanel, PaperCheck, WarpBotsPanel } from "./desk";
+import { AccountsPanel, BudgetForm, ForwardPanel, PaperCheck, RulesPage, WarpBotsPanel } from "./desk";
 import { Badge, Button, Card, Field, inputClass } from "./ui";
 
-type Page = "overview" | "signals" | "bots" | "positions" | "screener" | "settings";
+type Page = "overview" | "signals" | "bots" | "positions" | "screener" | "rules" | "settings";
 
 const nav: { id: Page; icon: typeof Activity }[] = [
   { id: "overview", icon: LayoutDashboard },
@@ -31,6 +31,7 @@ const nav: { id: Page; icon: typeof Activity }[] = [
   { id: "bots", icon: Bot },
   { id: "positions", icon: Wallet },
   { id: "screener", icon: ListFilter },
+  { id: "rules", icon: Shield },
 ];
 
 function useLang(): [Lang, (lang: Lang) => void] {
@@ -204,9 +205,10 @@ function Workspace({
       {page === "bots" ? <Bots lang={lang} /> : null}
       {page === "positions" ? <Positions lang={lang} /> : null}
       {page === "screener" ? <ScreenerPage lang={lang} /> : null}
+      {page === "rules" ? <RulesPage lang={lang} /> : null}
       {page === "settings" ? <Settings lang={lang} /> : null}
       <nav className="fixed inset-x-0 bottom-0 border-t border-white/10 bg-ink/95 backdrop-blur">
-        <div className="mx-auto grid max-w-3xl grid-cols-5">
+        <div className="mx-auto grid max-w-3xl grid-cols-3">
           {nav.map((item) => {
             const Icon = item.icon;
             const active = page === item.id;

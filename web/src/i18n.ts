@@ -151,6 +151,11 @@ const copy = {
     weightEvent: "Events",
     weightsSum: "Weights must sum to 100.",
     score: "Score",
+    rules: "Rules",
+    rulesHelp: "Tradebook and addendum thresholds. Saving does not place an order.",
+    saveRules: "Save rules",
+    decisions: "Last cycle",
+    noDecisions: "No AEGIS decision yet.",
   },
   id: {
     title: "WARP 3C",
@@ -302,6 +307,11 @@ const copy = {
     weightEvent: "Peristiwa",
     weightsSum: "Bobot harus berjumlah 100.",
     score: "Skor",
+    rules: "Aturan",
+    rulesHelp: "Ambang tradebook dan addendum. Menyimpan tidak menempatkan order.",
+    saveRules: "Simpan aturan",
+    decisions: "Siklus terakhir",
+    noDecisions: "Belum ada keputusan AEGIS.",
   },
 } as const;
 

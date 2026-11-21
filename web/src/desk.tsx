@@ -303,6 +303,81 @@ export function ForwardPanel({ lang }: { lang: Lang }) {
   );
 }
 
+export function RulesPage({ lang }: { lang: Lang }) {
+  const [values, setValues] = useState<Record<string, string | number> | null>(null);
+  const [decisions, setDecisions] = useState<{ symbol: string; status: string; reasons: string[] }[]>([]);
+  const [note, setNote] = useState("");
+
+  async function load() {
+    const [rules, cycle] = await Promise.all([
+      api<{ values: Record<string, string | number> }>("/api/rules"),
+      api<{ decisions: { symbol: string; status: string; reasons: string[] }[] }>("/api/decisions"),
+    ]);
+    setValues(rules.values);
+    setDecisions(cycle.decisions || []);
+  }
+
+  useEffect(() => {
+    void load().catch(() => setNote(t(lang, "error")));
+  }, [lang]);
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    if (!values) return;
+    setNote("");
+    try {
+      const saved = await api<{ values: Record<string, string | number> }>("/api/rules", {
+        method: "POST",
+        body: JSON.stringify(values),
+      });
+      setValues(saved.values);
+      setNote(t(lang, "saved"));
+    } catch {
+      setNote(t(lang, "weightsSum"));
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <h2 className="font-semibold">{t(lang, "decisions")}</h2>
+        {decisions.length === 0 ? <p className="mt-2 text-sm text-zinc-400">{t(lang, "noDecisions")}</p> : null}
+        {decisions.map((row) => (
+          <div key={row.symbol} className="mt-3 rounded-xl bg-black/20 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <p className="font-medium">{row.symbol}</p>
+              <Badge tone={row.status.startsWith("APPROVED") ? "good" : row.status === "VETO" ? "bad" : "warn"}>{row.status}</Badge>
+            </div>
+            {row.reasons?.length ? <p className="mt-1 text-xs text-zinc-400">{row.reasons.join(", ")}</p> : null}
+          </div>
+        ))}
+      </Card>
+      <Card>
+        <h2 className="font-semibold">{t(lang, "rules")}</h2>
+        <p className="mt-2 text-xs text-zinc-500">{t(lang, "rulesHelp")}</p>
+        {values ? (
+          <form className="mt-4 space-y-3" onSubmit={save}>
+            {Object.entries(values).map(([key, value]) => (
+              <Field key={key} label={key}>
+                <input
+                  className={inputClass}
+                  value={String(value)}
+                  onChange={(event) => setValues({ ...values, [key]: event.target.value })}
+                />
+              </Field>
+            ))}
+            {Number(values.min_score) < 80 ? <Badge tone="warn">{t(lang, "scoreWarning")}</Badge> : null}
+            <Button className="w-full" type="submit">{t(lang, "saveRules")}</Button>
+          </form>
+        ) : (
+          <p className="mt-3 text-sm text-zinc-400">{t(lang, "loading")}</p>
+        )}
+        {note ? <p className="mt-3 text-sm text-zinc-400">{note}</p> : null}
+      </Card>
+    </div>
+  );
+}
+
 export function PaperCheck({ lang }: { lang: Lang }) {
   const [word, setWord] = useState("");
   const [note, setNote] = useState("");

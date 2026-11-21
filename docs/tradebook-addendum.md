@@ -31,6 +31,10 @@ At most one open deal in a cluster whose 30-day daily-return correlation is abov
 
 ## 5. BTC regime
 
+Each cycle the worker reads public Binance 4h and 1h BTCUSDT klines (no API key). A failed read is `WAIT_DATA_INCOMPLETE` and blocks new entries. Correlation uses a 30-day daily-close matrix for BTC, the candidate, and open deals, cached for four hours. A failed refresh also blocks new entries.
+
+The same pass checks Binance `TRADING`, 24h quote volume of at least 10M USDT, book-ticker spread of at most 0.25%, listing age of at least 90 days, no +20% 24h surge, and `MIN_NOTIONAL` / `LOT_SIZE` on every ladder order. The DCA step is `clamp(0.9 * ATR14-1h, 2%, 5%)`. Quotes older than 30 seconds or signals older than 5 minutes are incomplete.
+
 No new entries when BTCUSDT 4h close is below its 4h EMA200 and the 1h EMA50 slope is negative, or BTC 24h change is at or below -5%, or BTC 1h ATR% is more than twice its 30-day median.
 
 ## 6. Cooldowns

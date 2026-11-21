@@ -81,6 +81,7 @@ ROUTES = (
     "/api/accounts",
     "/api/forward",
     "/api/warp-bots",
+    "/api/decisions",
 )
 
 
@@ -241,6 +242,7 @@ def publish(cfg, journal, engine) -> None:
     selected = _selected(journal)
     SNAPSHOT["/api/accounts"] = {"accounts": accounts, "selected": selected, "places_orders": False}
     SNAPSHOT["/api/forward"] = summary(journal)
+    SNAPSHOT["/api/decisions"] = {"decisions": list(getattr(engine, "last_aegis", []) or [])}
     bots = journal.warp_bots()
     SNAPSHOT["/api/warp-bots"] = {"bots": bots, "budget": _budget_view(cfg, journal, selected, accounts)}
     SNAPSHOT["/api/bots"] = {

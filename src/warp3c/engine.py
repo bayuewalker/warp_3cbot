@@ -103,6 +103,9 @@ class Engine:
         self.last_decision = None
         self.last_opportunities: list[dict] = []
         self.last_accounts: list = []
+        self.last_aegis: list[dict] = []
+        self._trade_book: dict | None = None
+        self._trade_book_error: str | None = None
         self._discovery_block: str | None = None
 
     def cycle(self) -> int:
@@ -329,6 +332,9 @@ class Engine:
             return 0
 
         opened = 0
+        self.last_aegis = []
+        symbols = [str(plan.symbol) for plan in decision.orders]
+        self._load_trade_book(symbols, now)
         for plan in decision.orders:
             if self.journal.recently_submitted(plan.symbol):
                 notes.append((stamp, plan.symbol, "broker", "duplicate_cooldown", "skipped"))
@@ -361,7 +367,15 @@ class Engine:
                 notes.append((stamp, plan.symbol, "broker", "spot_only", "not_submitted"))
                 self.status.execution_permitted = False
                 continue
+            if self._trade_book_error:
+                self.last_aegis.append(
+                    {"symbol": plan.symbol, "status": "WAIT_DATA_INCOMPLETE", "reasons": [self._trade_book_error], "warnings": []}
+                )
+                notes.append((stamp, plan.symbol, "broker", "WAIT_DATA_INCOMPLETE", "not_submitted"))
+                self.status.execution_permitted = False
+                continue
             book = self._approve(account, plan, now)
+            self._remember_aegis(plan.symbol, book, account)
             if book.decision != "APPROVED" or book.ladder is None:
                 notes.append((stamp, plan.symbol, "broker", ",".join(book.reasons) or book.decision, "not_submitted"))
                 self.status.execution_permitted = False
@@ -625,9 +639,65 @@ class Engine:
             return None
         return payload if isinstance(payload, dict) else None
 
+    def _load_trade_book(self, symbols: list[str], now: datetime) -> None:
+        self._trade_book = None
+        self._trade_book_error = None
+        loader = getattr(self.market, "tradebook_context", None)
+        if loader is None:
+            return
+        try:
+            self._trade_book = loader(tuple(dict.fromkeys(symbols)), now=now)
+        except (MarketDataError, ValueError, TypeError):
+            self._trade_book_error = "market_data"
+
+    def _remember_aegis(self, symbol: str, book, account) -> None:
+        status = book.decision
+        if status == "APPROVED":
+            if self.cfg.mode == "live":
+                status = "APPROVED_LIVE_PENDING_TRADE_DESK"
+            elif self.cfg.mode == "paper" and getattr(account, "demo", False):
+                status = "APPROVED_DEMO"
+            else:
+                status = "APPROVED_PAPER"
+        self.last_aegis.append(
+            {
+                "symbol": symbol,
+                "status": status,
+                "reasons": list(book.reasons),
+                "warnings": list(getattr(book, "warnings", [])),
+                "nav": format(book.nav, "f"),
+            }
+        )
+
     def _approve(self, account, plan, now):
         evidence = self.evidence.get(plan.symbol)
         policy = Policy.from_settings(self.cfg)
+        saved = self.journal.get_setting("trade_rules")
+        if saved:
+            from .capital import apply_rule_edits
+
+            try:
+                policy = apply_rule_edits(policy, json.loads(saved))
+            except (ValueError, json.JSONDecodeError):
+                from .capital import Decision
+
+                return Decision("WAIT_DATA_INCOMPLETE", ["rules"])
+        gate = None
+        tape = None
+        corr = None
+        book = self._trade_book or {}
+        if book:
+            tape = book.get("tape")
+            table = book.get("correlation") or {}
+            def lookup(left: str, right: str, table=table) -> object:
+                return table.get((left, right))
+
+            corr = lookup
+            gate = (book.get("gates") or {}).get(plan.symbol)
+            if gate is None:
+                from .capital import Decision
+
+                return Decision("WAIT_DATA_INCOMPLETE", ["market_data"])
         score = None
         if evidence is not None:
             template = self._template()
@@ -664,8 +734,17 @@ class Engine:
             exits=_exits(self._template()),
             symbol=plan.symbol,
             now=now,
-            quote_volume=evidence.quote_volume if evidence is not None else policy.min_quote_volume,
-            tradable=True if evidence is None else evidence.tradable,
+            tape=tape,
+            corr=corr,
+            quote_volume=gate["quote_volume"] if gate else (evidence.quote_volume if evidence is not None else policy.min_quote_volume),
+            spread=None if gate is None else gate.get("spread"),
+            change_24h=None if gate is None else gate.get("change_24h"),
+            listed_days=None if gate is None else gate.get("listed_days"),
+            require_listing=gate is not None,
+            tradable=True if gate is None else bool(gate.get("tradable")),
+            on_binance_spot=True if gate is None else bool(gate.get("on_binance_spot")),
+            atr_1h_pct=None if gate is None else gate.get("atr_1h_pct"),
+            stale=bool(gate and (gate.get("quote_age") is None or gate["quote_age"] > 30 or (evidence is not None and (now - evidence.as_of.astimezone(timezone.utc)).total_seconds() > 300))),
         )
 
     def _foreign_future_so(self) -> Decimal:

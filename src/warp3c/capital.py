@@ -539,15 +539,26 @@ def universe_block(
     spread: Decimal | None,
     change_24h: Decimal | None,
     policy: Policy,
+    listed_days: int | None = None,
+    require_market: bool = False,
 ) -> str | None:
     if not on_binance_spot:
         return "not_binance_spot"
     if not tradable:
         return "not_trading"
+    if require_market:
+        if listed_days is None:
+            return "listing_unknown"
+        if listed_days < 90:
+            return "listing_young"
+        if spread is None or spread > policy.max_spread:
+            return "spread"
+    elif spread is not None and spread > policy.max_spread:
+        return "spread"
+    if listed_days is not None and listed_days < 90:
+        return "listing_young"
     if quote_volume < policy.min_quote_volume:
         return "thin_book"
-    if spread is not None and spread > policy.max_spread:
-        return "spread"
     if change_24h is not None and change_24h > policy.max_surge:
         return "surge"
     return None
@@ -594,6 +605,8 @@ def approve(
     quote_volume: Decimal = Decimal("0"),
     spread: Decimal | None = None,
     change_24h: Decimal | None = None,
+    listed_days: int | None = None,
+    require_listing: bool = False,
     stale: bool = False,
     mismatched_account: bool = False,
     day_start: Decimal | None = None,
@@ -618,6 +631,8 @@ def approve(
         spread=spread,
         change_24h=change_24h,
         policy=policy,
+        listed_days=listed_days,
+        require_market=require_listing,
     )
     if blocked:
         return Decision("VETO", [blocked])
@@ -636,6 +651,8 @@ def approve(
     if symbol in open_symbols:
         return Decision("VETO", ["duplicate_symbol"], score=score)
     clustered = correlation_block(open_symbols, symbol, corr, policy)
+    if clustered == "correlation_unknown":
+        return Decision("WAIT_DATA_INCOMPLETE", [clustered], score=score)
     if clustered:
         return Decision("VETO", [clustered], score=score)
     book = sleeve_nav(
@@ -734,6 +751,87 @@ def readback_ok(remote: dict, exits: Exits) -> bool:
         if exits.trailing != enabled:
             return False
     return True
+
+
+RULE_FIELDS = (
+    "sleeve_usdt",
+    "sleeve_pct",
+    "allocation_ceiling",
+    "reserve_floor",
+    "per_deal_ceiling",
+    "max_deals",
+    "deal_stop_risk",
+    "aggregate_stop_risk",
+    "daily_loss_halt",
+    "drawdown_halt",
+    "stop_slippage",
+    "virtual_drop",
+    "stress_shock",
+    "stress_slippage",
+    "stress_cap",
+    "corr_min",
+    "max_alts",
+    "min_score",
+    "tp_min",
+    "tp_fee_multiple",
+    "min_quote_volume",
+    "max_spread",
+    "max_surge",
+    "cooldown_stop_hours",
+    "cooldown_tp_hours",
+    "streak_pause_hours",
+    "stop_streak",
+    "review_days",
+    "paper_min_days",
+    "paper_min_deals",
+)
+
+
+def rules_document(policy: Policy) -> dict:
+    values = {}
+    for name in RULE_FIELDS:
+        value = getattr(policy, name)
+        values[name] = value if isinstance(value, int) and not isinstance(value, bool) else format(value, "f")
+    return {"values": values, "places_orders": False}
+
+
+def apply_rule_edits(policy: Policy, raw: dict) -> Policy:
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError("Rules must be an object")
+    unknown = set(raw) - set(RULE_FIELDS)
+    if unknown:
+        raise ValueError("Unknown rule")
+    updates: dict = {}
+    for name, value in raw.items():
+        current = getattr(policy, name)
+        if isinstance(current, int) and not isinstance(current, bool):
+            if type(value) is bool:
+                raise ValueError(name)
+            number = int(value)
+            if name == "min_score" and not 50 <= number <= 100:
+                raise ValueError(name)
+            if name == "max_deals" and not 1 <= number <= 3:
+                raise ValueError(name)
+            if number < 0:
+                raise ValueError(name)
+            updates[name] = number
+        else:
+            amount = positive(value, name, allow_zero=name == "sleeve_usdt")
+            if name == "sleeve_usdt":
+                if amount < 0:
+                    raise ValueError(name)
+            elif name in {"min_quote_volume", "tp_fee_multiple"}:
+                if amount <= 0 or (name == "tp_fee_multiple" and amount < 1):
+                    raise ValueError(name)
+            elif not Decimal("0") < amount <= Decimal("1"):
+                raise ValueError(name)
+            updates[name] = amount
+    from dataclasses import replace
+
+    updated = replace(policy, **updates)
+    if updated.sleeve_usdt == 0 and updated.sleeve_pct == 0:
+        raise ValueError("sleeve")
+    return updated
 
 
 def net_move(move: Decimal, policy: Policy) -> Decimal:
