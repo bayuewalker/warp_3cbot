@@ -194,22 +194,14 @@ def _filters(cfg, journal) -> ScreenerFilters:
 def publish(cfg, journal, engine) -> None:
     status = engine.status
     decision = getattr(engine, "last_decision", None)
-    # Never label an old cached research card as current. Cards are retained
-    # across monitor cycles so the user can diagnose an upstream outage.
+    # Retained cards must prove BOTH model and exchange data freshness.
+    # An otherwise recent LLM answer about an older candle stays stale.
     cards = []
     now = datetime.now(timezone.utc)
     for card in getattr(engine, "last_opportunities", []) or []:
         if not isinstance(card, dict):
             continue
-        fresh = False
-        try:
-            timestamp = datetime.fromisoformat(str(card.get("as_of") or ""))
-            if timestamp.tzinfo is not None:
-                age = (now - timestamp.astimezone(timezone.utc)).total_seconds()
-                fresh = -60 <= age <= cfg.max_signal_age * 60
-        except ValueError:
-            pass
-        cards.append({**card, "fresh": fresh})
+        cards.append({**card, "fresh": _card_fresh(card, now, cfg.max_signal_age)})
     current_cards = [card for card in cards if card["fresh"]]
     discovered = list(getattr(engine, "universe", ()))
     pipeline = {
