@@ -4,12 +4,12 @@ Verdict for this pass: **observe and paper paths are implemented and unit-tested
 
 ## Done in this phase
 
-- TradingView crypto scan parser, filter ranking, and Binance 24h ticker fallback. `WARP_DISCOVERY=screener` uses that list and fails closed when both sources fail. `fly.toml` turns the screener on. The code default remains `static`.
+- Binance public spot screening and exchange-rule-validated automatic discovery. Unattended TradingView scanner calls are disabled; manual TradingView chart review remains possible. `fly.toml` uses `WARP_DISCOVERY=auto` in observe mode. The code default remains `static` for backwards compatibility and the denylist applies in both modes.
 - Slim analysis client for NVIDIA and OpenRouter with JSON extraction, price-field stripping, timeouts, failover, and a process-local daily cap. Entry, stop, and target are derived from the candle snapshot.
 - Confidence blend (cannot raise the model score) and a long-only backtest gate. Both are on in `fly.toml` and off unless the env flags are set, so older tests keep their behavior.
 - DCA strategy payload (unchanged for the Moderate preset), cabinet DCA payload, and interval grid payload. Presets clamp to the configured caps. Client ids are deterministic per symbol, kind, preset, and UTC day. A rejected id may take the next attempt. An unknown or confirmed id blocks a second submit.
 - Grid and cabinet DCA writes exist on the 3Commas client. A response without an id stays unresolved. Confirmed bots that do not appear on the strategy list still consume pair capacity.
-- FastAPI and the stdlib server share one dispatcher. Password session cookie, bearer token, HALT, and resume. React/Vite/Tailwind dashboard with English default and an Indonesian toggle.
+- FastAPI and the stdlib server share one dispatcher. Password session cookie, bearer token, HALT, and resume. React/Vite/Tailwind dashboard with English default and an Indonesian toggle, plus stage statuses, signal provenance and explicit stale-evidence labels.
 - Image no longer installs the Vibe-Trading fork. The HTTP client and the pin remain for an external Vibe process.
 
 ## Paper desk
