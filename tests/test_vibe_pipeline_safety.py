@@ -19,7 +19,7 @@ from warp3c.engine import Engine
 from warp3c.market import MarketDataError
 from warp3c.models import Account, AssetBalance
 from warp3c.risk import signal_executable
-from warp3c.screener import Screener, ScreenerFilters, ScreenerError
+from warp3c.screener import Screener, ScreenerError, ScreenerFilters
 from warp3c.state import OrderJournal
 from warp3c.universe import Candidate, classify
 
@@ -60,6 +60,7 @@ class SafeVibePipelineTests(unittest.TestCase):
             store = OrderJournal(str(Path(tmp) / "warp.db"))
             try:
                 cfg = Settings(db_path=str(Path(tmp) / "warp.db"))
+
                 class Market:
                     def __init__(self):
                         self.can_quote = False
