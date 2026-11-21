@@ -10,9 +10,14 @@ kill_timeout = 30
   WARP_DB_PATH = "/data/warp.db"
   WARP_CYCLE_SECONDS = "900"
   TRADING_MODE = "observe"
-  WARP_DISCOVERY = "static"
+  WARP_DISCOVERY = "screener"
+  WARP_ANALYSIS = "auto"
+  WARP_HTTP = "fastapi"
+  WARP_MANAGE_VIBE = "0"
+  WARP_REQUIRE_BACKTEST = "1"
+  WARP_BLEND_CONFIDENCE = "1"
+  WARP_COOKIE_SECURE = "1"
   WARP_MONITOR_SECONDS = "60"
-  WARP_MANAGE_VIBE = "1"
 
 [http_service]
   internal_port = 8080
@@ -24,7 +29,7 @@ kill_timeout = 30
   [[http_service.checks]]
     interval = "30s"
     timeout = "5s"
-    grace_period = "180s"
+    grace_period = "60s"
     method = "GET"
     path = "/live"
 

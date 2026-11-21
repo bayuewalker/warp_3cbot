@@ -248,13 +248,17 @@ class GlobalRisk:
         marks: list[EquityMark],
         now: datetime | None = None,
         evidence: dict[str, MarketEvidence] | None = None,
+        extra_symbols: tuple[str, ...] = (),
+        extra_committed: Decimal = Decimal("0"),
     ) -> RiskDecision:
         moment = now or datetime.now(timezone.utc)
         self._require_fresh(account, moment)
         active = managed_strategies(
             positions, account.code, demo=account.demo, exchange_code=self.cfg.exchange_code
         )
-        if len(active) > self.cfg.max_positions:
+        active_names = {str(strategy.get("pair") or "") for strategy in active}
+        extra = tuple(symbol for symbol in extra_symbols if symbol and symbol not in active_names)
+        if len(active) + len(extra) > self.cfg.max_positions:
             raise IntegrationError("Active position count already exceeds configured limit")
         assert_balances_explained(account, active, prices)
         equity, reliable = mark_to_market(account, active, prices)
@@ -263,7 +267,15 @@ class GlobalRisk:
             return RiskDecision([], False, reason or "mtm_unreliable", equity if reliable else None, reliable)
         if _abnormal_volatility(active, evidence or {}, self.cfg.max_volatility):
             return RiskDecision([], False, "abnormal_volatility", equity, True)
-        orders = self.plan(account, positions, signals, equity=equity, now=moment)
+        orders = self.plan(
+            account,
+            positions,
+            signals,
+            equity=equity,
+            now=moment,
+            extra_symbols=extra,
+            extra_committed=extra_committed,
+        )
         return RiskDecision(orders, True, "ok", equity, True)
 
     def plan(
@@ -274,6 +286,8 @@ class GlobalRisk:
         *,
         equity: Decimal,
         now: datetime | None = None,
+        extra_symbols: tuple[str, ...] = (),
+        extra_committed: Decimal = Decimal("0"),
     ) -> list[PlannedOrder]:
         moment = now or datetime.now(timezone.utc)
         active = managed_strategies(
@@ -293,12 +307,20 @@ class GlobalRisk:
             if account.demo
             else sum((unfilled_quote(strategy, self.cfg.fee_rate) for strategy in active), Decimal("0"))
         )
+        committed += extra_committed
+        locked += extra_committed
         group_committed: dict[str, Decimal] = {}
         for strategy, pair in zip(active, active_pairs, strict=True):
             group = self.cfg.group_for(pair)
             group_committed[group] = group_committed.get(group, Decimal("0")) + reserved_quote(
                 strategy, self.cfg.fee_rate
             )
+        share = extra_committed / Decimal(len(extra_symbols)) if extra_symbols else Decimal("0")
+        for symbol in extra_symbols:
+            if symbol not in active_pairs:
+                active_pairs.append(symbol)
+            group = self.cfg.group_for(symbol)
+            group_committed[group] = group_committed.get(group, Decimal("0")) + share
         factor = dca_ladder_factor(self.cfg.dca_orders, self.cfg.dca_multiplier)
         gross = factor * (Decimal("1") + self.cfg.fee_rate + self.cfg.slippage_rate)
         proposals = []

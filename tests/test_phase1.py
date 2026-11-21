@@ -1,0 +1,386 @@
+"""Phase 1: screener parsing, risk gate, payloads, idempotency, and session auth."""
+
+import json
+import os
+import unittest
+from datetime import datetime, timezone
+from decimal import Decimal
+
+import httpx
+from test_core import evidence
+
+from warp3c.auth import note_login_success
+from warp3c.backtest import run_backtest
+from warp3c.bots import (
+    BotTemplate,
+    allocate_client_id,
+    build_dca_bot_payload,
+    build_grid_payload,
+    build_strategy_dca_payload,
+    client_id_for,
+)
+from warp3c.config import Settings
+from warp3c.engine import Engine
+from warp3c.levels import derive_levels
+from warp3c.llm import LlmAnalyst, strip_price_fields
+from warp3c.models import PlannedOrder
+from warp3c.operator import publish
+from warp3c.qualify import blend_confidence
+from warp3c.risk import make_trade_payload
+from warp3c.screener import (
+    Screener,
+    ScreenerFilters,
+    ScreenerHit,
+    apply_filters,
+    parse_binance_tickers,
+    parse_tradingview,
+    select_symbols,
+)
+from warp3c.state import OrderJournal
+from warp3c.vibe import ResearchError
+
+
+def _candles(count: int, step: str) -> list[dict]:
+    price = Decimal("100")
+    delta = Decimal(step)
+    rows = []
+    for _ in range(count):
+        price *= Decimal("1") + delta
+        rows.append(
+            {
+                "high": price * Decimal("1.002"),
+                "low": price * Decimal("0.998"),
+                "close": price,
+            }
+        )
+    return rows
+
+
+class ScreenerTests(unittest.TestCase):
+    def test_tradingview_rows_are_filtered_and_ranked(self):
+        payload = {
+            "data": [
+                {"s": "BINANCE:ETHUSDT", "d": ["ETH", 10, 1.2, 1, 0.3, 55, 8_000_000]},
+                {"s": "BINANCE:BTCUSDT", "d": ["BTC", 100, 0.4, 1, 0.5, 60, 20_000_000]},
+                {"s": "BINANCE:DOGEUSDT", "d": ["DOGE", 0.1, 1, 1, -0.4, 20, 9_000_000]},
+                {"s": "BINANCE:USDCUSDT", "d": ["USDC", 1, 0.01, 1, 0.2, 50, 90_000_000_000]},
+                {"s": "BINANCE:PUMPUSDT", "d": ["PUMP", 1, 40, 1, 0.6, 50, 9_000_000]},
+                {"s": "BINANCE:LOWUSDT", "d": ["LOW", 1, 1, 1, 0.6, 50, 10]},
+                {"s": "BYBIT:SOLUSDT", "d": ["SOL", 1, 1, 1, 0.6, 50, 9_000_000]},
+                {"s": "BINANCE:HOTUSDT.P", "d": ["HOT", 1, 1, 1, 0.6, 50, 9_000_000]},
+            ]
+        }
+        hits = apply_filters(parse_tradingview(payload), ScreenerFilters())
+        self.assertEqual([hit.symbol for hit in hits], ["BTCUSDT", "DOGEUSDT", "ETHUSDT"])
+        self.assertEqual(hits[0].quote_volume, Decimal("20000000"))
+        self.assertEqual(hits[0].source, "tradingview")
+
+    def test_binance_fallback_parses_quote_volume(self):
+        hits = parse_binance_tickers(
+            [
+                {
+                    "symbol": "SOLUSDT",
+                    "lastPrice": "150",
+                    "priceChangePercent": "2.5",
+                    "quoteVolume": "3000000",
+                }
+            ]
+        )
+        kept = apply_filters(hits, ScreenerFilters())
+        self.assertEqual(kept[0].symbol, "SOLUSDT")
+        self.assertIsNone(kept[0].rsi)
+        self.assertEqual(kept[0].source, "binance")
+
+    def test_scanner_http_failure_uses_binance(self):
+        def scanner(_request):
+            return httpx.Response(503, json={"error": "down"})
+
+        def market(_request):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "symbol": "BTCUSDT",
+                        "lastPrice": "100",
+                        "priceChangePercent": "1",
+                        "quoteVolume": "5000000",
+                    }
+                ],
+            )
+
+        screener = Screener(
+            "https://scanner.tradingview.com",
+            "https://data-api.binance.vision",
+            scanner_transport=httpx.MockTransport(scanner),
+            market_transport=httpx.MockTransport(market),
+        )
+        hits = screener.scan(ScreenerFilters())
+        self.assertEqual(screener.source, "binance")
+        self.assertEqual(hits[0].symbol, "BTCUSDT")
+        screener.close()
+
+    def test_allow_and_deny_lists_bound_the_universe(self):
+        hits = [
+            ScreenerHit("BTCUSDT", Decimal("1"), Decimal("1"), Decimal("3"), None, None, "binance"),
+            ScreenerHit("ETHUSDT", Decimal("1"), Decimal("1"), Decimal("2"), None, None, "binance"),
+            ScreenerHit("SOLUSDT", Decimal("1"), Decimal("1"), Decimal("1"), None, None, "binance"),
+        ]
+        chosen = select_symbols(hits, allow={"ETHUSDT", "SOLUSDT"}, deny={"SOLUSDT"}, limit=5)
+        self.assertEqual(chosen, ("ETHUSDT",))
+
+
+class RiskGateTests(unittest.TestCase):
+    def test_backtest_accepts_a_rise_and_rejects_a_drop(self):
+        rising = run_backtest(_candles(90, "0.004"), Decimal("0.05"), Decimal("0.01"), min_trades=3)
+        self.assertTrue(rising.passed)
+        self.assertGreaterEqual(rising.trades, 3)
+        falling = run_backtest(_candles(90, "-0.004"), Decimal("0.02"), Decimal("0.02"), min_trades=3)
+        self.assertFalse(falling.passed)
+
+    def test_levels_ignore_model_prices_and_confidence_cannot_increase(self):
+        raw = {"symbol": "BTCUSDT", "action": "BUY", "entry": "1", "stop_loss": "0.5", "confidence": 0.9}
+        cleaned = strip_price_fields(raw)
+        self.assertNotIn("entry", cleaned)
+        item = evidence()
+        levels = derive_levels(item, Settings())
+        self.assertIsNotNone(levels)
+        assert levels is not None
+        self.assertEqual(levels.entry, item.last_price)
+        self.assertLess(levels.stop, levels.entry)
+        self.assertGreater(levels.take, levels.entry)
+        self.assertLess(blend_confidence(Decimal("0.9"), None), Decimal("0.9"))
+        self.assertEqual(blend_confidence(Decimal("0.9"), item), Decimal("0.9"))
+
+    def test_failed_backtest_blocks_a_paper_entry(self):
+        from test_failures import ExplodingBroker, Markets, Research, paper
+
+        with __import__("tempfile").TemporaryDirectory() as tmp:
+            cfg = paper(tmp)
+            cfg = Settings(
+                mode=cfg.mode,
+                db_path=cfg.db_path,
+                api_key=cfg.api_key,
+                api_secret=cfg.api_secret,
+                profile_code=cfg.profile_code,
+                require_backtest=True,
+            )
+            journal = OrderJournal(cfg.db_path)
+            broker = ExplodingBroker()
+            self.assertEqual(Engine(cfg, broker, Research(), journal, Markets()).cycle(), 0)
+            self.assertEqual(broker.creates, 0)
+            journal.close()
+
+
+class PayloadTests(unittest.TestCase):
+    def _plan(self) -> PlannedOrder:
+        return PlannedOrder("BTCUSDT", Decimal("20"), Decimal("120"), Decimal("0.9"))
+
+    def test_moderate_strategy_matches_the_historical_payload(self):
+        cfg = Settings(profile_code="p123")
+        plan = self._plan()
+        client_id = "warp3c-" + "ab" * 16
+        built = build_strategy_dca_payload(cfg, plan, client_id, BotTemplate())
+        self.assertEqual(built, make_trade_payload(cfg, plan, client_id))
+        self.assertNotIn("profilesCodes", built)
+
+    def test_preset_cannot_exceed_the_configured_ladder(self):
+        cfg = Settings(profile_code="p123", dca_orders=4, max_base=Decimal("100"))
+        plan = self._plan()
+        client_id = "warp3c-" + "cd" * 16
+        payload = build_strategy_dca_payload(cfg, plan, client_id, BotTemplate("dca", "strategy", "aggressive"))
+        self.assertLessEqual(payload["extraOrderCount"], cfg.dca_orders)
+        self.assertLessEqual(payload["amountPerTrade"], plan.base_amount)
+        self.assertLessEqual(payload["stopLoss"], cfg.stop_loss)
+        self.assertEqual(payload["amountPerTradeType"], "quote")
+
+    def test_dca_and_grid_payloads_use_deterministic_levels(self):
+        cfg = Settings(profile_code="p123")
+        plan = self._plan()
+        client_id = "warp3c-" + "ef" * 16
+        dca = build_dca_bot_payload(cfg, plan, client_id, BotTemplate("dca", "dca_bot", "conservative"))
+        self.assertEqual(dca["pairsCodes"], ["BTCUSDT"])
+        self.assertEqual(dca["profilesCodes"], ["p123"])
+        self.assertEqual(dca["amountPerTradeType"], "quote")
+        self.assertNotIn("price", dca)
+        self.assertGreater(dca["amountPerTrade"], 0)
+        levels = derive_levels(evidence(), cfg)
+        assert levels is not None
+        grid, total = build_grid_payload(cfg, plan, levels, client_id, BotTemplate("grid", "grid_bot", "moderate"))
+        self.assertLess(grid["lowPrice"], levels.entry)
+        self.assertGreater(grid["highPrice"], levels.entry)
+        self.assertEqual(grid["midPrice"], grid["highPrice"])
+        self.assertEqual(grid["amountPerTradeType"], "quote")
+        self.assertEqual(grid["profilesCodes"], ["p123"])
+        self.assertNotIn("profiles", grid)
+        self.assertGreater(grid["stopLoss"], 1)
+        self.assertLessEqual(total, plan.full_commitment)
+        self.assertIn(client_id, grid["name"])
+
+
+class IdempotencyTests(unittest.TestCase):
+    def test_same_setup_is_not_reserved_twice_until_rejected(self):
+        with __import__("tempfile").TemporaryDirectory() as tmp:
+            journal = OrderJournal(os.path.join(tmp, "warp.db"))
+            now = datetime.now(timezone.utc)
+            template = BotTemplate()
+            first = allocate_client_id(journal, "BTCUSDT", template, now)
+            self.assertEqual(first, client_id_for("BTCUSDT", "dca", "moderate", now.date().isoformat(), 0))
+            journal.reserve(first, "BTCUSDT", {"pairCode": "BTCUSDT"})
+            self.assertIsNone(allocate_client_id(journal, "BTCUSDT", template, now))
+            journal.reject(first)
+            second = allocate_client_id(journal, "BTCUSDT", template, now)
+            self.assertIsNotNone(second)
+            self.assertNotEqual(second, first)
+            self.assertEqual(allocate_client_id(journal, "BTCUSDT", template, now), second)
+            journal.close()
+
+
+class AuthTests(unittest.TestCase):
+    def setUp(self):
+        self._env = {
+            "WARP_DASHBOARD_PASSWORD": os.environ.get("WARP_DASHBOARD_PASSWORD"),
+            "WARP_OPERATOR_TOKEN": os.environ.get("WARP_OPERATOR_TOKEN"),
+            "WARP_COOKIE_SECURE": os.environ.get("WARP_COOKIE_SECURE"),
+        }
+        os.environ["WARP_DASHBOARD_PASSWORD"] = "correct-horse-battery"
+        os.environ["WARP_OPERATOR_TOKEN"] = "operator-token-16"
+        os.environ["WARP_COOKIE_SECURE"] = "0"
+        note_login_success()
+
+    def tearDown(self):
+        for key, value in self._env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        note_login_success()
+
+    def test_password_session_and_bearer_both_work(self):
+        from fastapi.testclient import TestClient
+
+        from warp3c.__main__ import HEALTH
+        from warp3c.webapi import create_app
+
+        with __import__("tempfile").TemporaryDirectory() as tmp:
+            cfg = Settings(
+                db_path=os.path.join(tmp, "warp.db"),
+                api_key="super-secret-key",
+                api_secret="s",
+                profile_code="p123",
+            )
+            journal = OrderJournal(cfg.db_path)
+            from test_failures import Markets, Research
+
+            engine = Engine(cfg, _Quiet(), Research(), journal, Markets())
+            engine.monitor()
+            publish(cfg, journal, engine)
+            saved = dict(HEALTH)
+            HEALTH["halt_path"] = os.path.join(tmp, "HALT")
+            client = TestClient(create_app())
+            try:
+                denied = client.get("/api/config")
+                self.assertEqual(denied.status_code, 401)
+                bad = client.post("/api/login", json={"password": "nope-nope-nope"})
+                self.assertEqual(bad.status_code, 401)
+                self.assertNotIn("correct-horse-battery", bad.text)
+                good = client.post("/api/login", json={"password": "correct-horse-battery"})
+                self.assertEqual(good.status_code, 200)
+                self.assertIn("warp_session", good.headers.get("set-cookie", ""))
+                allowed = client.get("/api/config")
+                self.assertEqual(allowed.status_code, 200)
+                self.assertEqual(allowed.json()["mode"], "observe")
+                self.assertNotIn("super-secret-key", allowed.text)
+                paused = client.post("/api/pause")
+                self.assertEqual(paused.status_code, 200)
+                self.assertFalse(paused.json()["closes_positions"])
+                self.assertTrue(os.path.exists(HEALTH["halt_path"]))
+                saved_filters = client.post(
+                    "/api/screener/filters",
+                    json={"min_quote_volume": "2500000", "limit": 5},
+                )
+                self.assertEqual(saved_filters.status_code, 200)
+                self.assertEqual(saved_filters.json()["filters"]["limit"], 5)
+                preview = client.post("/api/bots/preview", json={"kind": "grid", "preset": "conservative"})
+                self.assertEqual(preview.status_code, 200)
+                self.assertFalse(preview.json()["places_orders"])
+                client.post("/api/logout")
+                self.assertEqual(client.get("/api/config").status_code, 401)
+                bearer = client.get("/api/config", headers={"Authorization": "Bearer operator-token-16"})
+                self.assertEqual(bearer.status_code, 200)
+                page = client.get("/dashboard")
+                self.assertEqual(page.status_code, 200)
+                self.assertIn("viewport", page.text)
+                self.assertNotIn("super-secret-key", page.text)
+            finally:
+                HEALTH.clear()
+                HEALTH.update(saved)
+                journal.close()
+                client.close()
+
+
+class LlmTests(unittest.TestCase):
+    def test_openrouter_fallback_strips_prices_and_the_cap_holds(self):
+        item = evidence()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "nvidia" in request.url.host:
+                return httpx.Response(503, json={"error": "down"})
+            body = json.loads(request.content.decode())
+            if "closer spot-crypto" in body["messages"][-1]["content"]:
+                content = json.dumps({"symbols": ["BTCUSDT"]})
+            else:
+                content = json.dumps(
+                    {
+                        "decisions": [
+                            {
+                                "symbol": "BTCUSDT",
+                                "action": "BUY",
+                                "confidence": 0.91,
+                                "entry": 1,
+                                "stop_loss": 0.5,
+                                "source": "llm evidence snapshot",
+                                "thesis": "Trend is up on the supplied snapshot",
+                            }
+                        ]
+                    }
+                )
+            return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+        analyst = LlmAnalyst(
+            nvidia_key="nv-test",
+            openrouter_key="or-test",
+            timeout=5,
+            daily_calls=4,
+            daily_usd=Decimal("2"),
+            usd_per_call=Decimal("0.02"),
+            transport=httpx.MockTransport(handler),
+        )
+        signals = analyst.research(("BTCUSDT",), {"BTCUSDT": item}, 30)
+        self.assertEqual(signals[0].action, "BUY")
+        self.assertEqual(signals[0].symbol, "BTCUSDT")
+        levels = derive_levels(item, Settings())
+        assert levels is not None
+        self.assertEqual(levels.entry, Decimal("100"))
+        with self.assertRaises(ResearchError):
+            analyst.budget.calls = 0
+            analyst.research(("BTCUSDT",), {"BTCUSDT": item}, 30)
+        analyst.close()
+
+
+class _Quiet:
+    def get_account(self, code, exchange_code):
+        from warp3c.models import Account
+
+        return Account(code, True, Decimal("1000"), Decimal("0"), Decimal("1000"))
+
+    def get_live(self):
+        return []
+
+    def get_strategy(self, client_id):
+        from warp3c.threecommas import StrategyNotFound
+
+        raise StrategyNotFound(client_id)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -3,11 +3,28 @@
 from __future__ import annotations
 
 import hmac
+import json
 import os
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+from .auth import parse_cookies, session_valid
+from .bots import PRESETS, BotTemplate, preview_capital
+from .screener import ScreenerFilters
+
 SNAPSHOT: dict[str, dict] = {}
+RUNTIME: dict[str, object] = {"journal": None, "cfg": None, "engine": None}
+HEALTH = {
+    "alive": True,
+    "dependencies_healthy": False,
+    "market_data_fresh": False,
+    "execution_permitted": False,
+    "risk_permitted": False,
+    "mode": "observe",
+    "last_cycle_ok": None,
+    "reason": "starting",
+}
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -57,6 +74,9 @@ ROUTES = (
     "/api/breakers",
     "/api/alerts",
     "/api/config",
+    "/api/opportunities",
+    "/api/screener",
+    "/api/bots",
 )
 
 
@@ -89,6 +109,10 @@ def public_config(cfg) -> dict:
         "monitor_seconds": cfg.monitor_seconds,
         "reconcile_seconds": cfg.reconcile_seconds,
         "alerts_configured": bool(cfg.alert_webhook or cfg.telegram_bot_token),
+        "analysis": cfg.analysis,
+        "require_backtest": cfg.require_backtest,
+        "blend_confidence": cfg.blend_confidence,
+        "password_login": len(os.getenv("WARP_DASHBOARD_PASSWORD", "")) >= 12,
     }
 
 
@@ -109,6 +133,38 @@ def _positions(engine) -> list[dict]:
     return rows
 
 
+def _pnl_today(journal) -> str | None:
+    now = datetime.now(timezone.utc)
+    today = [
+        mark
+        for mark in journal.equity_marks()
+        if mark.reliable and mark.marked_at.astimezone(timezone.utc).date() == now.date()
+    ]
+    if not today:
+        return None
+    return format(today[-1].equity - today[0].equity, "f")
+
+
+def _template(journal) -> BotTemplate:
+    raw = journal.get_setting("bot_template")
+    if not raw:
+        return BotTemplate()
+    try:
+        return BotTemplate.from_mapping(json.loads(raw))
+    except (ValueError, json.JSONDecodeError):
+        return BotTemplate()
+
+
+def _filters(cfg, journal) -> ScreenerFilters:
+    raw = journal.get_setting("screener_filters")
+    if not raw:
+        return ScreenerFilters.from_settings(cfg)
+    try:
+        return ScreenerFilters.from_mapping(json.loads(raw))
+    except (ValueError, json.JSONDecodeError):
+        return ScreenerFilters.from_settings(cfg)
+
+
 def publish(cfg, journal, engine) -> None:
     status = engine.status
     decision = getattr(engine, "last_decision", None)
@@ -122,6 +178,9 @@ def publish(cfg, journal, engine) -> None:
         "execution_permitted": status.execution_permitted,
         "opened": status.opened,
         "universe": list(getattr(engine, "universe", ())),
+        "halt": engine._halted(),
+        "pnl_today": _pnl_today(journal),
+        "equity": None if decision is None or decision.equity is None else _text(decision.equity),
     }
     SNAPSHOT["/api/risk"] = {
         "reason": status.reason,
@@ -140,9 +199,26 @@ def publish(cfg, journal, engine) -> None:
     }
     SNAPSHOT["/api/alerts"] = {"alerts": journal.recent_alerts(30)}
     SNAPSHOT["/api/config"] = public_config(cfg)
+    template = _template(journal)
+    equity = None if decision is None else decision.equity
+    SNAPSHOT["/api/opportunities"] = {"cards": list(getattr(engine, "last_opportunities", []) or [])}
+    SNAPSHOT["/api/screener"] = {
+        "filters": _filters(cfg, journal).to_dict(),
+        "hits": [hit.to_dict() for hit in getattr(engine, "screener_hits", []) or []],
+        "error": getattr(engine, "screener_error", None),
+        "source": getattr(engine, "screener_source", ""),
+    }
+    SNAPSHOT["/api/bots"] = {
+        "template": template.to_dict(),
+        "presets": list(PRESETS),
+        "preview": preview_capital(cfg, template, equity=equity),
+    }
+    RUNTIME["journal"] = journal
+    RUNTIME["cfg"] = cfg
+    RUNTIME["engine"] = engine
 
 
-def authorized(header: str | None) -> bool:
+def bearer_authorized(header: str | None) -> bool:
     token = os.getenv("WARP_OPERATOR_TOKEN", "")
     if len(token) < 16 or header is None:
         return False
@@ -150,6 +226,22 @@ def authorized(header: str | None) -> bool:
     if len(header) != len(expected):
         return False
     return hmac.compare_digest(header, expected)
+
+
+def authorized(header: str | None, cookie_header: str | None = None) -> bool:
+    if bearer_authorized(header):
+        return True
+    return session_valid(parse_cookies(cookie_header).get("warp_session"))
+
+
+def resume_new_entries(halt_path: str | None) -> bool:
+    """Remove the HALT file. This does not place an order or change the mode."""
+    if not halt_path:
+        return False
+    path = Path(halt_path)
+    if path.exists():
+        path.unlink()
+    return True
 
 
 def pause_new_entries(halt_path: str | None) -> bool:

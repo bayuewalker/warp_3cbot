@@ -198,6 +198,7 @@ class MarketData:
         self.cfg = cfg
         self._info_at: datetime | None = None
         self._info: dict | None = None
+        self.last_candles: dict[str, list[dict]] = {}
         self.http = httpx.Client(
             base_url=url.rstrip("/"),
             timeout=15,
@@ -286,6 +287,7 @@ class MarketData:
             raise MarketDataError("Ticker payload is not an object")
         klines = self._get("/api/v3/klines", {"symbol": symbol, "interval": "15m", "limit": 120})
         candles = closed_candles(klines, now=now)
+        self.last_candles[symbol] = candles
         item = analyze(
             symbol,
             candles,

@@ -271,3 +271,21 @@ class ThreeCommas:
         if echoed is not None and echoed != payload.get("clientId"):
             raise IntegrationError("3Commas echoed a different clientId", uncertain=True)
         return result
+
+    def create_dca_bot(self, payload: dict) -> dict:
+        result = self.request("POST", "/open_api/dca_bots/create", payload)
+        return _confirmed_bot(result)
+
+    def create_grid_bot(self, payload: dict) -> dict:
+        result = self.request("POST", "/open_api/grid_bots/create", payload, query={"gridMarket": "spot"})
+        return _confirmed_bot(result)
+
+
+def _confirmed_bot(result: object) -> dict:
+    if not isinstance(result, dict):
+        raise IntegrationError("3Commas returned no confirmed bot id", uncertain=True)
+    for key in ("strategyId", "code", "botCode", "id"):
+        value = result.get(key)
+        if isinstance(value, str) and value:
+            return result
+    raise IntegrationError("3Commas returned no confirmed bot id", uncertain=True)
