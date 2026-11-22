@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import sqlite3
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -945,7 +946,7 @@ class Engine:
                 strategy_error=strategy_error,
             )
             self.position_book_error = "strategies_stale" if strategy_error else None
-        except IntegrationError as exc:
+        except (IntegrationError, sqlite3.Error) as exc:
             self.position_book_error = str(exc)[:200]
 
     def _evaluate(self, now: datetime) -> None:

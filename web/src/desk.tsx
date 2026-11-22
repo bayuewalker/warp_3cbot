@@ -141,7 +141,7 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
           <p>
             <span className="fresh-label">{t(lang, "positionsFresh")}</span>
             <Age
-              at={book.data?.as_of}
+              at={bookIssue ? null : book.data?.as_of}
               limit={bookCadence * 2.5}
               lang={lang}
               reason={bookIssue || null}
@@ -189,10 +189,16 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
         ) : null}
       </Card>
       {loaded.refreshFailed ? <Problem lang={lang} retry={loaded.reload} /> : null}
-      {!rows && !loaded.error && <Loading lang={lang} />}
+      {!loaded.data && !loaded.error && <Loading lang={lang} />}
       {accountsCurrent && rows?.length === 0 ? <Empty icon={Wallet} text={t(lang, "noAccounts")} /> : null}
       {account ? (
-        <AccountBalance lang={lang} row={account} isSelected={selected === account.code} choose={choose} />
+        <AccountBalance
+          lang={lang}
+          row={account}
+          retained={!accountsCurrent}
+          isSelected={selected === account.code}
+          choose={choose}
+        />
       ) : null}
       {account || current === UNASSIGNED ? (
         <OpenPositions
@@ -214,11 +220,13 @@ const UNASSIGNED = "__unassigned__";
 function AccountBalance({
   lang,
   row,
+  retained,
   isSelected,
   choose,
 }: {
   lang: Lang;
   row: BrokerAccount;
+  retained: boolean;
   isSelected: boolean;
   choose: (code: string) => void;
 }) {
@@ -242,6 +250,7 @@ function AccountBalance({
         </div>
         <Badge tone={row.demo ? "warn" : "bad"}>{row.badge || (row.demo ? t(lang, "demo") : t(lang, "real"))}</Badge>
       </div>
+      {retained && (!unavailable || Boolean(row.assets?.length)) && <Badge tone="warn">{t(lang, "staleRow")}</Badge>}
       {unavailable ? (
         <p className="account-unavailable">
           <b>{t(lang, "balanceUnavailable")}</b>

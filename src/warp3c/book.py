@@ -268,8 +268,9 @@ def collect(
         rows.append(parse_strategy(row, owner=owner, stale=stale))
     as_of = datetime.now(timezone.utc).isoformat()
     # Retained SmartTrades are only as fresh as the last read that succeeded.
-    if stale and strategies_as_of:
-        as_of = min(as_of, _iso(strategies_as_of) or as_of)
+    if stale:
+        last_good = _iso(strategies_as_of)
+        as_of = min(as_of, last_good) if last_good is not None else None
     return {
         "rows": rows,
         "errors": errors,

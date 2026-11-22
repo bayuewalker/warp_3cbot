@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from warp3c.book import MAX_POSITION_READS, collect, parse_position, positions_view
 from warp3c.threecommas import IntegrationError
@@ -203,6 +206,13 @@ class CollectTests(unittest.TestCase):
                 self.assertTrue(result["errors"])
                 self.assertEqual(len(result["rows"]), int(bool(rows)))
 
+    def test_first_failed_strategy_read_has_no_source_time(self):
+        book = collect(Broker([_bot()], rows={"b1": [ROW]}), strategy_error="HTTP 503")
+        self.assertIsNone(book["as_of"])
+        self.assertTrue(book["stale"])
+        self.assertIn("strategies: HTTP 503", book["errors"])
+        self.assertEqual(len(book["rows"]), 1)
+
     def test_retained_empty_strategy_book_keeps_last_good_timestamp(self):
         stamp = "2020-01-01T00:00:00+00:00"
         result = collect(Broker([]), strategies=[], strategies_as_of=stamp, strategy_error="HTTP 429")
@@ -294,6 +304,30 @@ class StrategyTests(unittest.TestCase):
         self.assertFalse(row["stale"])
         view = positions_view(book, prices={"SOLUSDT": {"last": "150"}}, prices_fresh=True)
         self.assertEqual(view["positions"][0]["current_price_source"], "3commas")
+
+    def test_readonly_refresh_retains_book_on_journal_error(self):
+        from warp3c.config import Settings
+        from warp3c.engine import Engine
+        from warp3c.state import OrderJournal
+
+        class LiveBroker(Broker):
+            def get_live(self):
+                return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Settings(db_path=os.path.join(tmp, "warp.db"), api_key="k", api_secret="s")
+            with closing(OrderJournal(cfg.db_path)) as journal:
+                engine = Engine(cfg, LiveBroker([_bot()], rows={"b1": [ROW]}), None, journal, None)
+                engine.refresh_readonly()
+                first = engine.position_book
+                self.assertEqual(len(first["rows"]), 1)
+                engine.position_book_due = 0
+                with patch.object(journal, "warp_bots", side_effect=sqlite3.OperationalError("database is locked")):
+                    engine.refresh_readonly()
+                self.assertIs(engine.position_book, first)
+                self.assertEqual(engine.position_book_error, "database is locked")
+                engine.refresh_position_book(force=True)
+                self.assertIsNone(engine.position_book_error)
 
     def test_failed_strategy_read_keeps_the_old_timestamp_and_reports_the_error(self):
         from test_core import strategy
