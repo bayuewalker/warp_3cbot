@@ -14,3 +14,7 @@ Baseline is PR #6 at `194f836`. The review follows the React entry point, shared
 PR #5 at `46146dc` independently adds provider cooldown, model and health fields to status and changes the old Overview component. Consume its optional fields when supplied. The missing provider telemetry on #6 must stay explicit. Reconcile the two Overview edits when stacking changes upstream.
 
 PR #6 supplies stage state and selected counts, plus per-card signal and evidence times. It does not publish stage completion times, a numeric risk score, or a separate screener timestamp. Keep these distinct from the time the browser fetched a snapshot. Retain the existing Binance discovery and manual TradingView chart boundary.
+
+## WalkerMind theme revision
+
+PR #14 applied the WalkerMind theme on the stale `feat/vibe-pipeline-safe-auto-screening` base. This revision carries the theme onto `main` and keeps main's TradingView screener, SSE price stream and per-profile account handling. It also fixes labels that were 10–11px, mixed UTC/local times, raw source ids (`tradingview`, `binance_spot_public`) and raw eight-decimal numbers.

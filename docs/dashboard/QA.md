@@ -1,4 +1,16 @@
-# Dashboard verification
+# WalkerMind dashboard verification
+
+Review base `main` at `a3e9cd2` (TradingView screener, Binance price stream, per-profile account isolation). Browser checks used the built app against a local OBSERVE worker with no 3Commas or LLM keys. The accounts capture used the live read-only `/api/accounts` response.
+
+| Check | Result |
+| --- | --- |
+| Frontend | `npm ci`, `npx tsc --noEmit` and `npx vite build` passed |
+| Backend regression | Python unit suite passed; no backend files changed |
+| Layout | Chromium at 390, 768, 1280 and 1440px: no horizontal overflow on Overview, Screener, Settings & risk, Bots, Opportunities and sign-in |
+| Touch targets | No visible button, link, tab or field under 44px on the audited pages |
+| Data honesty | Null balances, equity and PnL render as “Not reported”/“Unavailable”; unavailable accounts are greyed with their reason and have no select button |
+
+## Previous dashboard verification
 
 **Review base:** `feat/vibe-pipeline-safe-auto-screening` at `194f836c752aca04f775518d9ff7ca672486af01`.
 
