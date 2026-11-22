@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -107,6 +108,9 @@ class Engine:
         self.positions_at = ""
         self.positions_error: str | None = None
         self.last_positions: list[dict] = []
+        self.position_book: dict | None = None
+        self.position_book_error: str | None = None
+        self.position_book_due = 0.0
         self.last_decision = None
         self.last_opportunities: list[dict] = []
         self.last_accounts: list = []
@@ -895,6 +899,7 @@ class Engine:
         if not self.cfg.api_key or not self.cfg.api_secret or not hasattr(self.broker, "get_live"):
             self.positions_error = "3Commas credentials are not configured"
             self.positions_at = datetime.now(timezone.utc).isoformat()
+            self.position_book_error = "3Commas credentials are not configured"
             return
         try:
             self.last_positions = self.broker.get_live()
@@ -904,6 +909,31 @@ class Engine:
             self.positions_error = str(exc)[:200]
             self.positions_at = datetime.now(timezone.utc).isoformat()
         self.non_warp_future_so = self._read_non_warp_future_so()
+        self.refresh_position_book()
+
+    def refresh_position_book(self, *, force: bool = False) -> None:
+        """GET open positions for every bot on each account, at most once per POSITIONS_SECONDS."""
+        from .book import POSITIONS_SECONDS, collect
+
+        now = time.monotonic()
+        if not force and now < self.position_book_due:
+            return
+        self.position_book_due = now + POSITIONS_SECONDS
+        if not hasattr(self.broker, "get_bot_positions"):
+            self.position_book_error = "positions_unsupported"
+            return
+
+        def is_warp(client_id: str) -> bool:
+            try:
+                return self.journal.submission_state(client_id) is not None
+            except Exception:
+                return False
+
+        try:
+            self.position_book = collect(self.broker, strategies=self.last_positions, warp_client=is_warp)
+            self.position_book_error = None
+        except IntegrationError as exc:
+            self.position_book_error = str(exc)[:200]
 
     def _evaluate(self, now: datetime) -> None:
         price_at = getattr(self.market, "price_at", None)

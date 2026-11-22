@@ -247,7 +247,22 @@ def main():
         engine = Engine(cfg, broker, research, journal, market, screener=screener, analyst=analyst)
         from .live import ACCOUNT_SECONDS, DashboardReads
 
-        accounts = DashboardReads(engine.refresh_readonly, ACCOUNT_SECONDS)
+        from .operator import publish_reads
+
+        import httpx
+
+        from .live import BUS, mark_symbols, poll_marks
+
+        mark_client = httpx.Client(base_url=cfg.market_data_url, timeout=10)
+
+        def read_accounts() -> None:
+            engine.refresh_readonly()
+            book = engine.position_book or {}
+            symbols = mark_symbols(engine.last_accounts, book.get("rows", []), set(BUS.prices))
+            BUS.note_marks(poll_marks(mark_client, symbols))
+            publish_reads(cfg, journal, engine)
+
+        accounts = DashboardReads(read_accounts, ACCOUNT_SECONDS)
         accounts.start()
         publish(cfg, journal, engine)
         gate = ResearchGate()
@@ -289,6 +304,8 @@ def main():
         HEALTH["execution_permitted"] = False
         if "accounts" in locals():
             accounts.stop()
+        if "mark_client" in locals():
+            mark_client.close()
         _stop_http(server)
         if journal:
             journal.close()

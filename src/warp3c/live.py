@@ -22,6 +22,10 @@ SCREEN_SECONDS = 15
 ACCOUNT_SECONDS = 30
 MAX_SUBSCRIBERS = 8
 QUOTE_FRESH_SECONDS = 30
+# Marks for holdings and open positions outside the price tape, read with the accounts.
+MARK_FRESH_SECONDS = 90
+MAX_MARKS = 15
+STABLE = {"USDT", "USDC", "USD", "FDUSD"}
 
 
 def _now() -> str:
@@ -61,6 +65,22 @@ class LiveBus:
         self.prices: dict[str, dict] = {}
         self.prices_at: str | None = None
         self.prices_error: str | None = None
+        self.marks: dict[str, dict] = {}
+        self.marks_at: str | None = None
+
+    def note_marks(self, rows: dict) -> None:
+        if rows:
+            self.marks = rows
+            self.marks_at = _now()
+
+    def fresh_marks(self) -> dict[str, dict]:
+        """Tape prices inside the quote limit, then account marks inside their own limit."""
+        merged: dict[str, dict] = {}
+        if quote_is_fresh(self.marks_at, MARK_FRESH_SECONDS):
+            merged.update(self.marks)
+        if quote_is_fresh(self.prices_at):
+            merged.update(self.prices)
+        return merged
 
     def subscribe(self) -> queue.Queue | None:
         inbox: queue.Queue = queue.Queue(maxsize=32)
@@ -207,6 +227,38 @@ def poll_prices(client: httpx.Client, symbols: list[str]) -> dict[str, dict]:
     response = client.get("/api/v3/ticker/24hr", params={"symbols": json.dumps(names, separators=(",", ":"))})
     response.raise_for_status()
     return parse_tickers(response.json(), set(names))
+
+
+def mark_symbols(accounts: list, rows: list[dict], skip: set[str]) -> list[str]:
+    """USDT pairs for held assets and open positions that the price tape does not cover."""
+    wanted: list[str] = []
+    for account in accounts:
+        held = getattr(account, "holdings", ())
+        for entry in () if callable(held) else held or ():
+            asset = entry[0] if isinstance(entry, tuple) and entry else None
+            if isinstance(asset, str) and asset not in STABLE:
+                wanted.append(f"{asset}USDT")
+    for row in rows:
+        if row.get("quote_asset") == "USDT" and row.get("symbol"):
+            wanted.append(str(row["symbol"]))
+    return [symbol for symbol in dict.fromkeys(wanted) if symbol not in skip][:MAX_MARKS]
+
+
+def poll_marks(client: httpx.Client, symbols: list[str]) -> dict[str, dict]:
+    """One public ticker read per symbol, so an unlisted asset cannot fail the batch."""
+    found: dict[str, dict] = {}
+    for symbol in symbols[:MAX_MARKS]:
+        try:
+            response = client.get("/api/v3/ticker/price", params={"symbol": symbol})
+            if response.status_code != 200:
+                continue
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            continue
+        last = _decimal(payload.get("price") if isinstance(payload, dict) else None, positive=True)
+        if last is not None:
+            found[symbol] = {"last": format(last, "f"), "change_pct": None}
+    return found
 
 
 EVENTS: deque[dict] = deque(maxlen=40)

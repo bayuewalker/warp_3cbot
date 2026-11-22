@@ -44,7 +44,13 @@ export function Age({
       <time dateTime={at} title={fmtTime(at, lang, true) ?? undefined}>
         {t(lang, "updated")} {span} {t(lang, "updatedAgo")}
       </time>
+      {tone === "bad" ? <span className="age-stale"> · {t(lang, "staleShort")}</span> : null}
       {reason ? <span className="age-reason"> · {reason}</span> : null}
     </span>
   );
+}
+
+/** Freshness for a panel whose payload has no server timestamp: the time the frame arrived. */
+export function ReceivedAge({ at, limit, lang }: { at: Date | null; limit: number; lang: Lang }) {
+  return <Age at={at ? at.toISOString() : null} limit={limit} lang={lang} reason={at ? null : t(lang, "awaitingWorker")} />;
 }

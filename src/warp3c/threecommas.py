@@ -316,6 +316,13 @@ class ThreeCommas:
     def list_grid_bots(self) -> list[dict]:
         return self._named_pages("/open_api/grid_bots", identity="code")
 
+    def get_bot_positions(self, kind: str, code: str) -> dict:
+        """GET a bot's live positions (cabinet position view). Read-only."""
+        if kind not in {"dca", "grid"}:
+            raise ValueError("Unknown bot kind")
+        result = self.request("GET", f"/open_api/{kind}_bots/{quote(code, safe='')}/positions")
+        return result if isinstance(result, dict) else {}
+
     def get_dca_bot(self, code: str) -> dict:
         return self._one_bot("/open_api/dca_bots/" + quote(code, safe=""))
 
