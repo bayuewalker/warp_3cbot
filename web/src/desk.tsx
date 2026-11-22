@@ -75,7 +75,7 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
     (selected && rows?.some((row) => row.code === selected) && selected) ||
     rows?.find((row) => counts[row.code])?.code ||
     rows?.[0]?.code ||
-    "";
+    (unassigned.length ? UNASSIGNED : "");
   const current = viewing && (viewing === UNASSIGNED || rows?.some((row) => row.code === viewing)) ? viewing : fallback;
   const account = rows?.find((row) => row.code === current) || null;
   const shown =
@@ -144,9 +144,9 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
               : `${t(lang, "unavailable")} · ${humanReason(loaded.data?.sleeve?.reason, lang) || t(lang, "noSnapshot")}`}
           </b>
         </p>
-        {rows && rows.length ? (
+        {(rows && rows.length) || unassigned.length ? (
           <div className="account-picker" role="group" aria-label={t(lang, "accounts")}>
-            {rows.map((row) => (
+            {(rows || []).map((row) => (
               <Choice
                 key={row.code}
                 pressed={row.code === current}
