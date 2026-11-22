@@ -5,7 +5,7 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const response = await fetch(path, { ...options, headers, credentials: "include" });
   if (response.status === 401) {
-    if (path !== "/api/login") window.dispatchEvent(new Event("warp:session-expired"));
+    if (path !== "/api/login" && !options.signal?.aborted) window.dispatchEvent(new Event("warp:session-expired"));
     throw new AuthError();
   }
   if (!response.ok) {
@@ -22,8 +22,9 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   }
   const payload = await response.json();
   // The operator dispatcher returns {} before its first published snapshot.
-  if ((!options.method || options.method === "GET") && (!payload || !Object.keys(payload).length)) {
-    throw new Error("snapshot_unavailable");
+  if (!options.method || options.method === "GET") {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("malformed_payload");
+    if (!Object.keys(payload).length) throw new Error("snapshot_unavailable");
   }
   return payload as T;
 }

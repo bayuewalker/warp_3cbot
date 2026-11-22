@@ -471,7 +471,7 @@ export function BudgetForm({ lang, code }: { lang: Lang; code: string }) {
     <Card>
       <CardHead icon={PiggyBank} title={t(lang, "budget")} help={t(lang, "budgetHelp")} />
       <p className="panel-note">
-        <ReceivedAge at={budget.received} limit={90} lang={lang} />
+        <ReceivedAge at={budget.received} lang={lang} />
       </p>
       {!budget.error && view ? (
         <p className="card-line">
@@ -586,7 +586,7 @@ export function WarpBotsPanel({ lang, status }: { lang: Lang; status: Status | n
           icon={Bot}
           title={t(lang, "warpBots")}
           help={t(lang, "ownedOnly")}
-          aside={<ReceivedAge at={list.received} limit={90} lang={lang} />}
+          aside={<ReceivedAge at={list.received} lang={lang} />}
         />
       </Card>
       {list.error && <Problem lang={lang} retry={list.reload} />}
@@ -730,7 +730,7 @@ export function ForwardPanel({ lang }: { lang: Lang }) {
         }
       />
       <p className="panel-note">
-        <ReceivedAge at={loaded.received} limit={90} lang={lang} />
+        <ReceivedAge at={loaded.received} lang={lang} />
       </p>
       <p className="card-line">{stats.hit_rule}</p>
       {empty ? <p className="empty-line">{t(lang, "noForward")}</p> : null}
@@ -808,7 +808,7 @@ export function RulesPage({ lang }: { lang: Lang }) {
       <Card>
         <CardHead icon={ListChecks} title={t(lang, "decisions")} help={t(lang, "decisionsHelp")} />
         <p className="panel-note">
-          <ReceivedAge at={cycle.received} limit={90} lang={lang} />
+          <ReceivedAge at={cycle.received} lang={lang} />
         </p>
         {cycle.error ? (
           <Problem lang={lang} retry={cycle.reload} />

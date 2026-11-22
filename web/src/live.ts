@@ -1,9 +1,9 @@
 /** One authenticated event stream for every panel. Polling is the fallback. */
 
-type Frame = { data: unknown; at: number };
+import { acceptFrame, instant, record, type Frame } from "./tradingdesk/frames";
 
 const routes = new Map<string, Frame>();
-const listeners = new Set<() => void>();
+const listeners = new Set<(paths?: readonly string[]) => void>();
 let source: EventSource | null = null;
 let attempt = 0;
 let connected = false;
@@ -11,24 +11,25 @@ let timer: number | undefined;
 let started = false;
 let stopped = false;
 
-function notify() {
-  listeners.forEach((fn) => fn());
+function notify(paths?: readonly string[]) {
+  listeners.forEach((fn) => fn(paths));
 }
 
-export function onLive(fn: () => void) {
+export function onLive(fn: (paths?: readonly string[]) => void) {
   listeners.add(fn);
   return () => {
     listeners.delete(fn);
   };
 }
 
-export function liveRoute<T>(path: string): { data: T; at: number } | null {
-  const frame = routes.get(path);
-  return frame ? { data: frame.data as T, at: frame.at } : null;
+export function liveRoute<T>(path: string) {
+  return routes.get(path) as (Frame & { data: T }) | undefined;
 }
 
-export function rememberRoute(path: string, data: unknown) {
-  routes.set(path, { data, at: Date.now() });
+export function rememberRoute<T>(path: string, data: T, published?: unknown) {
+  const frame = acceptFrame(routes.get(path), path, data, Date.now(), published);
+  routes.set(path, frame);
+  return frame as Frame & { data: T };
 }
 
 export function liveConnected() {
@@ -59,68 +60,59 @@ export function stopLive() {
 
 function connect() {
   if (stopped) return;
-  source = new EventSource("/api/stream");
-  source.addEventListener("hello", () => {
-    connected = true;
-    attempt = 0;
-    notify();
-  });
-  source.addEventListener("heartbeat", () => {
-    connected = true;
-    notify();
-  });
-  source.addEventListener("snapshot", (ev) => {
-    const body = JSON.parse((ev as MessageEvent).data) as {
-      routes?: Record<string, unknown>;
-      published_at?: string;
-    };
-    const at = Date.parse(body.published_at || "") || Date.now();
-    for (const [path, data] of Object.entries(body.routes || {})) routes.set(path, { data, at });
-    connected = true;
-    attempt = 0;
-    notify();
-  });
-  source.addEventListener("prices", (ev) => {
-    const data = JSON.parse((ev as MessageEvent).data) as { as_of?: string | null };
-    routes.set("/api/prices", { data, at: Date.parse(data.as_of || "") || Date.now() });
-    connected = true;
-    notify();
-  });
-  // Read-only 3Commas refreshes push their own frames so balances and positions
-  // update without waiting for the next worker snapshot.
-  for (const [event, path] of [
-    ["accounts", "/api/accounts"],
-    ["positions", "/api/account-positions"],
-  ] as const) {
-    source.addEventListener(event, (ev) => {
-      const data = JSON.parse((ev as MessageEvent).data) as { as_of?: string | null };
-      routes.set(path, { data, at: Date.now() });
-      connected = true;
-      notify();
+  const stream = new EventSource("/api/stream");
+  source = stream;
+  function listen(event: string, apply: (body: Record<string, unknown>) => string[] | undefined) {
+    stream.addEventListener(event, (ev) => {
+      if (source !== stream) return;
+      let body: unknown;
+      try {
+        body = JSON.parse((ev as MessageEvent).data);
+      } catch {
+        return;
+      }
+      if (!record(body)) return;
+      const updated = apply(body);
+      if (!updated) return;
+      if (event === "hello" || event === "heartbeat") {
+        connected = true;
+        attempt = 0;
+      }
+      notify(updated);
     });
   }
-  source.addEventListener("halt", (ev) => {
-    const data = JSON.parse((ev as MessageEvent).data) as {
-      halt?: boolean;
-      gating?: string;
-      execution_permitted?: boolean;
-      risk_permitted?: boolean;
-      pipeline?: unknown;
-      reason?: string;
-    };
-    const status = routes.get("/api/status");
-    if (status && status.data && typeof status.data === "object") {
-      const next = { ...(status.data as object), ...data };
-      if (data.halt) {
-        next.execution_permitted = false;
-        next.risk_permitted = false;
-      }
-      routes.set("/api/status", { data: next, at: Date.now() });
-      notify();
+  const handshake = (body: Record<string, unknown>) => instant(body.ts) !== null ? [] : undefined;
+  listen("hello", handshake);
+  listen("heartbeat", handshake);
+  listen("snapshot", (body) => {
+    if (!record(body.routes)) return;
+    const changed: string[] = [];
+    for (const [path, data] of Object.entries(body.routes)) {
+      const previous = routes.get(path);
+      const frame = rememberRoute(path, data, body.published_at);
+      if (frame !== previous) changed.push(path);
     }
+    return changed;
   });
-  source.onerror = () => {
-    if (stopped) return;
+  for (const [name, path] of [["prices", "/api/prices"], ["accounts", "/api/accounts"], ["positions", "/api/account-positions"]]) {
+    listen(name, data => {
+      const previous = routes.get(path);
+      return rememberRoute(path, data) !== previous ? [path] : [];
+    });
+  }
+  listen("halt", (data) => {
+    const previous = routes.get("/api/status");
+    if (!previous || !record(previous.data) || typeof data.halt !== "boolean") return;
+    const next = { ...previous.data, ...data };
+    if (data.halt) {
+      next.execution_permitted = false;
+      next.risk_permitted = false;
+    }
+    rememberRoute("/api/status", next);
+    return ["/api/status"];
+  });
+  stream.onerror = () => {
+    if (source !== stream || stopped) return;
     connected = false;
     source?.close();
     source = null;

@@ -50,7 +50,13 @@ export function Age({
   );
 }
 
-/** Freshness for a panel whose payload has no server timestamp: the time the frame arrived. */
-export function ReceivedAge({ at, limit, lang }: { at: Date | null; limit: number; lang: Lang }) {
-  return <Age at={at ? at.toISOString() : null} limit={limit} lang={lang} reason={at ? null : t(lang, "awaitingWorker")} />;
+/** This route exposes receipt time only. No upstream freshness verdict is available. */
+export function ReceivedAge({ at, lang }: { at: Date | null; lang: Lang }) {
+  return (
+    <span className="age">
+      {t(lang, "clientReceipt")} · {at
+        ? <time dateTime={at.toISOString()}>{fmtTime(at, lang, true)}</time>
+        : t(lang, "awaitingWorker")}
+    </span>
+  );
 }

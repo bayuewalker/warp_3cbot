@@ -88,12 +88,15 @@ function pageFromHash(): Page {
 export function App() {
   const [lang, setLang] = useState<Lang>(() => (localStorage.getItem("warp.lang") === "id" ? "id" : "en"));
   const [authed, setAuthed] = useState(false);
+  const [expired, setExpired] = useState(false);
   const session = useLoad<{ authenticated: boolean }>("/api/session");
   useEffect(() => {
     setAuthed(session.data?.authenticated === true);
   }, [session.data]);
   useEffect(() => {
     function expire() {
+      stopLive();
+      setExpired(true);
       setAuthed(false);
     }
     window.addEventListener("warp:session-expired", expire);
@@ -119,6 +122,7 @@ export function App() {
           <Brand />
           {language}
         </div>
+        {expired && <p role="alert">{t(lang, "sessionExpired")}</p>}
         {session.error ? (
           <Problem lang={lang} retry={session.reload} />
         ) : !session.data ? (
@@ -127,6 +131,7 @@ export function App() {
           <Login
             lang={lang}
             onSuccess={() => {
+              setExpired(false);
               location.hash = "overview";
               setAuthed(true);
             }}
@@ -455,7 +460,7 @@ function Signals({ lang }: { lang: Lang }) {
   if (!loaded.data) return <Loading lang={lang} />;
   const fresh = (
     <p className="panel-note page-fresh">
-      <ReceivedAge at={loaded.received} limit={90} lang={lang} />
+      <ReceivedAge at={loaded.received} lang={lang} />
     </p>
   );
   if (!loaded.data.cards.length)
@@ -1043,7 +1048,7 @@ function Settings({ lang, paper }: { lang: Lang; paper: boolean }) {
           icon={Settings2}
           title={t(lang, "settings")}
           help={t(lang, "modeHelp")}
-          aside={<ReceivedAge at={loaded.received} limit={90} lang={lang} />}
+          aside={<ReceivedAge at={loaded.received} lang={lang} />}
         />
         <dl className="kv kv-settings">
           {rows.map(([key, value]) => (
