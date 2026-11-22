@@ -1,3 +1,4 @@
+import { useCurrentRead } from "./account-read";
 import {
   Activity,
   ArrowUpRight,
@@ -813,23 +814,26 @@ function Bots({ lang }: { lang: Lang }) {
 
 function Positions({ lang }: { lang: Lang }) {
   const loaded = useLoad<{ positions: Position[]; as_of?: string | null; error?: string | null }>("/api/positions", true);
+  const fresh = useCurrentRead(loaded.data?.as_of, 300);
   if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
   if (!loaded.data) return <Loading lang={lang} />;
+  const reported = Array.isArray(loaded.data.positions);
+  const complete = reported && fresh && !loaded.data.error && !loaded.refreshFailed;
   const head = (
     <Card>
       <CardHead
         icon={Boxes}
         title={t(lang, "positions")}
         help={t(lang, "listPositions")}
-        aside={<Age at={loaded.data.as_of} limit={300} lang={lang} reason={loaded.data.error} />}
+        aside={<Age at={loaded.data.error ? null : loaded.data.as_of} limit={300} lang={lang} reason={loaded.refreshFailed ? t(lang, "error") : loaded.data.error} />}
       />
     </Card>
   );
-  if (!loaded.data.positions.length)
+  if (!reported || !loaded.data.positions.length)
     return (
       <div className="stack">
         {head}
-        <Empty icon={Boxes} text={t(lang, "noPositions")} />
+        <Empty icon={Boxes} text={t(lang, complete ? "noPositions" : "unavailable")} />
       </div>
     );
   const na = t(lang, "unknown");

@@ -59,12 +59,16 @@ def _str(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def bot_account(bot: dict) -> tuple[str | None, str | None]:
-    for entry in bot.get("profiles") or []:
-        profile = entry.get("profile") if isinstance(entry, dict) else None
-        if isinstance(profile, dict) and _str(profile.get("code")):
-            return profile["code"], _str(profile.get("name_of_account"))
-    return None, None
+def _account(profiles: object) -> tuple[str | None, str | None]:
+    if not isinstance(profiles, list):
+        return None, None
+    accounts = {}
+    for item in profiles:
+        profile = item.get("profile") if isinstance(item, dict) else None
+        if not isinstance(profile, dict) or not _str(profile.get("code")):
+            return None, None
+        accounts[profile["code"]] = _str(profile.get("name_of_account"))
+    return next(iter(accounts.items())) if len(accounts) == 1 else (None, None)
 
 
 def open_count(bot: dict) -> int | None:
@@ -89,33 +93,28 @@ def _side(bot: dict | None, kind: str) -> str | None:
     return value if value in {"long", "short"} else None
 
 
-def _row_account(row: dict) -> tuple[str | None, str | None]:
-    for item in row.get("profileStrategies") or []:
-        profile = item.get("profile") if isinstance(item, dict) else None
-        if isinstance(profile, dict) and _str(profile.get("code")):
-            return profile["code"], _str(profile.get("name_of_account"))
-    return None, None
+def _remaining(entry: object, exit_: object) -> Decimal | None:
+    entered, exited = _dec(entry), _dec(exit_)
+    if entered is None or exited is None or not 0 <= exited < entered:
+        return None
+    return entered - exited
 
 
-def parse_position(row: dict, *, bot: dict | None, kind: str, owner: str | None = None) -> dict:
+def parse_position(row: dict, *, bot: dict | None, kind: str, owner: str = "external") -> dict:
     """One cabinet position row. Missing or malformed fields become None."""
     row_id = _str(row.get("_id")) or _str(row.get("strategyId")) or _str(row.get("id"))
-    code, name = _row_account(row)
-    if code is None and bot:
-        code, name = bot_account(bot)
+    profiles = row.get("profileStrategies")
+    if (profiles is None or profiles == []) and bot:
+        profiles = bot.get("profiles")
+    code, name = _account(profiles)
     symbols = row.get("pairSymbols") if isinstance(row.get("pairSymbols"), dict) else {}
     base_asset = _str(symbols.get("ref"))
     quote_asset = _str(symbols.get("base"))
     pair = _str(row.get("pair"))
     if pair and "/" in pair and not (base_asset and quote_asset):
         base_asset, quote_asset = pair.split("/", 1)
-    entered = _dec(row.get("totalEntryAmount"))
-    exited = _dec(row.get("totalExitAmount"))
-    # Unknown exits must not imply that the entire entry is still held.
-    size = entered - exited if entered is not None and exited is not None and entered - exited > 0 else None
-    entry_cost = _dec(row.get("totalEntryCost"))
-    exit_cost = _dec(row.get("totalExitCost"))
-    cost = entry_cost - exit_cost if entry_cost is not None and exit_cost is not None and entry_cost - exit_cost > 0 else None
+    size = _remaining(row.get("totalEntryAmount"), row.get("totalExitAmount"))
+    cost = _remaining(row.get("totalEntryCost"), row.get("totalExitCost"))
     last = _dec(row.get("lastPrice"), positive=True)
     pnl_pct = _dec(row.get("currentPosition"))
     pnl_usd = _summary_pnl(bot, row_id)
@@ -125,8 +124,6 @@ def parse_position(row: dict, *, bot: dict | None, kind: str, owner: str | None 
         if price is not None:
             take_profits.append(_text(price))
     bot_name = _str(bot.get("name")) if bot else _str(row.get("name"))
-    if owner is None:
-        owner = "warp" if bot_name and bot_name.startswith(PREFIX) else "external"
     return {
         "id": row_id,
         "account_code": code,
@@ -179,6 +176,7 @@ def parse_strategy(row: dict, *, owner: str, stale: bool = False) -> dict:
     symbol = raw_pair.replace("/", "") if raw_pair else (f"{base}{quote}" if base and quote else None)
     parsed.update(
         {
+            "id": _str(row.get("strategyId")) or parsed["id"],
             "base_asset": base,
             "quote_asset": quote,
             "pair": f"{base}/{quote}" if base and quote else raw_pair,
@@ -190,10 +188,10 @@ def parse_strategy(row: dict, *, owner: str, stale: bool = False) -> dict:
     return parsed
 
 
-def _bot_positions(raw: object) -> list[dict]:
+def _bot_positions(raw: object) -> list[object]:
     if not isinstance(raw, dict) or not isinstance(raw.get("rows"), list):
         raise IntegrationError("Unrecognized positions response", uncertain=True)
-    return [row for row in raw["rows"] if isinstance(row, dict)]
+    return raw["rows"]
 
 
 def collect(
@@ -201,12 +199,20 @@ def collect(
     *,
     strategies: list[dict] | None = None,
     warp_client=None,
+    owned_bots: list[dict] | None = None,
     strategies_as_of: str | None = None,
     strategy_error: str | None = None,
 ) -> dict:
     """GET every bot list, then GET positions for bots that report open positions."""
     rows: list[dict] = []
     errors: list[str] = []
+    # A broker name is editable. Match the recorded cabinet product, code, name
+    # and profile before attributing an observed position to WARP.
+    owned = {
+        (row["product"], row["external_code"], row["name"], row["account_code"])
+        for row in owned_bots or []
+        if row["external_code"] and row["name"] == PREFIX + row["warp_id"]
+    }
     checked = 0
     reads = 0
     for kind, lister in (("dca", "list_dca_bots"), ("grid", "list_grid_bots")):
@@ -232,7 +238,25 @@ def collect(
             except IntegrationError as exc:
                 errors.append(f"{kind} {bot.get('name') or bot['code']}: {str(exc)[:120]}")
                 continue
-            rows.extend(parse_position(row, bot=bot, kind=kind) for row in found)
+            seen = set()
+            incomplete = count is not None and count != len(found)
+            for raw in found:
+                if not isinstance(raw, dict):
+                    incomplete = True
+                    continue
+                position = parse_position(raw, bot=bot, kind=kind)
+                identity = position["id"]
+                if identity is None or identity in seen:
+                    incomplete = True
+                    if identity in seen:
+                        continue
+                else:
+                    seen.add(identity)
+                if (f"{kind}_bot", bot["code"], position["bot_name"], position["account_code"]) in owned:
+                    position["owner"] = "warp"
+                rows.append(position)
+            if incomplete:
+                errors.append(f"{kind} {bot['code']}: incomplete position rows")
     stale = strategy_error is not None
     if stale:
         errors.append(f"strategies: {str(strategy_error)[:120]}")
@@ -244,8 +268,9 @@ def collect(
         rows.append(parse_strategy(row, owner=owner, stale=stale))
     as_of = datetime.now(timezone.utc).isoformat()
     # Retained SmartTrades are only as fresh as the last read that succeeded.
-    if stale and strategies and strategies_as_of:
-        as_of = min(as_of, _iso(strategies_as_of) or as_of)
+    if stale:
+        last_good = _iso(strategies_as_of)
+        as_of = min(as_of, last_good) if last_good is not None else None
     return {
         "rows": rows,
         "errors": errors,

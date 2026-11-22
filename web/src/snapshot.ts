@@ -7,6 +7,7 @@ import { failureVisible, liveReadDecision } from "./live-policy";
 export function useLoad<T>(path: string, poll = false) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
   const [received, setReceived] = useState<Date | null>(null);
   const [tick, setTick] = useState(0);
   const showing = useRef(false);
@@ -16,6 +17,7 @@ export function useLoad<T>(path: string, poll = false) {
     showing.current = true;
     setData(row);
     setError(false);
+    setRefreshFailed(false);
     setReceived(at);
   }, []);
   useEffect(() => {
@@ -50,6 +52,9 @@ export function useLoad<T>(path: string, poll = false) {
           if (!liveConnected()) rememberRoute(path, row);
         }
       } catch {
+        if (!controller.signal.aborted && liveReadDecision(liveConnected(), liveRoute<T>(path) != null, poll).acceptHttp) {
+          setRefreshFailed(true);
+        }
         if (
           failureVisible(
             liveConnected(),
@@ -72,7 +77,7 @@ export function useLoad<T>(path: string, poll = false) {
       window.clearTimeout(timer);
     };
   }, [path, tick, poll, publish]);
-  return { data, error, received, reload };
+  return { data, error, refreshFailed, received, reload };
 }
 
 export function useLiveState() {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import sqlite3
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -940,11 +941,12 @@ class Engine:
                 self.broker,
                 strategies=self.last_positions,
                 warp_client=is_warp,
+                owned_bots=self.journal.warp_bots(),
                 strategies_as_of=self.positions_ok_at,
                 strategy_error=strategy_error,
             )
             self.position_book_error = "strategies_stale" if strategy_error else None
-        except IntegrationError as exc:
+        except (IntegrationError, sqlite3.Error) as exc:
             self.position_book_error = str(exc)[:200]
 
     def _evaluate(self, now: datetime) -> None:

@@ -10,6 +10,7 @@ import {
   type Status,
 } from "./api";
 import { Key, Lang, t } from "./i18n";
+import { useCurrentRead } from "./account-read";
 import { Age, ReceivedAge } from "./age";
 import { useLoad } from "./snapshot";
 import { fmtMoney, fmtNumber, fmtPct, fmtPct01, fmtPrice, fmtQty, fmtSignedMoney, fmtTime } from "./format";
@@ -57,8 +58,8 @@ type AccountsPayload = {
 export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code: string) => void }) {
   const loaded = useLoad<AccountsPayload>("/api/accounts", true);
   const book = useLoad<AccountPositionsPayload>("/api/account-positions", true);
-  const rows = loaded.data?.accounts;
-  const positions = book.data?.positions;
+  const rows = Array.isArray(loaded.data?.accounts) ? loaded.data.accounts : undefined;
+  const positions = Array.isArray(book.data?.positions) ? book.data.positions : undefined;
   const [selected, setSelected] = useState("");
   const [viewing, setViewing] = useState("");
   const [note, setNote] = useState("");
@@ -69,17 +70,30 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
     onSelect(code);
   }, [loaded.data?.selected?.code]);
 
+  const cadence = loaded.data?.cadence_seconds || 30;
+  const bookCadence = book.data?.cadence_seconds || 60;
+  const balancesFresh = useCurrentRead(loaded.data?.as_of, cadence * 3);
+  const positionsFresh = useCurrentRead(book.data?.as_of, bookCadence * 2.5);
+  const accountsCurrent = Array.isArray(rows) && balancesFresh && !loaded.refreshFailed && !loaded.data?.error;
+  const bookComplete = Array.isArray(positions) && positionsFresh && !book.refreshFailed &&
+    !book.data?.error && !book.data?.stale && Array.isArray(book.data?.errors) && book.data.errors.length === 0;
   const counts = book.data?.by_account || {};
-  const unassigned = (positions || []).filter((row) => !row.account_code || !rows?.some((a) => a.code === row.account_code));
+  const accountReason = loaded.refreshFailed ? t(lang, "error") : humanReason(loaded.data?.error, lang) ||
+    (loaded.data && !rows ? t(lang, "awaitingWorker") : "");
+  const bookReason = book.refreshFailed ? t(lang, "error") : humanReason(book.data?.error, lang) ||
+    (book.data && (!positions || !Array.isArray(book.data.errors) || book.data.errors.length > 0) ? t(lang, "incompleteBook") : "");
+  const bookIssue = bookReason || (book.data?.stale ? t(lang, "staleRow") : "");
+  const unassigned = (positions || []).filter((row) => !accountsCurrent || !row.account_code || !rows?.some((a) => a.code === row.account_code));
   const fallback =
+    (!accountsCurrent && unassigned.length > 0 && UNASSIGNED) ||
     (selected && rows?.some((row) => row.code === selected) && selected) ||
     rows?.find((row) => counts[row.code])?.code ||
     rows?.[0]?.code ||
     (unassigned.length ? UNASSIGNED : "");
-  const current = viewing && (viewing === UNASSIGNED || rows?.some((row) => row.code === viewing)) ? viewing : fallback;
+  const current = viewing && ((viewing === UNASSIGNED && unassigned.length > 0) || rows?.some((row) => row.code === viewing)) ? viewing : fallback;
   const account = rows?.find((row) => row.code === current) || null;
   const shown =
-    current === UNASSIGNED ? unassigned : (positions || []).filter((row) => row.account_code === current);
+    current === UNASSIGNED ? unassigned : (positions || []).filter((row) => accountsCurrent && row.account_code === current);
 
   async function choose(code: string) {
     setNote("");
@@ -93,8 +107,6 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
     }
   }
 
-  const cadence = loaded.data?.cadence_seconds || 30;
-  const bookCadence = book.data?.cadence_seconds || 60;
   return (
     <div className="stack">
       <Card>
@@ -120,26 +132,26 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
           <p>
             <span className="fresh-label">{t(lang, "balancesFresh")}</span>
             <Age
-              at={loaded.data?.as_of}
+              at={accountReason ? null : loaded.data?.as_of}
               limit={cadence * 3}
               lang={lang}
-              reason={loaded.data?.error || (rows ? null : t(lang, "noAccounts"))}
+              reason={accountReason || (!loaded.data?.as_of ? t(lang, "awaitingWorker") : null)}
             />
           </p>
           <p>
             <span className="fresh-label">{t(lang, "positionsFresh")}</span>
             <Age
-              at={book.data?.as_of}
+              at={bookIssue ? null : book.data?.as_of}
               limit={bookCadence * 2.5}
               lang={lang}
-              reason={book.data?.error ? humanReason(book.data.error, lang) : null}
+              reason={bookIssue || null}
             />
           </p>
         </div>
         <p className="card-line">
           {t(lang, "sleeve")}{" "}
           <b>
-            {loaded.data?.sleeve?.eligible
+            {accountsCurrent && loaded.data?.sleeve?.eligible
               ? `${fmtMoney(loaded.data.sleeve.eligible, lang)} USDT`
               : `${t(lang, "unavailable")} · ${humanReason(loaded.data?.sleeve?.reason, lang) || t(lang, "noSnapshot")}`}
           </b>
@@ -157,7 +169,9 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
                   <>
                     {row.exchange_name || row.exchange_code}
                     {" · "}
-                    {counts[row.code] ?? 0} {t(lang, "openCount")}
+                    {t(lang, "openPositions")} · {accountsCurrent && bookComplete
+                      ? positions.filter((position) => position.account_code === row.code).length
+                      : t(lang, "unavailable")}
                     {selected === row.code ? ` · ${t(lang, "selectedAccount")}` : ""}
                   </>
                 }
@@ -168,20 +182,33 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
                 pressed={current === UNASSIGNED}
                 onClick={() => setViewing(UNASSIGNED)}
                 title={t(lang, "unassigned")}
-                detail={`${unassigned.length} ${t(lang, "openCount")}`}
+                detail={`${unassigned.length} ${t(lang, bookComplete ? "openCount" : "reportedRows")}`}
               />
             ) : null}
           </div>
         ) : null}
       </Card>
-      {loaded.error ? <Problem lang={lang} retry={loaded.reload} /> : null}
-      {!rows && !loaded.error && <Loading lang={lang} />}
-      {rows && rows.length === 0 ? <Empty icon={Wallet} text={t(lang, "noAccounts")} /> : null}
+      {loaded.refreshFailed ? <Problem lang={lang} retry={loaded.reload} /> : null}
+      {!loaded.data && !loaded.error && <Loading lang={lang} />}
+      {accountsCurrent && rows?.length === 0 ? <Empty icon={Wallet} text={t(lang, "noAccounts")} /> : null}
       {account ? (
-        <AccountBalance lang={lang} row={account} isSelected={selected === account.code} choose={choose} />
+        <AccountBalance
+          lang={lang}
+          row={account}
+          retained={!accountsCurrent}
+          isSelected={selected === account.code}
+          choose={choose}
+        />
       ) : null}
       {account || current === UNASSIGNED ? (
-        <OpenPositions lang={lang} rows={shown} book={book.data} failed={book.error} retry={book.reload} />
+        <OpenPositions
+          lang={lang}
+          rows={shown}
+          book={book.data}
+          complete={bookComplete && (accountsCurrent || current === UNASSIGNED)}
+          failed={book.refreshFailed}
+          retry={book.reload}
+        />
       ) : null}
       {note ? <Note>{note}</Note> : null}
     </div>
@@ -193,11 +220,13 @@ const UNASSIGNED = "__unassigned__";
 function AccountBalance({
   lang,
   row,
+  retained,
   isSelected,
   choose,
 }: {
   lang: Lang;
   row: BrokerAccount;
+  retained: boolean;
   isSelected: boolean;
   choose: (code: string) => void;
 }) {
@@ -221,6 +250,7 @@ function AccountBalance({
         </div>
         <Badge tone={row.demo ? "warn" : "bad"}>{row.badge || (row.demo ? t(lang, "demo") : t(lang, "real"))}</Badge>
       </div>
+      {retained && (!unavailable || Boolean(row.assets?.length)) && <Badge tone="warn">{t(lang, "staleRow")}</Badge>}
       {unavailable ? (
         <p className="account-unavailable">
           <b>{t(lang, "balanceUnavailable")}</b>
@@ -298,12 +328,14 @@ function OpenPositions({
   rows,
   book,
   failed,
+  complete,
   retry,
 }: {
   lang: Lang;
   rows: AccountPosition[];
   book: AccountPositionsPayload | null;
   failed: boolean;
+  complete: boolean;
   retry: () => void;
 }) {
   const none = t(lang, "unknown");
@@ -313,7 +345,7 @@ function OpenPositions({
         icon={Layers}
         title={t(lang, "openPositions")}
         help={t(lang, "positionsHelp")}
-        aside={book ? <Badge tone="info">{rows.length}</Badge> : undefined}
+        aside={complete ? <Badge tone="info">{rows.length}</Badge> : undefined}
       />
       {failed ? <Problem lang={lang} retry={retry} /> : null}
       {!book && !failed ? <Loading lang={lang} /> : null}
@@ -324,7 +356,7 @@ function OpenPositions({
         </Note>
       ) : null}
       {book && !rows.length ? (
-        <p className="empty-line">{book.error && !book.as_of ? humanReason(book.error, lang) : t(lang, "noOpenPositions")}</p>
+        <p className="empty-line">{complete ? t(lang, "noOpenPositions") : humanReason(book.error, lang) || t(lang, "unavailable")}</p>
       ) : null}
       {rows.length ? (
         <ul className="position-list">

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from warp3c.book import MAX_POSITION_READS, collect, parse_position, positions_view
 from warp3c.threecommas import IntegrationError
@@ -129,9 +132,23 @@ class ParseTests(unittest.TestCase):
         self.assertIsNone(row["opened_at"])
         self.assertIsNone(row["pnl_pct"])
 
-    def test_warp_prefix_marks_ownership(self):
-        self.assertEqual(parse_position(ROW, bot=_bot(name="WARP-0a1b2c3d"), kind="dca")["owner"], "warp")
-        self.assertEqual(parse_position(ROW, bot=_bot(name="OTHER"), kind="dca")["owner"], "external")
+    def test_cabinet_ownership_requires_matching_journal_identity(self):
+        bot = _bot(name="WARP-0a1b2c3d")
+        broker = Broker([bot], rows={"b1": [ROW]})
+        record = dict(product="dca_bot", external_code="b1", name=bot["name"],
+                      account_code="acct-1", warp_id="0a1b2c3d")
+        for change in ({"external_code": "other"}, {"account_code": "other"}, {"product": "grid_bot"}, {}):
+            with self.subTest(change=change):
+                position = collect(broker, owned_bots=[{**record, **change}])["rows"][0]
+                self.assertEqual(position["owner"], "external" if change else "warp")
+        self.assertEqual(collect(broker)["rows"][0]["owner"], "external")
+
+    def test_ambiguous_profiles_are_unassigned_and_row_profiles_take_precedence(self):
+        profiles = ROW["profileStrategies"] + [{"profile": {"code": "acct-2"}}]
+        bot = {**_bot(), "profiles": profiles}
+        for profiles_on_row, expected in ((profiles, None), ([], None), ([profiles[1]], "acct-2")):
+            row = parse_position({**ROW, "profileStrategies": profiles_on_row}, bot=bot, kind="dca")
+            self.assertEqual(row["account_code"], expected)
 
     def test_unknown_entry_or_exit_leaves_only_matching_value_unavailable(self):
         missing = object()
@@ -141,7 +158,7 @@ class ParseTests(unittest.TestCase):
             ("totalEntryCost", "cost", "size", "3101.1"),
             ("totalExitCost", "cost", "size", "3101.1"),
         ):
-            for value in (missing, None, "", "invalid", "NaN", "Infinity", True, False):
+            for value in (missing, None, "", "invalid", "NaN", "Infinity", True, False, "-1"):
                 with self.subTest(field=field, value=value):
                     raw = dict(ROW)
                     if value is missing:
@@ -181,6 +198,26 @@ class CollectTests(unittest.TestCase):
         self.assertTrue(any("BROKEN" in error for error in book["errors"]))
         broker = Broker([], fail={"dca"})
         self.assertTrue(collect(broker)["errors"][0].startswith("dca_bots"))
+
+    def test_incomplete_cabinet_rows_preserve_unique_known_positions(self):
+        for rows in ([ROW, ROW], [ROW, None], [ROW], []):
+            with self.subTest(rows=rows):
+                result = collect(Broker([_bot(cnt=2)], rows={"b1": rows}))
+                self.assertTrue(result["errors"])
+                self.assertEqual(len(result["rows"]), int(bool(rows)))
+
+    def test_first_failed_strategy_read_has_no_source_time(self):
+        book = collect(Broker([_bot()], rows={"b1": [ROW]}), strategy_error="HTTP 503")
+        self.assertIsNone(book["as_of"])
+        self.assertTrue(book["stale"])
+        self.assertIn("strategies: HTTP 503", book["errors"])
+        self.assertEqual(len(book["rows"]), 1)
+
+    def test_retained_empty_strategy_book_keeps_last_good_timestamp(self):
+        stamp = "2020-01-01T00:00:00+00:00"
+        result = collect(Broker([]), strategies=[], strategies_as_of=stamp, strategy_error="HTTP 429")
+        self.assertTrue(result["stale"])
+        self.assertEqual(result["as_of"], stamp)
 
     def test_position_reads_are_capped(self):
         bots = [_bot(code=f"b{i}") for i in range(MAX_POSITION_READS + 5)]
@@ -253,8 +290,9 @@ class StrategyTests(unittest.TestCase):
     def test_smarttrade_uses_the_strategy_symbol_schema(self):
         from test_core import strategy
 
-        book = collect(Broker([]), strategies=[strategy("SOLUSDT")], warp_client=lambda client: True)
+        book = collect(Broker([]), strategies=[{**strategy("SOLUSDT"), "_id": "cabinet-id"}], warp_client=lambda client: True)
         row = book["rows"][0]
+        self.assertEqual(row["id"], "abc")
         self.assertEqual(row["kind"], "strategy")
         self.assertEqual((row["base_asset"], row["quote_asset"]), ("SOL", "USDT"))
         self.assertEqual(row["pair"], "SOL/USDT")
@@ -266,6 +304,30 @@ class StrategyTests(unittest.TestCase):
         self.assertFalse(row["stale"])
         view = positions_view(book, prices={"SOLUSDT": {"last": "150"}}, prices_fresh=True)
         self.assertEqual(view["positions"][0]["current_price_source"], "3commas")
+
+    def test_readonly_refresh_retains_book_on_journal_error(self):
+        from warp3c.config import Settings
+        from warp3c.engine import Engine
+        from warp3c.state import OrderJournal
+
+        class LiveBroker(Broker):
+            def get_live(self):
+                return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Settings(db_path=os.path.join(tmp, "warp.db"), api_key="k", api_secret="s")
+            with closing(OrderJournal(cfg.db_path)) as journal:
+                engine = Engine(cfg, LiveBroker([_bot()], rows={"b1": [ROW]}), None, journal, None)
+                engine.refresh_readonly()
+                first = engine.position_book
+                self.assertEqual(len(first["rows"]), 1)
+                engine.position_book_due = 0
+                with patch.object(journal, "warp_bots", side_effect=sqlite3.OperationalError("database is locked")):
+                    engine.refresh_readonly()
+                self.assertIs(engine.position_book, first)
+                self.assertEqual(engine.position_book_error, "database is locked")
+                engine.refresh_position_book(force=True)
+                self.assertIsNone(engine.position_book_error)
 
     def test_failed_strategy_read_keeps_the_old_timestamp_and_reports_the_error(self):
         from test_core import strategy
@@ -319,9 +381,10 @@ class StrategyTests(unittest.TestCase):
 
 class MarkTests(unittest.TestCase):
     def test_mark_symbols_cover_holdings_and_positions_outside_the_tape(self):
+        from decimal import Decimal
+
         from warp3c.accounts import BrokerAccount
         from warp3c.live import mark_symbols
-        from decimal import Decimal
 
         account = BrokerAccount(
             "a", "Main", False, "active", "BINANCE", "BINANCE-SPOT", "spot", "USDT",
