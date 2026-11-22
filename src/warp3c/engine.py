@@ -940,6 +940,7 @@ class Engine:
                 self.broker,
                 strategies=self.last_positions,
                 warp_client=is_warp,
+                owned_bots=self.journal.warp_bots(),
                 strategies_as_of=self.positions_ok_at,
                 strategy_error=strategy_error,
             )

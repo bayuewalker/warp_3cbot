@@ -1,3 +1,4 @@
+import { useCurrentRead } from "./account-read";
 import {
   Activity,
   ChevronRight,
@@ -309,7 +310,10 @@ function ScannerSummary({ lang, row }: { lang: Lang; row: Status }) {
 }
 
 export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
-  const positions = useLoad<{ positions: Position[] }>("/api/positions", true);
+  const positions = useLoad<{ positions: Position[]; as_of?: string; error?: string }>("/api/positions", true);
+  const positionsFresh = useCurrentRead(positions.data?.as_of, 300);
+  const positionsFailed = positions.refreshFailed || Boolean(positions.data?.error);
+
   const bots = useLoad<{ bots: WarpBot[] }>("/api/warp-bots", true);
   if (status.error) return <Problem lang={lang} retry={status.reload} />;
   if (!status.data) return <Loading lang={lang} />;
@@ -326,9 +330,9 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
     },
     {
       title: "open",
-      value: positions.error ? null : positions.data?.positions?.length,
+      value: positionsFresh && !positionsFailed && Array.isArray(positions.data?.positions) ? positions.data.positions.length : null,
       icon: Boxes,
-      detail: positions.error ? "refreshError" : "listPositions",
+      detail: positionsFailed ? "refreshError" : "listPositions",
     },
   ] as const;
   return (

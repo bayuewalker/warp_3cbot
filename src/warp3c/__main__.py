@@ -245,13 +245,10 @@ def main():
         journal = OrderJournal(cfg.db_path)
         screener, analyst = _build_research(cfg)
         engine = Engine(cfg, broker, research, journal, market, screener=screener, analyst=analyst)
-        from .live import ACCOUNT_SECONDS, DashboardReads
-
-        from .operator import publish_reads
-
         import httpx
 
-        from .live import BUS, mark_symbols, poll_marks
+        from .live import ACCOUNT_SECONDS, BUS, DashboardReads, mark_symbols, poll_marks
+        from .operator import publish_reads
 
         mark_client = httpx.Client(base_url=cfg.market_data_url, timeout=10)
 
