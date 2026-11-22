@@ -12,6 +12,7 @@ from pathlib import Path
 from .auth import parse_cookies, session_valid
 from .bots import PRESETS, BotTemplate, preview_capital
 from .forward import summary
+from .live import ACCOUNT_SECONDS
 from .screener import ScreenerFilters
 
 SNAPSHOT: dict[str, dict] = {}
@@ -84,6 +85,7 @@ ROUTES = (
     "/api/decisions",
     "/api/events",
     "/api/prices",
+    "/api/account-positions",
 )
 
 
@@ -309,22 +311,11 @@ def publish(cfg, journal, engine) -> None:
         "source": getattr(engine, "screener_source", ""),
         "fetched_at": getattr(engine, "screener_fetched_at", "") or None,
     }
-    accounts = []
-    for row in getattr(engine, "last_accounts", []) or []:
-        if hasattr(row, "to_public"):
-            allowed, reason = _account_reason(cfg, row)
-            accounts.append(row.to_public(selectable=allowed, reason=reason))
-    _mark_assets(accounts)
-    selected = _selected(journal)
-    SNAPSHOT["/api/accounts"] = {
-        "accounts": accounts,
-        "selected": selected,
-        "places_orders": False,
-        "as_of": getattr(engine, "accounts_at", "") or None,
-        "error": getattr(engine, "accounts_error", None),
-        "sleeve": _sleeve_view(cfg, accounts, selected, engine, journal),
-        "readonly": True,
-    }
+    view = _accounts_view(cfg, journal, engine)
+    accounts = view["accounts"]
+    selected = view["selected"]
+    SNAPSHOT["/api/accounts"] = view
+    SNAPSHOT["/api/account-positions"] = _account_positions_view(engine)
     from .live import recent_events
 
     SNAPSHOT["/api/events"] = {"events": recent_events()[-20:], "as_of": now.isoformat()}
@@ -353,10 +344,55 @@ def publish(cfg, journal, engine) -> None:
     broadcast_live()
 
 
-def _mark_assets(accounts: list[dict]) -> None:
-    from .live import BUS, quote_age_seconds, quote_is_fresh
+def _accounts_view(cfg, journal, engine) -> dict:
+    accounts = []
+    for row in getattr(engine, "last_accounts", []) or []:
+        if hasattr(row, "to_public"):
+            allowed, reason = _account_reason(cfg, row)
+            accounts.append(row.to_public(selectable=allowed, reason=reason))
+    _mark_assets(accounts)
+    selected = _selected(journal)
+    return {
+        "accounts": accounts,
+        "selected": selected,
+        "places_orders": False,
+        "as_of": getattr(engine, "accounts_at", "") or None,
+        "error": getattr(engine, "accounts_error", None),
+        "sleeve": _sleeve_view(cfg, accounts, selected, engine, journal),
+        "cadence_seconds": ACCOUNT_SECONDS,
+        "readonly": True,
+    }
 
-    fresh = quote_is_fresh(BUS.prices_at)
+
+def _account_positions_view(engine) -> dict:
+    from .book import positions_view
+    from .live import BUS
+
+    marks = BUS.fresh_marks()
+    return positions_view(
+        getattr(engine, "position_book", None),
+        prices=marks,
+        prices_fresh=bool(marks),
+        error=getattr(engine, "position_book_error", None),
+    )
+
+
+def publish_reads(cfg, journal, engine) -> None:
+    """After a read-only 3Commas refresh, push accounts and positions without waiting for the worker loop."""
+    from .live import BUS
+
+    accounts = _accounts_view(cfg, journal, engine)
+    positions = _account_positions_view(engine)
+    SNAPSHOT["/api/accounts"] = accounts
+    SNAPSHOT["/api/account-positions"] = positions
+    BUS.publish("accounts", accounts)
+    BUS.publish("positions", positions)
+
+
+def _mark_assets(accounts: list[dict]) -> None:
+    from .live import BUS, quote_age_seconds
+
+    marks = BUS.fresh_marks()
     age = quote_age_seconds(BUS.prices_at)
     for account in accounts:
         marked = []
@@ -368,9 +404,9 @@ def _mark_assets(accounts: list[dict]) -> None:
             if name in ("USDT", "USDC", "USD"):
                 usd = total
             else:
-                price = BUS.prices.get(f"{name}USDT")
+                price = marks.get(f"{name}USDT") or BUS.prices.get(f"{name}USDT")
                 last = price.get("last") if isinstance(price, dict) else None
-                if last and fresh:
+                if last and f"{name}USDT" in marks:
                     usd = format(Decimal(str(total)) * Decimal(str(last)), "f")
                 else:
                     reason = "usd_mark_unavailable"

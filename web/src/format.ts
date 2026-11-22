@@ -61,6 +61,17 @@ export function fmtPct(value: string | number | null | undefined, lang: Lang) {
   );
 }
 
+/** Signed money amount for profit and loss: +12.30 / -4.10. */
+export function fmtSignedMoney(value: string | number | null | undefined, lang: Lang) {
+  const n = toNumber(value);
+  if (n == null) return null;
+  return new Intl.NumberFormat(locale(lang), {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+    signDisplay: "exceptZero",
+  }).format(n);
+}
+
 /** Large amounts as 2.81B / 271.4M. */
 export function fmtCompact(value: string | number | null | undefined, lang: Lang) {
   const n = toNumber(value);

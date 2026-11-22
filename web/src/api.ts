@@ -145,6 +145,50 @@ export type BrokerAccount = {
   reason: string;
 };
 
+export type AccountPosition = {
+  id: string | null;
+  account_code: string | null;
+  account_name: string | null;
+  kind: "dca" | "grid" | "strategy";
+  bot_name: string | null;
+  bot_code: string | null;
+  owner: "warp" | "external";
+  pair: string | null;
+  symbol: string | null;
+  base_asset: string | null;
+  quote_asset: string | null;
+  side: "long" | "short" | null;
+  status: string | null;
+  paper: boolean | null;
+  average_price: string | null;
+  size: string | null;
+  cost: string | null;
+  current_price: string | null;
+  current_price_source: "3commas" | "binance" | null;
+  pnl_usd: string | null;
+  pnl_usd_source: "3commas" | "computed" | null;
+  pnl_pct: string | null;
+  pnl_pct_source: "3commas" | "computed" | null;
+  safety_used: number | null;
+  safety_max: number | null;
+  take_profits: string[];
+  stop_price: string | null;
+  opened_at: string | null;
+  stale?: boolean;
+};
+
+export type AccountPositionsPayload = {
+  positions: AccountPosition[];
+  by_account: Record<string, number>;
+  as_of: string | null;
+  error: string | null;
+  errors: string[];
+  bots_checked?: number | null;
+  stale?: boolean;
+  cadence_seconds: number;
+  readonly: boolean;
+};
+
 export type WarpBot = {
   warp_id: string;
   name: string;

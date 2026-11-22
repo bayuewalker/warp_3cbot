@@ -86,6 +86,19 @@ function connect() {
     connected = true;
     notify();
   });
+  // Read-only 3Commas refreshes push their own frames so balances and positions
+  // update without waiting for the next worker snapshot.
+  for (const [event, path] of [
+    ["accounts", "/api/accounts"],
+    ["positions", "/api/account-positions"],
+  ] as const) {
+    source.addEventListener(event, (ev) => {
+      const data = JSON.parse((ev as MessageEvent).data) as { as_of?: string | null };
+      routes.set(path, { data, at: Date.now() });
+      connected = true;
+      notify();
+    });
+  }
   source.addEventListener("halt", (ev) => {
     const data = JSON.parse((ev as MessageEvent).data) as {
       halt?: boolean;

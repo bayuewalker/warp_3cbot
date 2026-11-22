@@ -33,7 +33,7 @@ import { Key, Lang, t } from "./i18n";
 import { AccountsPanel, BudgetForm, ForwardPanel, PaperCheck, RulesPage, WarpBotsPanel } from "./desk";
 import { Badge, Button, Card, CardHead, Choice, Empty, Field, KV, Loading, Note, Problem, inputClass } from "./ui";
 import { Overview, Providers } from "./monitor";
-import { Age } from "./age";
+import { Age, ReceivedAge } from "./age";
 import { settingLabel, settingValue } from "./labels";
 import { zoneLabel, fmtCompact, fmtMoney, fmtPct01, fmtNumber, fmtPct, fmtPrice, fmtTime, ratingLabel, sourceLabel } from "./format";
 import { stopLive } from "./live";
@@ -452,9 +452,22 @@ function Signals({ lang }: { lang: Lang }) {
   const loaded = useLoad<{ cards: CardRow[] }>("/api/opportunities", true);
   if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
   if (!loaded.data) return <Loading lang={lang} />;
-  if (!loaded.data.cards.length) return <Empty icon={Crosshair} text={t(lang, "noSignals")} />;
+  const fresh = (
+    <p className="panel-note page-fresh">
+      <ReceivedAge at={loaded.received} limit={90} lang={lang} />
+    </p>
+  );
+  if (!loaded.data.cards.length)
+    return (
+      <div className="stack">
+        {fresh}
+        <Empty icon={Crosshair} text={t(lang, "noSignals")} />
+      </div>
+    );
   const na = t(lang, "unknown");
   return (
+    <div className="stack">
+    {fresh}
     <div className="opportunity-grid">
       {loaded.data.cards.map((card, index) => {
         const confidence = fmtPct01(card.confidence, lang);
@@ -538,6 +551,7 @@ function Signals({ lang }: { lang: Lang }) {
           </Card>
         );
       })}
+    </div>
     </div>
   );
 }
@@ -1013,7 +1027,7 @@ function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean
 }
 
 function Settings({ lang, paper }: { lang: Lang; paper: boolean }) {
-  const loaded = useLoad<Record<string, string | number | boolean | string[]>>("/api/config");
+  const loaded = useLoad<Record<string, string | number | boolean | string[]>>("/api/config", true);
   if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
   if (!loaded.data) return <Loading lang={lang} />;
   const rows = Object.entries(loaded.data);
@@ -1021,7 +1035,12 @@ function Settings({ lang, paper }: { lang: Lang; paper: boolean }) {
     <div className="stack">
       <PaperCheck lang={lang} enabled={paper} />
       <Card>
-        <CardHead icon={Settings2} title={t(lang, "settings")} help={t(lang, "modeHelp")} />
+        <CardHead
+          icon={Settings2}
+          title={t(lang, "settings")}
+          help={t(lang, "modeHelp")}
+          aside={<ReceivedAge at={loaded.received} limit={90} lang={lang} />}
+        />
         <dl className="kv kv-settings">
           {rows.map(([key, value]) => (
             <div key={key}>

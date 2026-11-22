@@ -27,6 +27,22 @@ Space Grotesk sets headings and large figures, Inter carries body text, and JetB
 - A TradingView chart opens only after the operator follows its link. Its Binance symbol is a chart reference. Per-card exchange identity and numeric risk score are unavailable in the #6 card contract. The worker’s rubric score has a separate label.
 - Broker actions bind to the selected WARP record, supported cabinet product, observed PAPER mode and matching active demo spot account. Resume also requires HALT to be clear. The server still owns policy and ownership decisions. PAPERCHECK retains the typed confirmation and is disabled outside eligible paper mode.
 
+## Live updates
+
+Every panel reads through `useLoad(path, true)`: it applies frames from the authenticated `/api/stream` and polls every 5s only while the stream is down; the stream reconnects with backoff. Forms (rules, bot preset, budget draft) keep their drafts; the budget draft resets only when the saved values change. Each section shows "Updated Xs ago" and a stale warning past its expected cadence.
+
+| Source | Refresh | Stream event |
+| --- | --- | --- |
+| Binance tape prices | 3s, worker thread | `prices` |
+| Status, risk, HALT, opportunities, bots, forward, events | every worker loop (≤3s) | `snapshot` |
+| Screener (TradingView) | 15s | `snapshot` |
+| Signals / AI analysis | `WARP_SCAN_SECONDS` 300s, `WARP_RESEARCH_SECONDS` 900s | `snapshot` |
+| 3Commas accounts and balances | 30s, read-only `DashboardReads` thread | `accounts` (+ `snapshot`) |
+| Open positions on every bot per account | 60s on the same thread (GET bot lists, then GET `/open_api/{dca,grid}_bots/:code/positions` only for bots reporting open positions, max 40) | `positions` (+ `snapshot`) |
+| Marks for holdings and positions outside the tape | 30s, Binance public `ticker/price`, valid 90s | inside `accounts` / `positions` |
+
+Position rows carry their source: price and PnL from 3Commas when reported, otherwise from the Binance mark, labelled "calculated". Fields 3Commas omits show "Not reported". Rows from bots WARP did not create carry an External badge and are display-only.
+
 ## Responsive behavior
 
 The live-stream badge collapses to its dot on phones; its label stays available to screen readers. Interactive header controls have 44px touch targets. The bell summarizes the current worker state. A sticky HALT strip remains visible while the operator scrolls. The scanner dial shows the number of AI outputs. Its fixed outline has no percentage scale.
