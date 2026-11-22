@@ -10,8 +10,10 @@ import {
 import { Key, Lang, t } from "./i18n";
 import { Age } from "./age";
 import { useLoad } from "./snapshot";
-import { fmtMoney, fmtQty } from "./format";
-import { Badge, Button, Card, Field, Loading, Problem, inputClass } from "./ui";
+import { fmtMoney, fmtNumber, fmtPct, fmtPct01, fmtQty } from "./format";
+import { Badge, Button, Card, CardHead, Empty, Field, KV, Loading, Note, Problem, inputClass } from "./ui";
+import { Bot, FlaskConical, ListChecks, PiggyBank, Scale, Target, Wallet } from "lucide-react";
+import { settingHint, settingLabel } from "./labels";
 
 const REASONS: Record<string, Key> = {
   paper_requires_demo: "rPaperDemo",
@@ -74,13 +76,16 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
   return (
     <div className="space-y-3">
       <Card>
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="font-semibold">{t(lang, "accounts")}</h2>
-          <Button variant="outline" size="sm" type="button" onClick={loaded.reload}>
-            {t(lang, "refresh")}
-          </Button>
-        </div>
-        <p className="mt-2 text-xs text-zinc-500">{t(lang, "accountHelp")}</p>
+        <CardHead
+          icon={Wallet}
+          title={t(lang, "accounts")}
+          help={t(lang, "accountHelp")}
+          aside={
+            <Button variant="outline" size="sm" type="button" onClick={loaded.reload}>
+              {t(lang, "refresh")}
+            </Button>
+          }
+        />
         <p className="panel-note">
           <Age
             at={loaded.data?.as_of}
@@ -100,11 +105,7 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
       </Card>
       {loaded.error ? <Problem lang={lang} retry={loaded.reload} /> : null}
       {!rows && !loaded.error && <Loading lang={lang} />}
-      {rows && rows.length === 0 ? (
-        <Card>
-          <p className="text-sm text-zinc-400">{t(lang, "noAccounts")}</p>
-        </Card>
-      ) : null}
+      {rows && rows.length === 0 ? <Empty icon={Wallet} text={t(lang, "noAccounts")} /> : null}
       {rows?.map((row) => {
         const unavailable = row.total == null && row.free == null && row.used == null;
         const quote = row.quote || "";
@@ -192,11 +193,7 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
           </Card>
         );
       })}
-      {note ? (
-        <p role="status" className="text-sm text-zinc-400">
-          {note}
-        </p>
-      ) : null}
+      {note ? <Note>{note}</Note> : null}
     </div>
   );
 }
@@ -234,18 +231,18 @@ export function BudgetForm({ lang, code }: { lang: Lang; code: string }) {
 
   return (
     <Card>
-      <h2 className="font-semibold">{t(lang, "budget")}</h2>
+      <CardHead icon={PiggyBank} title={t(lang, "budget")} help={t(lang, "budgetHelp")} />
       {!budget.error && view ? (
-        <p className="mt-2 text-sm text-zinc-300">
+        <p className="card-line">
           {t(lang, "budgetUsed")} <b>{fmtMoney(view.used, lang) ?? t(lang, "unknown")}</b> · {t(lang, "budgetLeft")}{" "}
           <b>{fmtMoney(view.remaining, lang) ?? t(lang, "unknown")}</b>
         </p>
       ) : null}
       {budget.error && <Problem lang={lang} retry={budget.reload} />}
-      <p className="panel-note">
-        {t(lang, "currentTarget")} · {code || t(lang, "unknown")}
+      <p className="card-line">
+        {t(lang, "currentTarget")} · <b>{code || t(lang, "noAccountSelected")}</b>
       </p>
-      <form className="mt-3 space-y-3" onSubmit={save}>
+      <form className="form-stack" onSubmit={save}>
         <Field label={lang === "en" ? "Budget limit (USDT)" : "Batas anggaran (USDT)"}>
           <input
             className={inputClass}
@@ -275,11 +272,7 @@ export function BudgetForm({ lang, code }: { lang: Lang; code: string }) {
           {t(lang, "saveBudget")}
         </Button>
       </form>
-      {note ? (
-        <p role="status" className="mt-3 text-sm text-zinc-400">
-          {note}
-        </p>
-      ) : null}
+      {note ? <Note>{note}</Note> : null}
     </Card>
   );
 }
@@ -348,50 +341,55 @@ export function WarpBotsPanel({ lang, status }: { lang: Lang; status: Status | n
   return (
     <div className="space-y-3">
       <Card>
-        <h2 className="font-semibold">{t(lang, "warpBots")}</h2>
-        <p className="mt-2 text-xs text-zinc-500">{t(lang, "ownedOnly")}</p>
+        <CardHead icon={Bot} title={t(lang, "warpBots")} help={t(lang, "ownedOnly")} />
       </Card>
       {list.error && <Problem lang={lang} retry={list.reload} />}
       {accounts.error && <Problem lang={lang} retry={accounts.reload} />}
       {!bots && !list.error && <Loading lang={lang} />}
       {!list.error && list.data?.budget && (
-        <div className="capital-strip">
-          {list.data.budget.sleeve_pct != null && (
-            <span>
-              {lang === "id" ? "Alokasi akun" : "Account sleeve"}{" "}
-              <b>{Number(list.data.budget.sleeve_pct) * 100}%</b>
-            </span>
-          )}
-          <span>
-            {t(lang, "budgetUsed")} <b>{fmtMoney(list.data.budget.used, lang) ?? t(lang, "unknown")}</b>
-          </span>
-          <span>
-            {t(lang, "budgetLeft")} <b>{fmtMoney(list.data.budget.remaining, lang) ?? t(lang, "unknown")}</b>
-          </span>
+        <div className="hud-strip">
+          <div>
+            <span>{t(lang, "accountShare")}</span>
+            <b className={list.data.budget.sleeve_pct == null ? "kpi-missing" : undefined}>
+              {fmtPct01(list.data.budget.sleeve_pct, lang) ?? t(lang, "unknown")}
+            </b>
+          </div>
+          <div>
+            <span>{t(lang, "budgetUsed")}</span>
+            <b className={list.data.budget.used == null ? "kpi-missing" : undefined}>
+              {fmtMoney(list.data.budget.used, lang) ?? t(lang, "unknown")}
+            </b>
+          </div>
+          <div>
+            <span>{t(lang, "budgetLeft")}</span>
+            <b className={list.data.budget.remaining == null ? "kpi-missing" : undefined}>
+              {fmtMoney(list.data.budget.remaining, lang) ?? t(lang, "unknown")}
+            </b>
+          </div>
         </div>
       )}
-      {bots && bots.length === 0 ? (
-        <Card>
-          <p className="text-sm text-zinc-400">{t(lang, "noWarpBots")}</p>
-        </Card>
-      ) : null}
+      {bots && bots.length === 0 ? <Empty icon={Bot} text={t(lang, "noWarpBots")} /> : null}
       {bots?.map((bot) => (
         <Card key={bot.warp_id}>
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h3 className="font-semibold">{bot.name}</h3>
-              <p className="text-xs text-zinc-500">
-                {bot.symbol} · {bot.market} · {bot.kind}
-              </p>
-            </div>
-            <Badge>{bot.status}</Badge>
-          </div>
-          <p className="panel-note">
-            {accounts.data?.accounts.find((row) => row.code === bot.account_code)?.badge ??
-              t(lang, "unknown")}
-          </p>
-          <p className="mt-2 text-sm text-zinc-300">{bot.commitment} USDT</p>
-          <div className="mt-3 grid grid-cols-2 gap-2">
+          <CardHead
+            as="h3"
+            title={bot.name}
+            help={`${bot.symbol} · ${bot.market} · ${bot.kind}`}
+            aside={<Badge>{bot.status.replaceAll("_", " ")}</Badge>}
+          />
+          <KV
+            rows={[
+              [
+                t(lang, "account"),
+                accounts.data?.accounts.find((row) => row.code === bot.account_code)?.badge ?? t(lang, "unknown"),
+              ],
+              [
+                t(lang, "commitment"),
+                fmtMoney(bot.commitment, lang) == null ? t(lang, "unknown") : `${fmtMoney(bot.commitment, lang)} USDT`,
+              ],
+            ]}
+          />
+          <div className="action-grid">
             {(["pause", "resume", "close", "delete"] as const).map((action) => (
               <Button
                 key={action}
@@ -419,7 +417,7 @@ export function WarpBotsPanel({ lang, status }: { lang: Lang; status: Status | n
           </div>
           {pending?.id === bot.warp_id ? (
             <div className="confirm-box">
-              <p className="text-sm">
+              <p className="confirm-text">
                 {t(
                   lang,
                   pending.action === "pause"
@@ -437,11 +435,11 @@ export function WarpBotsPanel({ lang, status }: { lang: Lang; status: Status | n
               <input
                 autoFocus
                 aria-label={t(lang, "confirmWord")}
-                className={`${inputClass} mt-3`}
+                className={inputClass}
                 value={word}
                 onChange={(event) => setWord(event.target.value)}
               />
-              <div className="mt-3 flex gap-2">
+              <div className="action-row">
                 <Button
                   type="button"
                   disabled={
@@ -461,11 +459,7 @@ export function WarpBotsPanel({ lang, status }: { lang: Lang; status: Status | n
           ) : null}
         </Card>
       ))}
-      {note ? (
-        <p role="status" className="text-sm text-zinc-400">
-          {note}
-        </p>
-      ) : null}
+      {note ? <Note>{note}</Note> : null}
     </div>
   );
 }
@@ -476,32 +470,57 @@ export function ForwardPanel({ lang }: { lang: Lang }) {
   const stats = loaded.data;
   if (!stats) return <Loading lang={lang} />;
   const empty = stats.scored === 0;
+  const na = t(lang, "unknown");
   return (
     <Card>
-      <h2 className="font-semibold">{t(lang, "forward")}</h2>
-      <p className="mt-2 text-xs text-zinc-500">{t(lang, "forwardHelp")}</p>
-      <p className="mt-2 text-xs text-zinc-500">{stats.hit_rule}</p>
-      {empty ? <p className="mt-3 text-sm text-zinc-400">{t(lang, "noForward")}</p> : null}
-      <p className="mt-2 text-xs text-zinc-500">
-        {t(lang, "pendingVerdicts")}: {stats.pending}
-      </p>
-      <div className="mt-3 space-y-3">
-        {Object.entries(stats.by_verdict).map(([verdict, horizons]) => (
-          <div key={verdict} className="rounded-xl bg-black/20 p-3">
-            <p className="font-medium">{verdict}</p>
-            {stats.horizons.map((label) => {
-              const row = horizons[label];
-              if (!row) return null;
-              const rate = row.hit_rate == null ? t(lang, "unknown") : `${Math.round(Number(row.hit_rate) * 100)}%`;
-              const move = row.avg_move == null ? t(lang, "unknown") : `${(Number(row.avg_move) * 100).toFixed(2)}%`;
-              return (
-                <p key={label} className="mt-1 text-sm text-zinc-300">
-                  {label} · {t(lang, "hitRate")} {rate} ({row.hits}/{row.n}) · {t(lang, "avgMove")} {move}
-                </p>
-              );
-            })}
-          </div>
-        ))}
+      <CardHead
+        icon={Target}
+        title={t(lang, "forward")}
+        help={t(lang, "forwardHelp")}
+        aside={
+          <Badge tone="neutral">
+            {t(lang, "pendingVerdicts")}: {fmtNumber(stats.pending, lang, 0) ?? na}
+          </Badge>
+        }
+      />
+      <p className="card-line">{stats.hit_rule}</p>
+      {empty ? <p className="empty-line">{t(lang, "noForward")}</p> : null}
+      <div className="table-scroll">
+        <table className="data-table">
+          <caption className="sr-only">{t(lang, "forward")}</caption>
+          <thead>
+            <tr>
+              <th scope="col">{t(lang, "verdict")}</th>
+              <th scope="col">{t(lang, "horizon")}</th>
+              <th scope="col">{t(lang, "hitRate")}</th>
+              <th scope="col">{t(lang, "hitsOfScored")}</th>
+              <th scope="col">{t(lang, "avgMove")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Object.entries(stats.by_verdict).flatMap(([verdict, horizons]) =>
+              stats.horizons.map((label) => {
+                const row = horizons[label];
+                if (!row) return null;
+                return (
+                  <tr key={verdict + label}>
+                    <th scope="row">{verdict}</th>
+                    <td data-label={t(lang, "horizon")}>{label}</td>
+                    <td data-label={t(lang, "hitRate")} className={row.hit_rate == null ? "na" : undefined}>
+                      {fmtPct01(row.hit_rate, lang, 0) ?? na}
+                    </td>
+                    <td data-label={t(lang, "hitsOfScored")}>
+                      {row.hits} / {row.n}
+                    </td>
+                    <td data-label={t(lang, "avgMove")} className={row.avg_move == null ? "na" : undefined}>
+                      {row.avg_move == null ? na : fmtPct(Number(row.avg_move) * 100, lang)}
+                    </td>
+                  </tr>
+                );
+              }),
+            )}
+          </tbody>
+        </table>
       </div>
     </Card>
   );
@@ -538,42 +557,46 @@ export function RulesPage({ lang }: { lang: Lang }) {
   return (
     <div className="form-grid">
       <Card>
-        <h2 className="font-semibold">{t(lang, "decisions")}</h2>
+        <CardHead icon={ListChecks} title={t(lang, "decisions")} help={t(lang, "decisionsHelp")} />
         {cycle.error ? (
           <Problem lang={lang} retry={cycle.reload} />
         ) : !decisions ? (
           <Loading lang={lang} />
         ) : decisions.length === 0 ? (
-          <p className="mt-2 text-sm text-zinc-400">{t(lang, "noDecisions")}</p>
+          <p className="empty-line">{t(lang, "noDecisions")}</p>
         ) : null}
         {!cycle.error &&
           decisions?.map((row) => (
-            <div key={row.symbol} className="mt-3 rounded-xl bg-black/20 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <p className="font-medium">{row.symbol}</p>
+            <div key={row.symbol} className="sub-card">
+              <div className="sub-card-head">
+                <p>{row.symbol}</p>
                 <Badge
                   tone={row.status.startsWith("APPROVED") ? "good" : row.status === "VETO" ? "bad" : "warn"}
                 >
-                  {row.status}
+                  {row.status.replaceAll("_", " ")}
                 </Badge>
               </div>
               {row.reasons?.length ? (
-                <p className="mt-1 text-xs text-zinc-400">{row.reasons.join(", ")}</p>
+                <p className="card-help">{row.reasons.map((r) => r.replaceAll("_", " ")).join(" · ")}</p>
               ) : null}
             </div>
           ))}
       </Card>
       <Card>
-        <h2 className="font-semibold">{t(lang, "rules")}</h2>
-        <p className="mt-2 text-xs text-zinc-500">{t(lang, "rulesHelp")}</p>
+        <CardHead icon={Scale} title={t(lang, "rules")} help={t(lang, "rulesHelp")} />
         {rules.error || rules.data?.error ? (
           <Problem lang={lang} retry={rules.reload} />
         ) : values ? (
-          <form className="mt-4 space-y-3" onSubmit={save}>
+          <form className="form-stack" onSubmit={save}>
             {Object.entries(values).map(([key, value]) => (
-              <Field key={key} label={key}>
+              <Field
+                key={key}
+                label={settingLabel(key, lang)}
+                hint={[key, settingHint(key, value, lang)].filter(Boolean).join(" · ")}
+              >
                 <input
                   className={inputClass}
+                  inputMode="decimal"
                   value={String(value)}
                   onChange={(event) => setValues({ ...values, [key]: event.target.value })}
                 />
@@ -585,13 +608,9 @@ export function RulesPage({ lang }: { lang: Lang }) {
             </Button>
           </form>
         ) : (
-          <p className="mt-3 text-sm text-zinc-400">{t(lang, "loading")}</p>
+          <Loading lang={lang} />
         )}
-        {note ? (
-          <p role="status" className="mt-3 text-sm text-zinc-400">
-            {note}
-          </p>
-        ) : null}
+        {note ? <Note>{note}</Note> : null}
       </Card>
     </div>
   );
@@ -623,15 +642,22 @@ export function PaperCheck({ lang, enabled }: { lang: Lang; enabled: boolean }) 
 
   return (
     <Card>
-      <h2 className="font-semibold">{t(lang, "paperCheck")}</h2>
-      <p className="mt-2 text-xs text-zinc-500">{t(lang, "paperCheckHelp")}</p>
-      <form className="mt-3 space-y-3" onSubmit={run}>
-        <input
-          aria-label={t(lang, "confirmWord")}
-          className={inputClass}
-          value={word}
-          onChange={(event) => setWord(event.target.value)}
-        />
+      <CardHead
+        icon={FlaskConical}
+        title={t(lang, "paperCheck")}
+        help={t(lang, "paperCheckHelp")}
+        aside={!enabled ? <Badge tone="neutral">{t(lang, "paperOnly")}</Badge> : null}
+      />
+      <form className="form-stack" onSubmit={run}>
+        <Field label={t(lang, "confirmWord")} hint="PAPERCHECK">
+          <input
+            className={inputClass}
+            autoComplete="off"
+            disabled={!enabled}
+            value={word}
+            onChange={(event) => setWord(event.target.value)}
+          />
+        </Field>
         <Button
           className="w-full"
           disabled={!enabled || busy || word.trim().toUpperCase() !== "PAPERCHECK"}
@@ -641,11 +667,7 @@ export function PaperCheck({ lang, enabled }: { lang: Lang; enabled: boolean }) 
           {t(lang, "paperCheck")}
         </Button>
       </form>
-      {note ? (
-        <p role="status" className="mt-3 text-sm text-zinc-300">
-          {note}
-        </p>
-      ) : null}
+      {note ? <Note>{note}</Note> : null}
     </Card>
   );
 }

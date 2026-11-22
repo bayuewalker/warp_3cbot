@@ -3,6 +3,12 @@ import {
   ArrowUpRight,
   Bell,
   Bot,
+  Boxes,
+  Cpu,
+  FileSliders,
+  Settings2,
+  ShieldCheck,
+  Shapes,
   ChevronRight,
   Clock3,
   Crosshair,
@@ -25,10 +31,11 @@ import {
 } from "./api";
 import { Key, Lang, t } from "./i18n";
 import { AccountsPanel, BudgetForm, ForwardPanel, PaperCheck, RulesPage, WarpBotsPanel } from "./desk";
-import { Badge, Button, Card, Field, Loading, Problem, inputClass } from "./ui";
+import { Badge, Button, Card, CardHead, Choice, Empty, Field, KV, Loading, Note, Problem, inputClass } from "./ui";
 import { Overview, Providers } from "./monitor";
 import { Age } from "./age";
-import { zoneLabel, fmtCompact, fmtMoney, fmtNumber, fmtPct, fmtPrice, fmtTime, ratingLabel, sourceLabel } from "./format";
+import { settingLabel, settingValue } from "./labels";
+import { zoneLabel, fmtCompact, fmtMoney, fmtPct01, fmtNumber, fmtPct, fmtPrice, fmtTime, ratingLabel, sourceLabel } from "./format";
 import { stopLive } from "./live";
 import { useLiveState, useLoad } from "./snapshot";
 
@@ -163,10 +170,11 @@ function Login({ lang, onSuccess }: { lang: Lang; onSuccess: () => void }) {
     }
   }
   return (
-    <Card>
-      <form className="space-y-4" onSubmit={submit}>
-        <h1 className="text-xl font-semibold">{t(lang, "login")}</h1>
-        <p className="text-sm text-zinc-400">{t(lang, "loginHelp")}</p>
+    <Card className="login-card">
+      <form className="form-stack" onSubmit={submit}>
+        <p className="eyebrow">WARP 3C · {t(lang, "desk")}</p>
+        <h1 className="login-title">{t(lang, "login")}</h1>
+        <p className="card-help">{t(lang, "loginHelp")}</p>
         <Field label={t(lang, "password")}>
           <input
             className={inputClass}
@@ -177,7 +185,7 @@ function Login({ lang, onSuccess }: { lang: Lang; onSuccess: () => void }) {
           />
         </Field>
         {error ? (
-          <p role="alert" className="text-sm text-red-300">
+          <p role="alert" className="form-note form-note-bad">
             {error}
           </p>
         ) : null}
@@ -431,7 +439,8 @@ function Preferences({ lang, status }: { lang: Lang; status: Status | null }) {
       ) : (
         <div className="monitor-col">
           <Card>
-            <Providers lang={lang} data={status} />
+            <CardHead icon={Cpu} title={t(lang, "providers")} help={t(lang, "providersHelp")} />
+            <Providers lang={lang} data={status} heading={false} />
           </Card>
           <Settings lang={lang} paper={status?.mode === "paper" && status.halt === false} />
         </div>
@@ -439,118 +448,105 @@ function Preferences({ lang, status }: { lang: Lang; status: Status | null }) {
     </>
   );
 }
-function Empty({ text }: { lang: Lang; text: string }) {
-  return (
-    <Card className="empty">
-      <Crosshair size={22} />
-      <p>{text}</p>
-    </Card>
-  );
-}
 function Signals({ lang }: { lang: Lang }) {
   const loaded = useLoad<{ cards: CardRow[] }>("/api/opportunities", true);
   if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
   if (!loaded.data) return <Loading lang={lang} />;
-  if (!loaded.data.cards.length) return <Empty lang={lang} text={t(lang, "noSignals")} />;
+  if (!loaded.data.cards.length) return <Empty icon={Crosshair} text={t(lang, "noSignals")} />;
+  const na = t(lang, "unknown");
   return (
     <div className="opportunity-grid">
-      {loaded.data.cards.map((card, index) => (
-        <Card key={card.symbol}>
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold">
-                <small className="rank">#{index + 1}</small>
-                {card.symbol}
-              </h2>
-              <p className="text-xs text-zinc-500">
-                {card.regime ?? t(lang, "unknown")} · RSI {fmtNumber(card.rsi, lang, 1) ?? t(lang, "unknown")}
-              </p>
+      {loaded.data.cards.map((card, index) => {
+        const confidence = fmtPct01(card.confidence, lang);
+        return (
+          <Card key={card.symbol} className="signal-card">
+            <CardHead
+              title={
+                <>
+                  <span className="rank">#{index + 1}</span>
+                  {card.symbol}
+                </>
+              }
+              help={`${card.regime ? card.regime[0].toUpperCase() + card.regime.slice(1) : na} · RSI ${fmtNumber(card.rsi, lang, 1) ?? na}`}
+              aside={
+                <>
+                  <Badge tone={card.action === "BUY" ? "good" : card.action === "SKIP" ? "bad" : "warn"}>
+                    {card.action ?? na}
+                  </Badge>
+                  {card.fresh === false ? <Badge tone="warn">{t(lang, "staleEvidence")}</Badge> : null}
+                </>
+              }
+            />
+            <div className="metric-grid">
+              <Metric label={t(lang, "entry")} value={fmtPrice(card.entry, lang)} empty={na} />
+              <Metric label={t(lang, "stop")} value={fmtPrice(card.stop, lang)} empty={na} />
+              <Metric label={t(lang, "target")} value={fmtPrice(card.take, lang)} empty={na} />
             </div>
-            <div className="flex flex-col items-end gap-1">
-              <Badge tone={card.action === "BUY" ? "good" : card.action === "SKIP" ? "bad" : "warn"}>
-                {card.action ?? "—"}
-              </Badge>
-              {card.fresh === false ? <Badge tone="warn">{t(lang, "staleEvidence")}</Badge> : null}
-            </div>
-          </div>
-          <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
-            <Metric label={t(lang, "entry")} value={fmtPrice(card.entry, lang) ?? t(lang, "unknown")} />
-            <Metric label={t(lang, "stop")} value={fmtPrice(card.stop, lang) ?? t(lang, "unknown")} />
-            <Metric label={t(lang, "target")} value={fmtPrice(card.take, lang) ?? t(lang, "unknown")} />
-          </div>
-          {card.score ? (
-            <p className="mt-3 text-sm text-zinc-300">
-              {t(lang, "score")} {card.score.total}
-              {card.score_warning ? ` · ${t(lang, "scoreWarning")}` : ""}
-              <span className="mt-1 block text-xs text-zinc-500">
-                {card.score.trend}/{card.score.reversal}/{card.score.liquidity}/{card.score.structure}/
-                {card.score.event}
-              </span>
-            </p>
-          ) : null}
-          <p className="mt-3 text-sm text-zinc-300">
-            {t(lang, "confidence")} {card.confidence ?? t(lang, "unknown")}
-            {card.model_action && card.model_action !== card.action
-              ? ` · ${t(lang, "model")} ${card.model_action}`
-              : ""}
-          </p>
-          <p className="mt-1 text-xs text-zinc-500">
-            {t(lang, "backtest")}:{" "}
-            {card.backtest_passed == null
-              ? "—"
-              : card.backtest_passed
-                ? t(lang, "passed")
-                : t(lang, "failed")}{" "}
-            {card.backtest_reason && `(${card.backtest_reason})`}
-          </p>
-          <div className="metadata">
-            <span>
-              {t(lang, "source")} <b>{sourceLabel(card.source) || t(lang, "unknown")}</b>
-            </span>
-            <span>
-              {t(lang, "exchange")}{" "}
-              <b>
-                {t(lang, "unavailable")} · {t(lang, "notInSnapshot")}
-              </b>
-            </span>
-            <span>
-              {t(lang, "riskScore")}{" "}
-              <b>
-                {t(lang, "unavailable")} · {t(lang, "notInSnapshot")}
-              </b>
-            </span>
-            <span>
-              {t(lang, "signalTime")} <time>{fmtTime(card.as_of, lang, true) ?? t(lang, "unknown")}</time>
-            </span>
-            <span>
-              {t(lang, "marketTime")} <time>{fmtTime(card.evidence_as_of, lang, true) ?? t(lang, "unknown")}</time>
-            </span>
-          </div>
-          <details>
-            <summary>{t(lang, "why")}</summary>
-            <p>{lang === "id" ? card.why_id : card.why}</p>
-          </details>
-          {/^[A-Z0-9]+USDT$/.test(card.symbol) && (
-            <a
-              className="chart-link"
-              href={`https://www.tradingview.com/chart/?symbol=BINANCE%3A${encodeURIComponent(card.symbol)}`}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              {t(lang, "chart")} · TradingView <ArrowUpRight size={14} />
-            </a>
-          )}
-        </Card>
-      ))}
+            <KV
+              rows={[
+                [
+                  t(lang, "score"),
+                  card.score ? (
+                    <>
+                      <b>{card.score.total}</b> / 100
+                      {card.score_warning ? <span className="text-warn"> · {t(lang, "scoreWarning")}</span> : null}
+                    </>
+                  ) : (
+                    na
+                  ),
+                  card.score
+                    ? `${t(lang, "weightTrend")} ${card.score.trend} · ${t(lang, "weightReversal")} ${card.score.reversal} · ${t(lang, "weightLiquidity")} ${card.score.liquidity} · ${t(lang, "weightStructure")} ${card.score.structure} · ${t(lang, "weightEvent")} ${card.score.event}`
+                    : undefined,
+                ],
+                [
+                  t(lang, "confidence"),
+                  <>
+                    {confidence ?? na}
+                    {card.model_action && card.model_action !== card.action
+                      ? ` · ${t(lang, "model")} ${card.model_action}`
+                      : ""}
+                  </>,
+                ],
+                [
+                  t(lang, "backtest"),
+                  <>
+                    {card.backtest_passed == null ? na : card.backtest_passed ? t(lang, "passed") : t(lang, "failed")}
+                    {card.backtest_reason ? ` · ${card.backtest_reason.replaceAll("_", " ")}` : ""}
+                  </>,
+                ],
+                [t(lang, "source"), sourceLabel(card.source) || na],
+                [t(lang, "signalTime"), <time>{fmtTime(card.as_of, lang, true) ?? na}</time>],
+                [t(lang, "marketTime"), <time>{fmtTime(card.evidence_as_of, lang, true) ?? na}</time>],
+                [t(lang, "exchange"), <span className="na">{t(lang, "unavailable")} · {t(lang, "notInSnapshot")}</span>],
+                [t(lang, "riskScore"), <span className="na">{t(lang, "unavailable")} · {t(lang, "notInSnapshot")}</span>],
+              ]}
+            />
+            <details className="disclosure">
+              <summary>{t(lang, "why")}</summary>
+              <p>{lang === "id" ? card.why_id : card.why}</p>
+            </details>
+            {/^[A-Z0-9]+USDT$/.test(card.symbol) && (
+              <a
+                className="btn btn-ghost link-button"
+                href={`https://www.tradingview.com/chart/?symbol=BINANCE%3A${encodeURIComponent(card.symbol)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {t(lang, "chart")} · TradingView <ArrowUpRight size={15} />
+              </a>
+            )}
+          </Card>
+        );
+      })}
     </div>
   );
 }
 
-function Metric({ label, value }: { label: string; value: string | null }) {
+function Metric({ label, value, empty }: { label: string; value: string | null; empty: string }) {
   return (
     <div className="metric-cell">
       <p>{label}</p>
-      <strong className={value == null ? "kpi-missing" : undefined}>{value ?? "—"}</strong>
+      <strong className={value == null ? "kpi-missing" : undefined}>{value ?? empty}</strong>
     </div>
   );
 }
@@ -658,166 +654,191 @@ function Bots({ lang }: { lang: Lang }) {
   if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
   if (!preview) return <Loading lang={lang} />;
   const weightSum = Object.values(weights).reduce((sum, value) => sum + Number(value), 0);
+  const na = t(lang, "unknown");
+  const weightLabel = (key: keyof typeof weights) =>
+    t(
+      lang,
+      key === "trend"
+        ? "weightTrend"
+        : key === "reversal"
+          ? "weightReversal"
+          : key === "liquidity"
+            ? "weightLiquidity"
+            : key === "structure"
+              ? "weightStructure"
+              : "weightEvent",
+    );
   return (
     <div className="form-grid">
       <Card>
-        <h2 className="font-semibold">{t(lang, "bots")}</h2>
-        <p className="mt-1 text-xs text-zinc-500">{t(lang, "places")}</p>
-        <div className="mt-4 grid grid-cols-2 gap-2">
-          {(
-            [
-              ["stop", stopOn, setStopOn, "stopToggle"],
-              ["take", takeOn, setTakeOn, "takeToggle"],
-              ["trail", trailingOn, setTrailingOn, "trailToggle"],
-            ] as const
-          ).map(([key, value, setter, label]) => (
-            <button
-              key={key}
-              className={`rounded-xl border p-3 text-left ${value ? "border-emerald-400" : "border-amber-400"}`}
-              aria-pressed={value}
-              onClick={() => setter(!value)}
-              type="button"
-            >
-              <p className="font-medium">{t(lang, label)}</p>
-              <p className="text-xs text-zinc-500">{value ? t(lang, "on") : t(lang, "off")}</p>
-            </button>
-          ))}
-        </div>
-        {!stopOn ? (
-          <p className="mt-3">
-            <Badge tone="warn">{t(lang, "noSl")}</Badge>
-          </p>
-        ) : null}
-        {!takeOn && !trailingOn ? (
-          <p className="mt-3">
-            <Badge tone="warn">{t(lang, "manualExit")}</Badge>
-          </p>
-        ) : null}
-        <div className="mt-4">
+        <CardHead icon={FileSliders} title={t(lang, "template")} help={t(lang, "places")} />
+        <fieldset className="form-section">
+          <legend>{t(lang, "exits")}</legend>
+          <div className="choice-grid">
+            {(
+              [
+                ["stop", stopOn, setStopOn, "stopToggle"],
+                ["take", takeOn, setTakeOn, "takeToggle"],
+                ["trail", trailingOn, setTrailingOn, "trailToggle"],
+              ] as const
+            ).map(([key, value, setter, label]) => (
+              <Choice
+                key={key}
+                pressed={value}
+                title={t(lang, label)}
+                state={<Badge tone={value ? "good" : "neutral"}>{value ? t(lang, "on") : t(lang, "off")}</Badge>}
+                onClick={() => setter(!value)}
+              />
+            ))}
+          </div>
+          {!stopOn || (!takeOn && !trailingOn) ? (
+            <div className="badge-row">
+              {!stopOn ? <Badge tone="warn">{t(lang, "noSl")}</Badge> : null}
+              {!takeOn && !trailingOn ? <Badge tone="warn">{t(lang, "manualExit")}</Badge> : null}
+            </div>
+          ) : null}
+        </fieldset>
+        <fieldset className="form-section">
+          <legend>{t(lang, "scoring")}</legend>
           <Field label={t(lang, "minScore")} hint="50–100">
             <input
               className={inputClass}
+              inputMode="numeric"
               value={minScore}
               onChange={(event) => setMinScore(Number(event.target.value))}
             />
           </Field>
-          {minScore < 80 ? (
-            <p className="mt-2">
-              <Badge tone="warn">{t(lang, "scoreWarning")}</Badge>
-            </p>
-          ) : null}
-        </div>
-        <div className="mt-4 grid grid-cols-2 gap-2">
-          {(Object.keys(weights) as (keyof typeof weights)[]).map((key) => (
-            <Field
-              key={key}
-              label={t(
-                lang,
-                key === "trend"
-                  ? "weightTrend"
-                  : key === "reversal"
-                    ? "weightReversal"
-                    : key === "liquidity"
-                      ? "weightLiquidity"
-                      : key === "structure"
-                        ? "weightStructure"
-                        : "weightEvent",
-              )}
-            >
-              <input
-                className={inputClass}
-                value={weights[key]}
-                onChange={(event) => setWeights({ ...weights, [key]: Number(event.target.value) })}
+          {minScore < 80 ? <Badge tone="warn">{t(lang, "scoreWarning")}</Badge> : null}
+          <div className="field-pair">
+            {(Object.keys(weights) as (keyof typeof weights)[]).map((key) => (
+              <Field key={key} label={weightLabel(key)}>
+                <input
+                  className={inputClass}
+                  inputMode="numeric"
+                  value={weights[key]}
+                  onChange={(event) => setWeights({ ...weights, [key]: Number(event.target.value) })}
+                />
+              </Field>
+            ))}
+          </div>
+          <Note tone={weightSum === 100 ? "neutral" : "warn"}>
+            {t(lang, "weightsSum")} {t(lang, "currentSum")} <b>{weightSum}</b>
+          </Note>
+        </fieldset>
+        <fieldset className="form-section">
+          <legend>{t(lang, "botType")}</legend>
+          <div className="choice-grid">
+            {(["dca", "grid"] as const).map((item) => (
+              <Choice
+                key={item}
+                pressed={kind === item}
+                disabled={previewBusy}
+                title={t(lang, item)}
+                detail={t(lang, item === "dca" ? "dcaHelp" : "gridHelp")}
+                onClick={() => void refresh(item, preset).catch(() => setNote(t(lang, "error")))}
               />
-            </Field>
-          ))}
-        </div>
-        <p className={`mt-2 text-xs ${weightSum === 100 ? "text-zinc-500" : "text-amber-200"}`}>
-          {t(lang, "weightsSum")} {weightSum}
-        </p>
-        <div className="mt-4 grid grid-cols-2 gap-2">
-          {(["dca", "grid"] as const).map((item) => (
-            <button
-              key={item}
-              className={`rounded-xl border p-3 text-left ${kind === item ? "border-emerald-400" : "border-white/10"}`}
-              disabled={previewBusy}
-              aria-pressed={kind === item}
-              onClick={() => void refresh(item, preset).catch(() => setNote(t(lang, "error")))}
-              type="button"
-              title={t(lang, item === "dca" ? "dcaHelp" : "gridHelp")}
-            >
-              <p className="font-medium">{t(lang, item)}</p>
-              <p className="text-xs text-zinc-500">{t(lang, item === "dca" ? "dcaHelp" : "gridHelp")}</p>
-            </button>
-          ))}
-        </div>
-        <div className="mt-3 grid gap-2">
-          {(["conservative", "moderate", "aggressive"] as const).map((item) => (
-            <button
-              key={item}
-              className={`rounded-xl border p-3 text-left ${preset === item ? "border-emerald-400" : "border-white/10"}`}
-              disabled={previewBusy}
-              aria-pressed={preset === item}
-              onClick={() => void refresh(kind, item).catch(() => setNote(t(lang, "error")))}
-              type="button"
-              title={t(lang, helpKey(item))}
-            >
-              <p className="font-medium">{t(lang, item)}</p>
-              <p className="text-xs text-zinc-500">{t(lang, helpKey(item))}</p>
-            </button>
-          ))}
-        </div>
+            ))}
+          </div>
+        </fieldset>
+        <fieldset className="form-section">
+          <legend>{t(lang, "riskPreset")}</legend>
+          <div className="choice-grid choice-grid-3">
+            {(["conservative", "moderate", "aggressive"] as const).map((item) => (
+              <Choice
+                key={item}
+                pressed={preset === item}
+                disabled={previewBusy}
+                title={t(lang, item)}
+                detail={t(lang, helpKey(item))}
+                onClick={() => void refresh(kind, item).catch(() => setNote(t(lang, "error")))}
+              />
+            ))}
+          </div>
+        </fieldset>
       </Card>
-      <Card>
-        <h2 className="font-semibold">{t(lang, "preview")}</h2>
-        <p className="mt-2 text-sm text-zinc-400">{t(lang, "capital")}</p>
-        <p className="text-2xl font-semibold">
-          {fmtMoney(preview.full_commitment, lang) == null
-            ? t(lang, "unavailable")
-            : `${fmtMoney(preview.full_commitment, lang)} USDT`}
+      <Card className="sticky-card">
+        <CardHead icon={ShieldCheck} title={t(lang, "preview")} help={t(lang, "capital")} />
+        <p className="big-figure">
+          {fmtMoney(preview.full_commitment, lang) == null ? (
+            <span className="kpi-missing">{t(lang, "unavailable")}</span>
+          ) : (
+            <>
+              {fmtMoney(preview.full_commitment, lang)} <small>USDT</small>
+            </>
+          )}
         </p>
-        <p className="mt-2 text-sm text-zinc-300">
-          {t(lang, "share")} {(Number(preview.share_of_equity) * 100).toFixed(1)}%
-          {preview.equity_is_live ? "" : ` · ${preview.equity_reference}`}
-        </p>
-        <p className="mt-1 text-xs text-zinc-500">
-          {preview.orders_or_grids} · SL {preview.stop} · TP {preview.take_profit}
-        </p>
-        <p className={`mt-3 text-sm ${preview.fits_caps ? "text-emerald-300" : "text-amber-200"}`}>
-          {preview.fits_caps ? t(lang, "fits") : t(lang, "tight")}
-        </p>
+        <KV
+          rows={[
+            [
+              t(lang, "share"),
+              fmtPct01(preview.share_of_equity, lang) ?? na,
+              preview.equity_is_live
+                ? undefined
+                : `${t(lang, "equityReference")} ${fmtMoney(preview.equity_reference, lang) ?? na} USDT`,
+            ],
+            [t(lang, "ordersOrGrids"), fmtNumber(preview.orders_or_grids, lang, 0) ?? na],
+            [t(lang, "stop"), fmtPct01(preview.stop, lang, 2) ?? na],
+            [t(lang, "takeProfitShort"), fmtPct01(preview.take_profit, lang, 2) ?? na],
+          ]}
+        />
+        <Note tone={preview.fits_caps ? "good" : "warn"}>{preview.fits_caps ? t(lang, "fits") : t(lang, "tight")}</Note>
         <Button
-          className="mt-4 w-full"
+          className="w-full"
           type="button"
           disabled={previewBusy}
           onClick={() => void save().catch(() => setNote(t(lang, "error")))}
         >
           {t(lang, "save")}
         </Button>
-        {ask ? <p className="mt-3 text-sm text-amber-200">{t(lang, "aggressiveConfirm")}</p> : null}
-        {note ? <p className="mt-3 text-sm text-zinc-400">{note}</p> : null}
+        {ask ? <Note tone="warn">{t(lang, "aggressiveConfirm")}</Note> : null}
+        {note ? <Note>{note}</Note> : null}
       </Card>
     </div>
   );
 }
 
 function Positions({ lang }: { lang: Lang }) {
-  const loaded = useLoad<{ positions: Position[] }>("/api/positions", true);
+  const loaded = useLoad<{ positions: Position[]; as_of?: string | null; error?: string | null }>("/api/positions", true);
   if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
   if (!loaded.data) return <Loading lang={lang} />;
-  if (!loaded.data.positions.length) return <Empty lang={lang} text={t(lang, "noPositions")} />;
+  const head = (
+    <Card>
+      <CardHead
+        icon={Boxes}
+        title={t(lang, "positions")}
+        help={t(lang, "listPositions")}
+        aside={<Age at={loaded.data.as_of} limit={300} lang={lang} reason={loaded.data.error} />}
+      />
+    </Card>
+  );
+  if (!loaded.data.positions.length)
+    return (
+      <div className="stack">
+        {head}
+        <Empty icon={Boxes} text={t(lang, "noPositions")} />
+      </div>
+    );
+  const na = t(lang, "unknown");
   return (
-    <div className="space-y-3">
-      {loaded.data.positions.map((row) => (
-        <Card key={row.client_id || row.strategy_id || row.symbol || "row"}>
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold">{row.symbol || "—"}</h2>
-            <Badge tone={row.paper ? "warn" : "neutral"}>{row.status || "—"}</Badge>
-          </div>
-          <p className="panel-note">{row.paper == null ? t(lang, "unknown") : t(lang, row.paper ? "demo" : "real")}</p>
-          <p className="mt-2 break-all text-xs text-zinc-500">{row.strategy_id}</p>
-        </Card>
-      ))}
+    <div className="stack">
+      {head}
+      <div className="card-grid">
+        {loaded.data.positions.map((row) => (
+          <Card key={row.client_id || row.strategy_id || row.symbol || "row"}>
+            <CardHead
+              as="h3"
+              title={row.symbol || na}
+              aside={<Badge tone={row.paper ? "warn" : "neutral"}>{row.status ? row.status.replaceAll("_", " ") : na}</Badge>}
+            />
+            <KV
+              rows={[
+                [t(lang, "account"), row.paper == null ? na : t(lang, row.paper ? "demo" : "real")],
+                [t(lang, "strategyId"), <code className="mono-break">{row.strategy_id || na}</code>],
+              ]}
+            />
+          </Card>
+        ))}
+      </div>
     </div>
   );
 }
@@ -857,25 +878,21 @@ function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean
   return (
     <div className="monitor-col">
       <Card>
-        <div className="panel-heading">
-          <h2 className="panel-title">
-            <ListFilter />
-            {t(lang, "candidates")}
-          </h2>
-          <Badge tone="info">{sourceLabel(result.source) || t(lang, "unavailable")}</Badge>
-        </div>
-        <p className="panel-note">
-          <Age at={result.fetched_at} limit={1800} lang={lang} reason={result.error} />
-        </p>
+        <CardHead
+          icon={ListFilter}
+          title={t(lang, "candidates")}
+          help={<Age at={result.fetched_at} limit={1800} lang={lang} reason={result.error} />}
+          aside={<Badge tone="info">{sourceLabel(result.source) || t(lang, "unavailable")}</Badge>}
+        />
         {result.error && (
           <p role="alert" className="alert">
             {result.error}
           </p>
         )}
-        {marketFresh === false && <p className="panel-note text-amber-200">{t(lang, "stale")}</p>}
+        {marketFresh === false && <Note tone="warn">{t(lang, "stale")}</Note>}
         {result.hits.length ? (
           <div className="table-scroll" tabIndex={0} role="region" aria-label={t(lang, "candidates")}>
-            <table className="screener-table">
+            <table className="data-table screener-table">
               <caption className="sr-only">{t(lang, "candidates")}</caption>
               <thead>
                 <tr>
@@ -925,26 +942,23 @@ function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean
             </table>
           </div>
         ) : (
-          !result.error && <p className="panel-note">{t(lang, "noHits")}</p>
+          !result.error && <p className="empty-line">{t(lang, "noHits")}</p>
         )}
       </Card>
       <Card>
-        <h2 className="panel-title">
-          <SlidersHorizontal />
-          {t(lang, "filters")}
-        </h2>
+        <CardHead icon={SlidersHorizontal} title={t(lang, "filters")} help={t(lang, "filtersHelp")} />
         <form
-          className="mt-4 space-y-3"
+          className="form-stack"
           onSubmit={(event) => void save(event).catch(() => setNote(t(lang, "error")))}
         >
-          <Field label={t(lang, "minVolume")}>
+          <Field label={t(lang, "minVolume")} hint={fmtCompact(form.min_quote_volume, lang) ? `≈ ${fmtCompact(form.min_quote_volume, lang)} USDT` : undefined}>
             <input
               className={inputClass}
               value={form.min_quote_volume}
               onChange={(event) => setForm({ ...form, min_quote_volume: event.target.value })}
             />
           </Field>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="field-pair">
             <Field label={t(lang, "minChange")}>
               <input
                 className={inputClass}
@@ -960,7 +974,7 @@ function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean
               />
             </Field>
           </div>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="field-pair">
             <Field label={t(lang, "rsi")}>
               <input
                 className={inputClass}
@@ -976,7 +990,7 @@ function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean
               />
             </Field>
           </div>
-          <Field label={t(lang, "recommend")}>
+          <Field label={t(lang, "recommend")} hint={t(lang, "recommendHint")}>
             <input
               className={inputClass}
               value={form.min_recommendation}
@@ -991,7 +1005,7 @@ function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean
             />
           </Field>
           <Button type="submit">{t(lang, "apply")}</Button>
-          {note ? <p className="text-sm text-zinc-400">{note}</p> : null}
+          {note ? <Note>{note}</Note> : null}
         </form>
       </Card>
     </div>
@@ -1004,21 +1018,18 @@ function Settings({ lang, paper }: { lang: Lang; paper: boolean }) {
   if (!loaded.data) return <Loading lang={lang} />;
   const rows = Object.entries(loaded.data);
   return (
-    <div className="space-y-4">
+    <div className="stack">
       <PaperCheck lang={lang} enabled={paper} />
       <Card>
-        <h2 className="font-semibold">{t(lang, "settings")}</h2>
-        <p className="mt-1 text-sm text-zinc-400">{t(lang, "modeHelp")}</p>
-        <dl className="mt-4 space-y-2">
+        <CardHead icon={Settings2} title={t(lang, "settings")} help={t(lang, "modeHelp")} />
+        <dl className="kv kv-settings">
           {rows.map(([key, value]) => (
-            <div
-              key={key}
-              className="flex items-start justify-between gap-3 border-b border-white/5 py-2 text-sm"
-            >
-              <dt className="text-zinc-500">{key}</dt>
-              <dd className="max-w-[60%] break-all text-right">
-                {Array.isArray(value) ? value.join(", ") : String(value)}
-              </dd>
+            <div key={key}>
+              <dt>
+                {settingLabel(key, lang)}
+                <small>{key}</small>
+              </dt>
+              <dd>{settingValue(key, value, lang, t(lang, "unknown"))}</dd>
             </div>
           ))}
         </dl>

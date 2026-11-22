@@ -114,3 +114,10 @@ export function ratingLabel(value: string | number | null | undefined, lang: Lan
     n > 0.5 ? "strongBuy" : n > 0.1 ? "ratingBuy" : n >= -0.1 ? "neutral" : n >= -0.5 ? "ratingSell" : "strongSell";
   return { text: t(lang, key), tone: n > 0.1 ? "good" : n < -0.1 ? "bad" : "neutral", value: n } as const;
 }
+
+/** A 0..1 ratio from the API as a percentage, e.g. "0.2100" → "21%". */
+export function fmtPct01(value: string | number | null | undefined, lang: Lang, digits = 1) {
+  const n = toNumber(value);
+  if (n == null) return null;
+  return `${new Intl.NumberFormat(locale(lang), { maximumFractionDigits: digits }).format(n * 100)}%`;
+}

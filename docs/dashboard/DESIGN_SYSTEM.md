@@ -19,7 +19,8 @@ Space Grotesk sets headings and large figures, Inter carries body text, and JetB
 
 ## Components and states
 
-- `Card`, `Badge`, `Button`, `Field`, `Loading` and `Problem` live in `web/src/ui.tsx`. Status badges combine a dot with text. A visible label names each editable field. Confirmation fields identify their target and require the established action word.
+- `Card`, `CardHead`, `Badge`, `Button`, `Field`, `Choice`, `Note`, `KV`, `Empty`, `Loading` and `Problem` live in `web/src/ui.tsx`. Every page builds from these and the shared classes in `web/src/index.css` (one stylesheet: tokens, corner-tick cards, `card-head`, `kv` rows, `data-table`, `form-section`, `choice`, `form-note`, `hud-strip`). Avoid page-specific Tailwind colours; add a shared class instead.
+- Rule and configuration keys show a plain-language name from `web/src/labels.ts`, with the raw key and a readable value (for example `0.25 · 25%`) as a hint. Status badges combine a dot with text. A visible label names each editable field. Confirmation fields identify their target and require the established action word.
 - `useLoad` aborts unmounted reads, schedules the next monitoring poll 30 seconds after the last read finishes and supports retry. Forms own their drafts. A 401 from an authenticated API returns the operator to sign-in.
 - Preserve a successful zero. A null value is shown as “Not reported” or “Unavailable”, never as 0. Numbers use thousands separators and size-appropriate decimals (`web/src/format.ts`). Every time on the desk is browser-local with its zone label (for example `07:21:49 GMT+7`); the page eyebrow states the zone. The only UTC reference is the PnL day boundary, which is labelled as such.
 - Each pipeline row opens by keyboard or touch to expose the stage’s timestamp, freshness and counts. Unpublished values remain explicit. HALT stays visible in the header across all pages.
@@ -30,7 +31,7 @@ Space Grotesk sets headings and large figures, Inter carries body text, and JetB
 
 The live-stream badge collapses to its dot on phones; its label stays available to screen readers. Interactive header controls have 44px touch targets. The bell summarizes the current worker state. A sticky HALT strip remains visible while the operator scrolls. The scanner dial shows the number of AI outputs. Its fixed outline has no percentage scale.
 
-Above 900px, navigation stays in a persistent left rail. At 900px and below, five bottom links retain their labels and an active-page marker. At 650px and below, KPIs use two columns and monitoring panels use one. On phones the screener table turns into one labelled card per symbol, so nothing scrolls sideways. The bottom inset reserves space for the mobile browser’s safe area.
+Above 900px, navigation stays in a persistent left rail. At 900px and below, five bottom links retain their labels and an active-page marker. At 650px and below, KPIs use two columns and monitoring panels use one. On phones every `data-table` (screener, forward test) turns into one labelled card per row, signal metrics and settings rows stack, and section tabs wrap, so nothing scrolls sideways at 360px. The bottom inset reserves space for the mobile browser’s safe area.
 
 ## Review captures
 
