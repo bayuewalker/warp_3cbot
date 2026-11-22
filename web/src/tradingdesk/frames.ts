@@ -10,6 +10,8 @@ export function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+export const MAX_CLOCK_SKEW_MS = 5000;
+
 export function instant(value: unknown): number | null {
   if (typeof value !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/.test(value)) return null;
   const date = value.slice(0, 10);
@@ -19,10 +21,15 @@ export function instant(value: unknown): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
+export function sourceInstant(value: unknown, now: number): number | null {
+  const time = instant(value);
+  return time !== null && time <= now + MAX_CLOCK_SKEW_MS ? time : null;
+}
+
 // Python producers emit microseconds. Preserve sub-millisecond ordering at equal JS millisecond times.
 function order(value: unknown, now: number) {
-  const ms = instant(value);
-  if (ms === null || ms > now) return null;
+  const ms = sourceInstant(value, now);
+  if (ms === null) return null;
   const fraction = /\.(\d+)/.exec(String(value))?.[1] ?? "";
   return ms * 1000 + Number(fraction.padEnd(6, "0").slice(3, 6));
 }

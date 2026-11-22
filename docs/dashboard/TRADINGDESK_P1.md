@@ -6,8 +6,8 @@ Base: `4a34e15105ef0ca077d241e32242da5c5a2cdd67`, the merge of PR #19. Open **Ov
 
 | Display | Source and calculation | Source clock, validity and failure |
 | --- | --- | --- |
-| Equity | Worker status, `equity` from the last decision. The API sends a decimal string. | Decision mark time is absent. A numeric value has unknown freshness even when the worker just published. Missing or malformed is unavailable. |
-| Today's PnL | Derived in the worker, `pnl_today` is the difference between the latest and earliest reliable equity marks for the current UTC day. | Individual mark times are absent. A reported decimal zero survives. No reliable marks yields null. |
+| Equity | Worker status, `equity` from the last decision. The API sends a decimal string. | Decision mark time is absent. A current worker publication leaves mark freshness unknown. A stale publication marks the retained equity stale. Missing or malformed is unavailable. |
+| Today's PnL | Derived in the worker, `pnl_today` is the difference between the latest and earliest reliable equity marks for the current UTC day. | Individual mark times are absent. Daily PnL uses the same publication staleness rule as equity. A reported decimal zero survives. No reliable marks yields null. |
 | Active WARP bots | Count of journal bots with status `confirmed` or `active` in `/api/warp-bots`. | No inventory source time. A validated empty list confirms zero for that read. Malformed statuses invalidate the count. |
 | Open positions | Length of `/api/positions.positions`, the existing SmartTrade-only KPI. The separate account book includes DCA/grid positions. | Successful strategy read `as_of`, 300 s. Errors can advance the attempt time. Failed, expired or unstamped reads hide the exact count. |
 | Discovery and analyst output counts | `status.pipeline.screening.count` is the worker universe size. `analysis.count` counts current cards. | Worker publication time describes the projection only. Individual scan/model completion times are absent. |
@@ -15,6 +15,8 @@ Base: `4a34e15105ef0ca077d241e32242da5c5a2cdd67`, the merge of PR #19. Open **Ov
 | Account balances, holdings and position details | `/api/accounts` supplies profile balances. `/api/account-positions` supplies combined rows, broker values, optional Binance marks and labelled derived PnL. | 30 s balance cadence × 3, 60 s book cadence × 2.5. A failed account attempt cannot establish current balances. P0A preserves unassigned rows, last-good figures, partial errors and unknown residuals. |
 | Opportunity levels and score | `/api/opportunities.cards` contains closed-candle evidence, analyst output and deterministic levels. The rubric score is separate from price and PnL. | Per-card model and evidence clocks are independent. The worker supplies its freshness verdict. |
 | Budget, presets, forward results, configuration | Existing worker/journal projections. | Several routes have no producer timestamp. Their receipt labels explicitly identify the browser. No producer freshness is inferred. |
+
+Equity and daily PnL keep a null source time. When the worker publication is at most 900 seconds old, reported values carry `source_time_unavailable` and unknown freshness. A missing or invalid publication time, or a publication older than 900 seconds, marks retained values stale.
 
 ## Six role observations
 
@@ -24,7 +26,7 @@ Base: `4a34e15105ef0ca077d241e32242da5c5a2cdd67`, the merge of PR #19. Open **Ov
 | ANALYST | `status.pipeline.analysis.state` | Ready or pending in the worker projection. No running inference from a retained card. |
 | AEGIS | Authoritative HALT overlay, then `status.pipeline.risk` | HALT takes precedence over the projected pass/blocked verdict. The reason stays attached. |
 | EXECUTOR | Server mode and `execution_permitted` | OBSERVE is explicit. In other modes the permission describes a gate, never a submission or fill. |
-| PORTFOLIO | Independent account and combined-position reads | Both reads must succeed before the portfolio is confirmed. Expire each using its own TTL. The combined source time is the older of the two known clocks. Partial/retained evidence cannot confirm zero. |
+| PORTFOLIO | Independent account and combined-position reads | The portfolio shows loading with a null value while either read awaits its first response. Both reads must succeed before the portfolio is confirmed. Expire each using its own TTL. The combined source time is the older of the two known clocks. Partial/retained evidence cannot confirm zero. |
 | WATCHER | `/api/events` snapshot and latest emitted event | Event feed observation, with a 60 s snapshot TTL. Display a trace ID only if the producer supplies one. An empty feed says nothing about broker health. |
 
 The four status-based roles use the shell's existing 900 s worker-publication threshold. Stage-specific activity timestamps are unavailable. Source times and receipt times render in the browser's local zone. Unsupported clocks remain unknown.
@@ -32,6 +34,7 @@ The four status-based roles use the shell's existing 900 s worker-publication th
 ## Transport and failure handling
 
 - A monitoring hook starts one shared session-authenticated EventSource. An authenticated hello or heartbeat establishes connectivity. Disconnection activates REST fallback at five seconds after completion of the previous read. Reconnect uses the existing exponential backoff. Editable forms continue to use HTTP.
+- Source and publication clocks tolerate up to 5,000 ms of forward skew relative to the browser. Accepted future stamps have zero age for TTL checks and retain their order. Clocks farther ahead are invalid for freshness and frame ordering.
 - Compare worker snapshot envelopes on their publication clock. Compare clocked route data on its route-specific clock. Preserve the last accepted evidence watermark when a fresh failure reports older retained positions or prices. Duplicates preserve the original accepted receipt. Microsecond ordering is retained for Python-produced timestamps.
 - Dedicated events lack a global event ID and publication time. Untimed or equal-time changed frames use delivery order when sequence cannot be proven. HALT overlays with the same worker stamp remain observable. Browser time never orders upstream observations.
 - Receipt is the instant the browser first accepted that distinct payload. Repeated frames, an open socket and heartbeats do not advance source age. Session expiration closes the stream, clears route cache and returns the operator to sign-in.
@@ -43,7 +46,7 @@ The four status-based roles use the shell's existing 900 s worker-publication th
 | --- | --- |
 | Baseline / P1 Python | 148 tests passed at both revisions. |
 | Static checks and build | Ruff repository-wide, clean npm install, TypeScript and Vite build passed. |
-| Frontend unit tests | 17 passed, including null, decimal zero, absent/future/invalid timestamps, independent portfolio TTLs, authorization loss, duplicate and out-of-order frames, and equal-time gate changes. |
+| Frontend unit tests | 22 passed. The five audit regressions cover stale worker publications, the inclusive five-second skew boundary, rejection beyond that boundary, ordering of slightly advanced frames, and portfolio loading while either read is pending. |
 | Authenticated Chromium | The account-read suite and the P1 transport suite passed. The latter exercises all ten disclosure rows, malformed and partial books, a timed REST fallback, reconnection, restored SSE updates and HTTP 401. |
 | Responsive Chromium | Nine views × two languages × seven widths. 108/126 fit. All 18 cases at 320 px reproduce the baseline's 28 px document overflow. Zero uncaught page errors. The shared-shell fix belongs to P2. |
 
@@ -56,8 +59,8 @@ Reproduce from the root with the project installed, Python Playwright and Chromi
 
 ```sh
 PYTHONPATH=src python -m unittest discover -s tests
-ruff check .
-(cd web && npm ci && npx tsc --noEmit && npx vite build && node --test *.test.ts)
+uvx ruff check .
+(cd web && npm ci && npx tsc --noEmit && npx vite build && npm test)
 python web/qa/account_reads.py
 python web/qa/telemetry.py
 python web/qa/account_reads.py --layout /tmp/warp-p1-layout

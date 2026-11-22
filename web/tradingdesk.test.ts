@@ -117,3 +117,72 @@ test("a valid position book cannot confirm failed balances; the two TTLs expire 
   assert.equal(delayed.state, "stale");
   assert.equal(portfolio(read(null, "unauthorized")).value, null);
 });
+
+function readsAt(time: number) {
+  const at = new Date(time).toISOString();
+  return { ...base,
+    status: read({ published_at: at, equity: "18.25", pnl_today: "-0.50", pipeline: { screening: { state: "ready" } } }),
+    accounts: read({ accounts: [], as_of: at }), book: read({ positions: [], errors: [], as_of: at }),
+    positions: read({ positions: [], as_of: at }), events: read({ events: [], as_of: at }),
+  };
+}
+
+test("equity and PnL preserve untimed values when their worker publication expires", () => {
+  for (const at of [new Date(now - 7_200_000).toISOString(), null, "invalid", new Date(now + 60_000).toISOString()]) {
+    const { metrics } = overviewTelemetry({ ...base, status: read({ published_at: at, equity: "18.25", pnl_today: "-0.50" }) }, now);
+    for (const metric of [metrics.equity, metrics.pnl]) {
+      assert.equal(metric.state, "stale");
+      assert.equal(metric.sourceAt, null);
+    }
+    assert.equal(metrics.equity.value, "18.25");
+    assert.equal(metrics.pnl.value, "-0.50");
+  }
+  for (const metric of [overviewTelemetry(base, now).metrics.equity, overviewTelemetry(readsAt(now - 900_000), now).metrics.pnl]) {
+    assert.equal(metric.reason, "source_time_unavailable");
+    assert.equal(metric.freshness, "unknown");
+  }
+});
+
+test("small forward clock skew permits confirmed empty reads and a fresh projection", () => {
+  for (const offset of [2_000, 5_000]) {
+    const { metrics, agents } = overviewTelemetry(readsAt(now + offset), now);
+    assert.equal(metrics.open.value, 0);
+    for (const observation of [metrics.open, agents.PORTFOLIO, agents.WATCHER]) {
+      assert.equal(observation.state, "confirmed_empty");
+      assert.equal(observation.freshness, "fresh");
+    }
+    assert.equal(agents.SCAN.freshness, "fresh");
+    assert.equal(metrics.equity.freshness, "unknown");
+  }
+});
+
+test("source clocks beyond the skew allowance remain unknown", () => {
+  for (const offset of [5_001, 60_000]) {
+    const { metrics, agents } = overviewTelemetry(readsAt(now + offset), now);
+    for (const observation of [metrics.open, agents.PORTFOLIO, agents.WATCHER, agents.SCAN]) {
+      assert.equal(observation.sourceAt, null);
+      assert.equal(observation.freshness, "unknown");
+    }
+    assert.equal(metrics.open.value, null);
+  }
+});
+
+test("slightly advanced evidence and publication clocks order frames independently", () => {
+  const earlier = new Date(now + 1_000).toISOString();
+  const later = new Date(now + 2_000).toISOString();
+  const path = "/api/positions";
+  const first = acceptFrame(undefined, path, { as_of: earlier }, now, earlier);
+  const latest = acceptFrame(first, path, { as_of: later }, now, later);
+  assert.deepEqual(latest.data, { as_of: later });
+  assert.equal(acceptFrame(latest, path, { as_of: earlier }, now, later), latest);
+  assert.equal(acceptFrame(latest, path, { as_of: later, positions: [] }, now, earlier), latest);
+});
+
+test("portfolio is loading while either broker read awaits its first response", () => {
+  for (const reads of [{ ...base, accounts: read(null) }, { ...base, book: read(null) }]) {
+    const { PORTFOLIO } = overviewTelemetry(reads, now).agents;
+    assert.equal(PORTFOLIO.state, "loading");
+    assert.equal(PORTFOLIO.value, null);
+  }
+  assert.equal(overviewTelemetry({ ...base, accounts: read(null), book: read(null, "unauthorized") }, now).agents.PORTFOLIO.state, "unauthorized");
+});
