@@ -3,6 +3,8 @@ import {
   ChevronRight,
   Bot,
   Boxes,
+  CandlestickChart,
+  ScrollText,
   CircleDollarSign,
   Cpu,
   Crosshair,
@@ -15,7 +17,7 @@ import {
 import { useState } from "react";
 import { api, type Status, type Position, type WarpBot } from "./api";
 import { t, type Lang, type Key } from "./i18n";
-import { Badge, Button, Card, Field, Loading, Problem, inputClass } from "./ui";
+import { Badge, Button, Card, CardHead, Field, Loading, Problem, inputClass } from "./ui";
 import { Age } from "./age";
 import { useLoad } from "./snapshot";
 import { fmtMoney, fmtNumber, fmtPct, fmtPrice, fmtTime, sourceLabel } from "./format";
@@ -33,10 +35,10 @@ export function stateLabel(lang: Lang, state?: string) {
   };
   return state ? (labels[state] ? t(lang, labels[state]) : state.replaceAll("_", " ")) : "—";
 }
-export function Providers({ lang, data }: { lang: Lang; data?: Status | null }) {
+export function Providers({ lang, data, heading = true }: { lang: Lang; data?: Status | null; heading?: boolean }) {
   return (
     <div className="providers">
-      <h3>{t(lang, "providers")}</h3>
+      {heading ? <h3>{t(lang, "providers")}</h3> : null}
       {data?.providers && Object.keys(data.providers).length ? (
         Object.entries(data.providers).map(([key, provider]) => (
           <div className="provider" key={key}>
@@ -421,10 +423,11 @@ function PriceTape({ lang }: { lang: Lang }) {
   const symbols = Object.entries(row?.symbols || {});
   return (
     <Card>
-      <div className="panel-heading">
-        <h2 className="panel-title">{t(lang, "priceTape")}</h2>
-        <Age at={row?.as_of} limit={row?.limit_seconds || 30} lang={lang} reason={row?.error} />
-      </div>
+      <CardHead
+        icon={CandlestickChart}
+        title={t(lang, "priceTape")}
+        help={<Age at={row?.as_of} limit={row?.limit_seconds || 30} lang={lang} reason={row?.error} />}
+      />
       {loaded.error ? <Problem lang={lang} retry={loaded.reload} /> : null}
       {symbols.length ? (
         <div className="tape">
@@ -456,10 +459,11 @@ function EventLog({ lang }: { lang: Lang }) {
   const events = loaded.data?.events || [];
   return (
     <Card>
-      <div className="panel-heading">
-        <h2 className="panel-title">{t(lang, "events")}</h2>
-        <Age at={loaded.data?.as_of} limit={60} lang={lang} />
-      </div>
+      <CardHead
+        icon={ScrollText}
+        title={t(lang, "events")}
+        help={<Age at={loaded.data?.as_of} limit={60} lang={lang} />}
+      />
       {events.length ? (
         <ul className="event-log">
           {events.slice(-8).map((row, index) => (
