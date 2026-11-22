@@ -31,6 +31,7 @@ const REASONS: Record<string, Key> = {
   quote_unavailable: "rQuoteUsdt",
   reserves_unknown: "rReserves",
   not_loaded: "awaitingWorker",
+  strategies_stale: "rStrategiesStale",
 };
 
 function humanReason(reason: string | null | undefined, lang: Lang): string {
@@ -316,6 +317,7 @@ function OpenPositions({
       />
       {failed ? <Problem lang={lang} retry={retry} /> : null}
       {!book && !failed ? <Loading lang={lang} /> : null}
+      {book?.stale ? <Note tone="bad">{t(lang, "strategiesStale")}</Note> : null}
       {book?.errors?.length ? (
         <Note tone="warn">
           {t(lang, "partialRead")} {book.errors.join(" · ")}
@@ -347,6 +349,7 @@ function OpenPositions({
                     <Badge tone={row.owner === "warp" ? "info" : "neutral"}>
                       {row.owner === "warp" ? t(lang, "ownerWarp") : t(lang, "ownerExternal")}
                     </Badge>
+                    {row.stale ? <Badge tone="warn">{t(lang, "staleRow")}</Badge> : null}
                     {row.side ? (
                       <Badge tone={row.side === "long" ? "good" : "bad"}>
                         {row.side === "long" ? t(lang, "sideLong") : t(lang, "sideShort")}

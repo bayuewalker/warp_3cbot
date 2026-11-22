@@ -111,6 +111,8 @@ class Engine:
         self.position_book: dict | None = None
         self.position_book_error: str | None = None
         self.position_book_due = 0.0
+        self.positions_ok_at: str | None = None
+        self._book_strategy_error: str | None = None
         self.last_decision = None
         self.last_opportunities: list[dict] = []
         self.last_accounts: list = []
@@ -904,12 +906,14 @@ class Engine:
         try:
             self.last_positions = self.broker.get_live()
             self.positions_at = datetime.now(timezone.utc).isoformat()
+            self.positions_ok_at = self.positions_at
             self.positions_error = None
         except IntegrationError as exc:
             self.positions_error = str(exc)[:200]
             self.positions_at = datetime.now(timezone.utc).isoformat()
         self.non_warp_future_so = self._read_non_warp_future_so()
-        self.refresh_position_book()
+        # A change in the SmartTrade read state rebuilds the book now, so a failure is not hidden for a cycle.
+        self.refresh_position_book(force=self.positions_error != self._book_strategy_error)
 
     def refresh_position_book(self, *, force: bool = False) -> None:
         """GET open positions for every bot on each account, at most once per POSITIONS_SECONDS."""
@@ -929,9 +933,17 @@ class Engine:
             except Exception:
                 return False
 
+        strategy_error = self.positions_error
+        self._book_strategy_error = strategy_error
         try:
-            self.position_book = collect(self.broker, strategies=self.last_positions, warp_client=is_warp)
-            self.position_book_error = None
+            self.position_book = collect(
+                self.broker,
+                strategies=self.last_positions,
+                warp_client=is_warp,
+                strategies_as_of=self.positions_ok_at,
+                strategy_error=strategy_error,
+            )
+            self.position_book_error = "strategies_stale" if strategy_error else None
         except IntegrationError as exc:
             self.position_book_error = str(exc)[:200]
 

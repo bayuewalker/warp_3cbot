@@ -158,13 +158,51 @@ def parse_position(row: dict, *, bot: dict | None, kind: str, owner: str | None 
     }
 
 
+def _strategy_symbols(row: dict) -> tuple[str | None, str | None]:
+    """SmartTrade schema: pairSymbols.base is the traded asset, pairSymbols.quote the quote (see risk.pair_symbols)."""
+    symbols = row.get("pairSymbols")
+    if not isinstance(symbols, dict):
+        exchange = row.get("exchange") if isinstance(row.get("exchange"), dict) else {}
+        symbols = exchange.get("pairSymbols") if isinstance(exchange.get("pairSymbols"), dict) else {}
+    return _str(symbols.get("base")), _str(symbols.get("quote"))
+
+
+def parse_strategy(row: dict, *, owner: str, stale: bool = False) -> dict:
+    """One SmartTrade from /open_api/strategies/live. Numeric fields match the cabinet rows;
+    the symbol mapping does not, so it is read separately."""
+    parsed = parse_position(row, bot=None, kind="strategy", owner=owner)
+    base, quote = _strategy_symbols(row)
+    raw_pair = _str(row.get("pair"))
+    if raw_pair and "/" in raw_pair and not (base and quote):
+        base, quote = raw_pair.split("/", 1)
+    symbol = raw_pair.replace("/", "") if raw_pair else (f"{base}{quote}" if base and quote else None)
+    parsed.update(
+        {
+            "base_asset": base,
+            "quote_asset": quote,
+            "pair": f"{base}/{quote}" if base and quote else raw_pair,
+            "symbol": symbol,
+            "bot_name": _str(row.get("name")) or _str(row.get("clientId")),
+            "stale": stale,
+        }
+    )
+    return parsed
+
+
 def _bot_positions(raw: object) -> list[dict]:
     if not isinstance(raw, dict) or not isinstance(raw.get("rows"), list):
         raise IntegrationError("Unrecognized positions response", uncertain=True)
     return [row for row in raw["rows"] if isinstance(row, dict)]
 
 
-def collect(broker, *, strategies: list[dict] | None = None, warp_client=None) -> dict:
+def collect(
+    broker,
+    *,
+    strategies: list[dict] | None = None,
+    warp_client=None,
+    strategies_as_of: str | None = None,
+    strategy_error: str | None = None,
+) -> dict:
     """GET every bot list, then GET positions for bots that report open positions."""
     rows: list[dict] = []
     errors: list[str] = []
@@ -194,18 +232,26 @@ def collect(broker, *, strategies: list[dict] | None = None, warp_client=None) -
                 errors.append(f"{kind} {bot.get('name') or bot['code']}: {str(exc)[:120]}")
                 continue
             rows.extend(parse_position(row, bot=bot, kind=kind) for row in found)
+    stale = strategy_error is not None
+    if stale:
+        errors.append(f"strategies: {str(strategy_error)[:120]}")
     for row in strategies or []:
         if not isinstance(row, dict):
             continue
         client = _str(row.get("clientId"))
         owner = "warp" if client and warp_client is not None and warp_client(client) else "external"
-        rows.append(parse_position(row, bot=None, kind="strategy", owner=owner))
+        rows.append(parse_strategy(row, owner=owner, stale=stale))
+    as_of = datetime.now(timezone.utc).isoformat()
+    # Retained SmartTrades are only as fresh as the last read that succeeded.
+    if stale and strategies and strategies_as_of:
+        as_of = min(as_of, _iso(strategies_as_of) or as_of)
     return {
         "rows": rows,
         "errors": errors,
         "bots_checked": checked,
         "position_reads": reads,
-        "as_of": datetime.now(timezone.utc).isoformat(),
+        "as_of": as_of,
+        "stale": stale,
     }
 
 
@@ -238,6 +284,7 @@ def positions_view(book: dict | None, *, prices: dict, prices_fresh: bool, error
             "as_of": None,
             "error": error or "not_loaded",
             "errors": [],
+            "stale": False,
             "cadence_seconds": POSITIONS_SECONDS,
             "readonly": True,
         }
@@ -253,6 +300,7 @@ def positions_view(book: dict | None, *, prices: dict, prices_fresh: bool, error
         "error": error,
         "errors": list(book.get("errors") or []),
         "bots_checked": book.get("bots_checked"),
+        "stale": bool(book.get("stale")),
         "cadence_seconds": POSITIONS_SECONDS,
         "readonly": True,
     }

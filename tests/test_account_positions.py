@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 
 from warp3c.book import MAX_POSITION_READS, collect, parse_position, positions_view
 from warp3c.threecommas import IntegrationError
@@ -198,6 +199,74 @@ class ViewTests(unittest.TestCase):
         self.assertEqual(view["error"], "not_loaded")
         self.assertIsNone(view["as_of"])
         self.assertTrue(view["readonly"])
+
+
+class StrategyTests(unittest.TestCase):
+    def test_smarttrade_uses_the_strategy_symbol_schema(self):
+        from test_core import strategy
+
+        book = collect(Broker([]), strategies=[strategy("SOLUSDT")], warp_client=lambda client: True)
+        row = book["rows"][0]
+        self.assertEqual(row["kind"], "strategy")
+        self.assertEqual((row["base_asset"], row["quote_asset"]), ("SOL", "USDT"))
+        self.assertEqual(row["pair"], "SOL/USDT")
+        self.assertEqual(row["symbol"], "SOLUSDT")
+        # Size is in the traded asset, cost in the quote currency.
+        self.assertEqual(row["size"], "0.01")
+        self.assertEqual(row["cost"], "20")
+        self.assertEqual(row["owner"], "warp")
+        self.assertFalse(row["stale"])
+        view = positions_view(book, prices={"SOLUSDT": {"last": "150"}}, prices_fresh=True)
+        self.assertEqual(view["positions"][0]["current_price_source"], "3commas")
+
+    def test_failed_strategy_read_keeps_the_old_timestamp_and_reports_the_error(self):
+        from test_core import strategy
+        from test_failures import Markets, Research
+
+        from warp3c.config import Settings
+        from warp3c.engine import Engine
+        from warp3c.operator import _account_positions_view
+        from warp3c.state import OrderJournal
+
+        class Live(Broker):
+            fail_live = False
+
+            def list_accounts(self):
+                return []
+
+            def get_live(self):
+                self.calls.append(("GET", "strategies/live"))
+                if self.fail_live:
+                    raise IntegrationError("3Commas GET /open_api/strategies/live failed with HTTP 500")
+                return [strategy("SOLUSDT")]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Settings(db_path=os.path.join(tmp, "warp.db"), api_key="k", api_secret="s")
+            journal = OrderJournal(cfg.db_path)
+            try:
+                broker = Live([])
+                engine = Engine(cfg, broker, Research(), journal, Markets())
+                engine.refresh_readonly()
+                first = engine.position_book
+                self.assertIsNone(engine.position_book_error)
+                self.assertFalse(first["stale"])
+                ok_at = engine.positions_ok_at
+                broker.fail_live = True
+                engine.refresh_readonly()  # inside the 60s cadence; the state change forces a rebuild
+                book = engine.position_book
+                self.assertIsNot(book, first)
+                self.assertTrue(book["stale"])
+                self.assertTrue(any(error.startswith("strategies:") for error in book["errors"]))
+                self.assertLessEqual(book["as_of"], first["as_of"])
+                self.assertEqual(book["as_of"], datetime.fromisoformat(ok_at).astimezone(timezone.utc).isoformat())
+                self.assertTrue(book["rows"][0]["stale"])
+                view = _account_positions_view(engine)
+                self.assertEqual(view["error"], "strategies_stale")
+                self.assertTrue(view["stale"])
+                self.assertEqual(view["as_of"], book["as_of"])
+                self.assertTrue(all(method == "GET" for method, _ in broker.calls))
+            finally:
+                journal.close()
 
 
 class MarkTests(unittest.TestCase):

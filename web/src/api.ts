@@ -174,6 +174,7 @@ export type AccountPosition = {
   take_profits: string[];
   stop_price: string | null;
   opened_at: string | null;
+  stale?: boolean;
 };
 
 export type AccountPositionsPayload = {
@@ -183,6 +184,7 @@ export type AccountPositionsPayload = {
   error: string | null;
   errors: string[];
   bots_checked?: number | null;
+  stale?: boolean;
   cadence_seconds: number;
   readonly: boolean;
 };
