@@ -2,6 +2,7 @@ export type Lang = "en" | "id";
 
 const copy = {
   en: {
+    rankedSetups: "Ranked setups",
     statusAlerts: "Status alerts",
     noDeskAlerts: "No current alerts from the worker.",
     gateBlocked: "New entries blocked",
@@ -282,6 +283,7 @@ const copy = {
     rReserves: "Reserves held by other bots are not known yet.",
   },
   id: {
+    rankedSetups: "Setup terperingkat",
     statusAlerts: "Peringatan status",
     noDeskAlerts: "Tidak ada peringatan dari worker saat ini.",
     gateBlocked: "Entri baru diblokir",
@@ -567,4 +569,41 @@ export type Key = keyof typeof copy.en;
 
 export function t(lang: Lang, key: Key): string {
   return copy[lang][key];
+}
+
+const ruleLabels: Record<string, readonly [string, string]> = {
+  sleeve_usdt: ["Account budget (USDT)", "Anggaran akun (USDT)"],
+  sleeve_pct: ["Account budget fraction", "Fraksi anggaran akun"],
+  allocation_ceiling: ["Maximum allocation", "Alokasi maksimum"],
+  reserve_floor: ["Minimum reserve", "Cadangan minimum"],
+  per_deal_ceiling: ["Maximum allocation per deal", "Alokasi maksimum per transaksi"],
+  max_deals: ["Maximum open deals", "Maksimum transaksi terbuka"],
+  deal_stop_risk: ["Stop risk per deal", "Risiko stop per transaksi"],
+  aggregate_stop_risk: ["Combined stop risk", "Total risiko stop"],
+  daily_loss_halt: ["Daily loss halt threshold", "Ambang henti rugi harian"],
+  drawdown_halt: ["Drawdown halt threshold", "Ambang henti drawdown"],
+  stop_slippage: ["Stop slippage", "Slippage saat stop"],
+  virtual_drop: ["Assumed drop without a stop", "Asumsi penurunan tanpa stop"],
+  stress_shock: ["Stress test price drop", "Penurunan harga saat uji stres"],
+  stress_slippage: ["Stress test slippage", "Slippage saat uji stres"],
+  stress_cap: ["Stress loss limit", "Batas kerugian uji stres"],
+  corr_min: ["Correlation threshold", "Ambang korelasi"],
+  max_alts: ["Maximum altcoin positions", "Maksimum posisi altcoin"],
+  min_score: ["Minimum score", "Skor minimum"],
+  tp_min: ["Minimum take profit", "Take profit minimum"],
+  tp_fee_multiple: ["Take profit fee multiple", "Kelipatan biaya untuk take profit"],
+  min_quote_volume: ["Minimum quote volume (USDT)", "Volume kuotasi minimum (USDT)"],
+  max_spread: ["Maximum spread", "Spread maksimum"],
+  max_surge: ["Maximum price surge", "Lonjakan harga maksimum"],
+  cooldown_stop_hours: ["Cooldown after stop (hours)", "Jeda setelah stop (jam)"],
+  cooldown_tp_hours: ["Cooldown after take profit (hours)", "Jeda setelah take profit (jam)"],
+  streak_pause_hours: ["Pause after consecutive stops (hours)", "Jeda setelah stop beruntun (jam)"],
+  stop_streak: ["Consecutive stops before pause", "Jumlah stop beruntun sebelum jeda"],
+  review_days: ["Review period (days)", "Periode evaluasi (hari)"],
+  paper_min_days: ["Minimum paper trading days", "Minimum hari paper trading"],
+  paper_min_deals: ["Minimum paper trades", "Minimum transaksi paper"],
+};
+
+export function settingLabel(lang: Lang, key: string): string {
+  return ruleLabels[key]?.[lang === "en" ? 0 : 1] ?? key.replaceAll("_", " ").replace(/^./, c => c.toUpperCase());
 }

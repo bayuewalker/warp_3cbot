@@ -1,3 +1,4 @@
+import { Activity, Bot, ClipboardCheck, FlaskConical, ShieldCheck, Wallet, WalletCards } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import {
   api,
@@ -7,11 +8,11 @@ import {
   type WarpBot,
   type Status,
 } from "./api";
-import { Key, Lang, t } from "./i18n";
+import { Key, Lang, settingLabel, t } from "./i18n";
 import { Age } from "./age";
 import { useLoad } from "./snapshot";
 import { fmtMoney, fmtQty } from "./format";
-import { Badge, Button, Card, Field, Loading, Problem, inputClass } from "./ui";
+import { Badge, Button, Card, DeskSummary, Field, Loading, PanelTitle, Problem, inputClass } from "./ui";
 
 const REASONS: Record<string, Key> = {
   paper_requires_demo: "rPaperDemo",
@@ -73,22 +74,22 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
 
   return (
     <div className="space-y-3">
+      <DeskSummary
+        icon={WalletCards}
+        title={t(lang, "accountMark")}
+        value={rows?.find((account) => account.code === selected)?.name || selected || t(lang, "unknown")}
+        action={<Button variant="outline" size="sm" type="button" onClick={loaded.reload}>{t(lang, "refresh")}</Button>}
+      >
+        <Age
+          at={loaded.data?.as_of}
+          limit={90}
+          lang={lang}
+          reason={loaded.data?.error || (rows ? null : t(lang, "noAccounts"))}
+        />
+      </DeskSummary>
       <Card>
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="font-semibold">{t(lang, "accounts")}</h2>
-          <Button variant="outline" size="sm" type="button" onClick={loaded.reload}>
-            {t(lang, "refresh")}
-          </Button>
-        </div>
-        <p className="mt-2 text-xs text-zinc-500">{t(lang, "accountHelp")}</p>
-        <p className="panel-note">
-          <Age
-            at={loaded.data?.as_of}
-            limit={90}
-            lang={lang}
-            reason={loaded.data?.error || (rows ? null : t(lang, "noAccounts"))}
-          />
-        </p>
+        <PanelTitle icon={WalletCards}>{t(lang, "accounts")}</PanelTitle>
+        <p className="panel-note">{t(lang, "accountHelp")}</p>
         <p className="panel-note">
           {t(lang, "sleeve")}{" "}
           <b>
@@ -101,9 +102,7 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
       {loaded.error ? <Problem lang={lang} retry={loaded.reload} /> : null}
       {!rows && !loaded.error && <Loading lang={lang} />}
       {rows && rows.length === 0 ? (
-        <Card>
-          <p className="text-sm text-zinc-400">{t(lang, "noAccounts")}</p>
-        </Card>
+        <p className="desk-empty">{t(lang, "noAccounts")}</p>
       ) : null}
       {rows?.map((row) => {
         const unavailable = row.total == null && row.free == null && row.used == null;
@@ -234,7 +233,7 @@ export function BudgetForm({ lang, code }: { lang: Lang; code: string }) {
 
   return (
     <Card>
-      <h2 className="font-semibold">{t(lang, "budget")}</h2>
+      <PanelTitle icon={Wallet}>{t(lang, "budget")}</PanelTitle>
       {!budget.error && view ? (
         <p className="mt-2 text-sm text-zinc-300">
           {t(lang, "budgetUsed")} <b>{fmtMoney(view.used, lang) ?? t(lang, "unknown")}</b> · {t(lang, "budgetLeft")}{" "}
@@ -347,10 +346,9 @@ export function WarpBotsPanel({ lang, status }: { lang: Lang; status: Status | n
 
   return (
     <div className="space-y-3">
-      <Card>
-        <h2 className="font-semibold">{t(lang, "warpBots")}</h2>
-        <p className="mt-2 text-xs text-zinc-500">{t(lang, "ownedOnly")}</p>
-      </Card>
+      <DeskSummary icon={Bot} title={t(lang, "warpBots")} value={list.error ? t(lang, "unavailable") : bots?.length ?? "—"}>
+        {t(lang, "ownedOnly")}
+      </DeskSummary>
       {list.error && <Problem lang={lang} retry={list.reload} />}
       {accounts.error && <Problem lang={lang} retry={accounts.reload} />}
       {!bots && !list.error && <Loading lang={lang} />}
@@ -371,9 +369,7 @@ export function WarpBotsPanel({ lang, status }: { lang: Lang; status: Status | n
         </div>
       )}
       {bots && bots.length === 0 ? (
-        <Card>
-          <p className="text-sm text-zinc-400">{t(lang, "noWarpBots")}</p>
-        </Card>
+        <p className="desk-empty">{t(lang, "noWarpBots")}</p>
       ) : null}
       {bots?.map((bot) => (
         <Card key={bot.warp_id}>
@@ -478,7 +474,7 @@ export function ForwardPanel({ lang }: { lang: Lang }) {
   const empty = stats.scored === 0;
   return (
     <Card>
-      <h2 className="font-semibold">{t(lang, "forward")}</h2>
+      <PanelTitle icon={Activity}>{t(lang, "forward")}</PanelTitle>
       <p className="mt-2 text-xs text-zinc-500">{t(lang, "forwardHelp")}</p>
       <p className="mt-2 text-xs text-zinc-500">{stats.hit_rule}</p>
       {empty ? <p className="mt-3 text-sm text-zinc-400">{t(lang, "noForward")}</p> : null}
@@ -487,7 +483,7 @@ export function ForwardPanel({ lang }: { lang: Lang }) {
       </p>
       <div className="mt-3 space-y-3">
         {Object.entries(stats.by_verdict).map(([verdict, horizons]) => (
-          <div key={verdict} className="rounded-xl bg-black/20 p-3">
+          <div key={verdict} className="desk-record">
             <p className="font-medium">{verdict}</p>
             {stats.horizons.map((label) => {
               const row = horizons[label];
@@ -538,7 +534,7 @@ export function RulesPage({ lang }: { lang: Lang }) {
   return (
     <div className="form-grid">
       <Card>
-        <h2 className="font-semibold">{t(lang, "decisions")}</h2>
+        <PanelTitle icon={ClipboardCheck}>{t(lang, "decisions")}</PanelTitle>
         {cycle.error ? (
           <Problem lang={lang} retry={cycle.reload} />
         ) : !decisions ? (
@@ -548,7 +544,7 @@ export function RulesPage({ lang }: { lang: Lang }) {
         ) : null}
         {!cycle.error &&
           decisions?.map((row) => (
-            <div key={row.symbol} className="mt-3 rounded-xl bg-black/20 p-3">
+            <div key={row.symbol} className="desk-record mt-3">
               <div className="flex items-center justify-between gap-2">
                 <p className="font-medium">{row.symbol}</p>
                 <Badge
@@ -564,14 +560,14 @@ export function RulesPage({ lang }: { lang: Lang }) {
           ))}
       </Card>
       <Card>
-        <h2 className="font-semibold">{t(lang, "rules")}</h2>
+        <PanelTitle icon={ShieldCheck}>{t(lang, "rules")}</PanelTitle>
         <p className="mt-2 text-xs text-zinc-500">{t(lang, "rulesHelp")}</p>
         {rules.error || rules.data?.error ? (
           <Problem lang={lang} retry={rules.reload} />
         ) : values ? (
-          <form className="mt-4 space-y-3" onSubmit={save}>
+          <form className="rules-fields" onSubmit={save}>
             {Object.entries(values).map(([key, value]) => (
-              <Field key={key} label={key}>
+              <Field key={key} label={settingLabel(lang, key)}>
                 <input
                   className={inputClass}
                   value={String(value)}
@@ -623,7 +619,7 @@ export function PaperCheck({ lang, enabled }: { lang: Lang; enabled: boolean }) 
 
   return (
     <Card>
-      <h2 className="font-semibold">{t(lang, "paperCheck")}</h2>
+      <PanelTitle icon={FlaskConical}>{t(lang, "paperCheck")}</PanelTitle>
       <p className="mt-2 text-xs text-zinc-500">{t(lang, "paperCheckHelp")}</p>
       <form className="mt-3 space-y-3" onSubmit={run}>
         <input

@@ -4,6 +4,12 @@ import {
   Bell,
   Bot,
   ChevronRight,
+  ChartNoAxesCombined,
+  Layers3,
+  LockKeyhole,
+  Settings2,
+  ShieldCheck,
+  Wallet,
   Clock3,
   Crosshair,
   LayoutDashboard,
@@ -23,9 +29,9 @@ import {
   type Preview,
   type Status,
 } from "./api";
-import { Key, Lang, t } from "./i18n";
+import { Key, Lang, settingLabel, t } from "./i18n";
 import { AccountsPanel, BudgetForm, ForwardPanel, PaperCheck, RulesPage, WarpBotsPanel } from "./desk";
-import { Badge, Button, Card, Field, Loading, Problem, inputClass } from "./ui";
+import { Badge, Button, Card, DeskSummary, Field, Loading, PanelTitle, Problem, inputClass } from "./ui";
 import { Overview, Providers } from "./monitor";
 import { Age } from "./age";
 import { zoneLabel, fmtCompact, fmtMoney, fmtNumber, fmtPct, fmtPrice, fmtTime, ratingLabel, sourceLabel } from "./format";
@@ -163,9 +169,10 @@ function Login({ lang, onSuccess }: { lang: Lang; onSuccess: () => void }) {
     }
   }
   return (
-    <Card>
+    <Card className="signin-card">
       <form className="space-y-4" onSubmit={submit}>
-        <h1 className="text-xl font-semibold">{t(lang, "login")}</h1>
+        <LockKeyhole className="signin-icon" size={24} aria-hidden="true" />
+        <h1>{t(lang, "login")}</h1>
         <p className="text-sm text-zinc-400">{t(lang, "loginHelp")}</p>
         <Field label={t(lang, "password")}>
           <input
@@ -369,7 +376,12 @@ function Alerts({ lang, row, halted, error }: { lang: Lang; row: Status | null; 
   );
 }
 
-function Sections<K extends Key>({
+const sectionIcons = {
+  manage: Bot, positions: Layers3, template: SlidersHorizontal,
+  venues: Wallet, rules: ShieldCheck, configuration: Settings2,
+} as const;
+
+function Sections<K extends keyof typeof sectionIcons>({
   lang,
   items,
   value,
@@ -382,11 +394,14 @@ function Sections<K extends Key>({
 }) {
   return (
     <div className="sections">
-      {items.map((key) => (
-        <button key={key} aria-pressed={key === value} onClick={() => change(key)}>
-          {t(lang, key)}
-        </button>
-      ))}
+      {items.map((key) => {
+        const Icon: typeof Bot = sectionIcons[key];
+        return (
+          <button key={key} aria-pressed={key === value} onClick={() => change(key)}>
+            <Icon aria-hidden="true" size={16} />{t(lang, key)}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -439,118 +454,126 @@ function Preferences({ lang, status }: { lang: Lang; status: Status | null }) {
     </>
   );
 }
-function Empty({ text }: { lang: Lang; text: string }) {
-  return (
-    <Card className="empty">
-      <Crosshair size={22} />
-      <p>{text}</p>
-    </Card>
-  );
-}
 function Signals({ lang }: { lang: Lang }) {
   const loaded = useLoad<{ cards: CardRow[] }>("/api/opportunities", true);
   if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
   if (!loaded.data) return <Loading lang={lang} />;
-  if (!loaded.data.cards.length) return <Empty lang={lang} text={t(lang, "noSignals")} />;
+  const cards = loaded.data.cards;
+  const counts = new Map<string, number>();
+  for (const card of cards) {
+    const action = card.action || t(lang, "unknown");
+    counts.set(action, (counts.get(action) ?? 0) + 1);
+  }
   return (
-    <div className="opportunity-grid">
-      {loaded.data.cards.map((card, index) => (
-        <Card key={card.symbol}>
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold">
-                <small className="rank">#{index + 1}</small>
-                {card.symbol}
-              </h2>
-              <p className="text-xs text-zinc-500">
-                {card.regime ?? t(lang, "unknown")} · RSI {fmtNumber(card.rsi, lang, 1) ?? t(lang, "unknown")}
+    <>
+      <DeskSummary icon={Crosshair} title={t(lang, "rankedSetups")} value={cards.length}>
+        {cards.length ? (
+          <ul className="verdict-counts">
+            {Array.from(counts, ([action, count]) => (
+              <li key={action}><b>{count}</b> {action}</li>
+            ))}
+          </ul>
+        ) : t(lang, "noSignals")}
+      </DeskSummary>
+      <div className="opportunity-grid">
+        {cards.map((card, index) => (
+          <Card key={card.symbol} className="signal-card">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold">
+                  <small className="rank">#{index + 1}</small>
+                  {card.symbol}
+                </h2>
+                <p className="text-xs text-zinc-500">
+                  {card.regime ?? t(lang, "unknown")} · RSI {fmtNumber(card.rsi, lang, 1) ?? t(lang, "unknown")}
+                </p>
+              </div>
+              <div className="flex flex-col items-end gap-1">
+                <Badge tone={card.action === "BUY" ? "good" : card.action === "SKIP" ? "bad" : "warn"}>
+                  {card.action ?? "—"}
+                </Badge>
+                {card.fresh === false ? <Badge tone="warn">{t(lang, "staleEvidence")}</Badge> : null}
+              </div>
+            </div>
+            <div className="signal-levels">
+              <Metric label={t(lang, "entry")} value={fmtPrice(card.entry, lang)} missing={t(lang, "unknown")} />
+              <Metric label={t(lang, "stop")} value={fmtPrice(card.stop, lang)} missing={t(lang, "unknown")} />
+              <Metric label={t(lang, "target")} value={fmtPrice(card.take, lang)} missing={t(lang, "unknown")} />
+            </div>
+            {card.score ? (
+              <p className="mt-3 text-sm text-zinc-300">
+                {t(lang, "score")} {card.score.total}
+                {card.score_warning ? ` · ${t(lang, "scoreWarning")}` : ""}
+                <span className="mt-1 block text-xs text-zinc-500">
+                  {card.score.trend}/{card.score.reversal}/{card.score.liquidity}/{card.score.structure}/
+                  {card.score.event}
+                </span>
               </p>
-            </div>
-            <div className="flex flex-col items-end gap-1">
-              <Badge tone={card.action === "BUY" ? "good" : card.action === "SKIP" ? "bad" : "warn"}>
-                {card.action ?? "—"}
-              </Badge>
-              {card.fresh === false ? <Badge tone="warn">{t(lang, "staleEvidence")}</Badge> : null}
-            </div>
-          </div>
-          <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
-            <Metric label={t(lang, "entry")} value={fmtPrice(card.entry, lang) ?? t(lang, "unknown")} />
-            <Metric label={t(lang, "stop")} value={fmtPrice(card.stop, lang) ?? t(lang, "unknown")} />
-            <Metric label={t(lang, "target")} value={fmtPrice(card.take, lang) ?? t(lang, "unknown")} />
-          </div>
-          {card.score ? (
+            ) : null}
             <p className="mt-3 text-sm text-zinc-300">
-              {t(lang, "score")} {card.score.total}
-              {card.score_warning ? ` · ${t(lang, "scoreWarning")}` : ""}
-              <span className="mt-1 block text-xs text-zinc-500">
-                {card.score.trend}/{card.score.reversal}/{card.score.liquidity}/{card.score.structure}/
-                {card.score.event}
-              </span>
+              {t(lang, "confidence")} {card.confidence ?? t(lang, "unknown")}
+              {card.model_action && card.model_action !== card.action
+                ? ` · ${t(lang, "model")} ${card.model_action}`
+                : ""}
             </p>
-          ) : null}
-          <p className="mt-3 text-sm text-zinc-300">
-            {t(lang, "confidence")} {card.confidence ?? t(lang, "unknown")}
-            {card.model_action && card.model_action !== card.action
-              ? ` · ${t(lang, "model")} ${card.model_action}`
-              : ""}
-          </p>
-          <p className="mt-1 text-xs text-zinc-500">
-            {t(lang, "backtest")}:{" "}
-            {card.backtest_passed == null
-              ? "—"
-              : card.backtest_passed
-                ? t(lang, "passed")
-                : t(lang, "failed")}{" "}
-            {card.backtest_reason && `(${card.backtest_reason})`}
-          </p>
-          <div className="metadata">
-            <span>
-              {t(lang, "source")} <b>{sourceLabel(card.source) || t(lang, "unknown")}</b>
-            </span>
-            <span>
-              {t(lang, "exchange")}{" "}
-              <b>
-                {t(lang, "unavailable")} · {t(lang, "notInSnapshot")}
-              </b>
-            </span>
-            <span>
-              {t(lang, "riskScore")}{" "}
-              <b>
-                {t(lang, "unavailable")} · {t(lang, "notInSnapshot")}
-              </b>
-            </span>
-            <span>
-              {t(lang, "signalTime")} <time>{fmtTime(card.as_of, lang, true) ?? t(lang, "unknown")}</time>
-            </span>
-            <span>
-              {t(lang, "marketTime")} <time>{fmtTime(card.evidence_as_of, lang, true) ?? t(lang, "unknown")}</time>
-            </span>
-          </div>
-          <details>
-            <summary>{t(lang, "why")}</summary>
-            <p>{lang === "id" ? card.why_id : card.why}</p>
-          </details>
-          {/^[A-Z0-9]+USDT$/.test(card.symbol) && (
-            <a
-              className="chart-link"
-              href={`https://www.tradingview.com/chart/?symbol=BINANCE%3A${encodeURIComponent(card.symbol)}`}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              {t(lang, "chart")} · TradingView <ArrowUpRight size={14} />
-            </a>
-          )}
-        </Card>
-      ))}
-    </div>
+            <p className="mt-1 text-xs text-zinc-500">
+              {t(lang, "backtest")}:{" "}
+              {card.backtest_passed == null
+                ? "—"
+                : card.backtest_passed
+                  ? t(lang, "passed")
+                  : t(lang, "failed")}{" "}
+              {card.backtest_reason && `(${card.backtest_reason})`}
+            </p>
+            <details className="signal-evidence">
+              <summary>{t(lang, "why")}</summary>
+              <p>{lang === "id" ? card.why_id : card.why}</p>
+              <div className="metadata">
+                <span>
+                  {t(lang, "source")} <b>{sourceLabel(card.source) || t(lang, "unknown")}</b>
+                </span>
+                <span>
+                  {t(lang, "exchange")}{" "}
+                  <b>
+                    {t(lang, "unavailable")} · {t(lang, "notInSnapshot")}
+                  </b>
+                </span>
+                <span>
+                  {t(lang, "riskScore")}{" "}
+                  <b>
+                    {t(lang, "unavailable")} · {t(lang, "notInSnapshot")}
+                  </b>
+                </span>
+                <span>
+                  {t(lang, "signalTime")} <time>{fmtTime(card.as_of, lang, true) ?? t(lang, "unknown")}</time>
+                </span>
+                <span>
+                  {t(lang, "marketTime")} <time>{fmtTime(card.evidence_as_of, lang, true) ?? t(lang, "unknown")}</time>
+                </span>
+              </div>
+            </details>
+            {/^[A-Z0-9]+USDT$/.test(card.symbol) && (
+              <a
+                className="chart-link"
+                href={`https://www.tradingview.com/chart/?symbol=BINANCE%3A${encodeURIComponent(card.symbol)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {t(lang, "chart")} · TradingView <ArrowUpRight size={14} />
+              </a>
+            )}
+          </Card>
+        ))}
+      </div>
+    </>
   );
 }
 
-function Metric({ label, value }: { label: string; value: string | null }) {
+function Metric({ label, value, missing }: { label: string; value: string | null; missing: string }) {
   return (
     <div className="metric-cell">
       <p>{label}</p>
-      <strong className={value == null ? "kpi-missing" : undefined}>{value ?? "—"}</strong>
+      <strong className={value == null ? "kpi-missing" : undefined}>{value ?? missing}</strong>
     </div>
   );
 }
@@ -661,7 +684,7 @@ function Bots({ lang }: { lang: Lang }) {
   return (
     <div className="form-grid">
       <Card>
-        <h2 className="font-semibold">{t(lang, "bots")}</h2>
+        <PanelTitle icon={SlidersHorizontal}>{t(lang, "template")}</PanelTitle>
         <p className="mt-1 text-xs text-zinc-500">{t(lang, "places")}</p>
         <div className="mt-4 grid grid-cols-2 gap-2">
           {(
@@ -673,7 +696,7 @@ function Bots({ lang }: { lang: Lang }) {
           ).map(([key, value, setter, label]) => (
             <button
               key={key}
-              className={`rounded-xl border p-3 text-left ${value ? "border-emerald-400" : "border-amber-400"}`}
+              className="preset-choice"
               aria-pressed={value}
               onClick={() => setter(!value)}
               type="button"
@@ -739,7 +762,7 @@ function Bots({ lang }: { lang: Lang }) {
           {(["dca", "grid"] as const).map((item) => (
             <button
               key={item}
-              className={`rounded-xl border p-3 text-left ${kind === item ? "border-emerald-400" : "border-white/10"}`}
+              className="preset-choice"
               disabled={previewBusy}
               aria-pressed={kind === item}
               onClick={() => void refresh(item, preset).catch(() => setNote(t(lang, "error")))}
@@ -755,7 +778,7 @@ function Bots({ lang }: { lang: Lang }) {
           {(["conservative", "moderate", "aggressive"] as const).map((item) => (
             <button
               key={item}
-              className={`rounded-xl border p-3 text-left ${preset === item ? "border-emerald-400" : "border-white/10"}`}
+              className="preset-choice"
               disabled={previewBusy}
               aria-pressed={preset === item}
               onClick={() => void refresh(kind, item).catch(() => setNote(t(lang, "error")))}
@@ -769,7 +792,7 @@ function Bots({ lang }: { lang: Lang }) {
         </div>
       </Card>
       <Card>
-        <h2 className="font-semibold">{t(lang, "preview")}</h2>
+        <PanelTitle icon={Wallet}>{t(lang, "preview")}</PanelTitle>
         <p className="mt-2 text-sm text-zinc-400">{t(lang, "capital")}</p>
         <p className="text-2xl font-semibold">
           {fmtMoney(preview.full_commitment, lang) == null
@@ -802,14 +825,19 @@ function Bots({ lang }: { lang: Lang }) {
 }
 
 function Positions({ lang }: { lang: Lang }) {
-  const loaded = useLoad<{ positions: Position[] }>("/api/positions", true);
+  const loaded = useLoad<{ positions: Position[]; error?: string | null; as_of?: string | null }>("/api/positions", true);
   if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
   if (!loaded.data) return <Loading lang={lang} />;
-  if (!loaded.data.positions.length) return <Empty lang={lang} text={t(lang, "noPositions")} />;
+  const { positions, error, as_of } = loaded.data;
+  const awaitingSnapshot = !positions.length && as_of === null;
+  const positionCount = error || awaitingSnapshot ? t(lang, "unavailable") : positions.length;
   return (
-    <div className="space-y-3">
-      {loaded.data.positions.map((row) => (
-        <Card key={row.client_id || row.strategy_id || row.symbol || "row"}>
+    <div className="monitor-col">
+      <DeskSummary icon={Layers3} title={t(lang, "listPositions")} value={positionCount}>
+        {error || (awaitingSnapshot ? t(lang, "noSnapshot") : positions.length === 0 && t(lang, "noPositions"))}
+      </DeskSummary>
+      {positions.map((row) => (
+        <Card key={row.client_id || row.strategy_id || row.symbol || "row"} className="position-card">
           <div className="flex items-center justify-between">
             <h2 className="font-semibold">{row.symbol || "—"}</h2>
             <Badge tone={row.paper ? "warn" : "neutral"}>{row.status || "—"}</Badge>
@@ -841,6 +869,7 @@ function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean
     source: string;
     fetched_at?: string | null;
   }>("/api/screener", true);
+  const filterHeading = useRef<HTMLHeadingElement>(null);
   const [draft, setForm] = useState<Filters | null>(null);
   const form = draft ?? loaded.data?.filters;
   const [note, setNote] = useState("");
@@ -856,17 +885,23 @@ function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean
   const result = loaded.data;
   return (
     <div className="monitor-col">
+      <DeskSummary icon={ListFilter} title={t(lang, "candidates")} value={result.error && !result.hits.length ? t(lang, "unavailable") : result.hits.length}
+        action={<Badge tone="info">{sourceLabel(result.source) || t(lang, "unavailable")}</Badge>}>
+        <Age at={result.fetched_at} limit={1800} lang={lang} reason={result.error} />
+      </DeskSummary>
       <Card>
         <div className="panel-heading">
           <h2 className="panel-title">
-            <ListFilter />
-            {t(lang, "candidates")}
+            <ChartNoAxesCombined />
+            {t(lang, "symbols")}
           </h2>
-          <Badge tone="info">{sourceLabel(result.source) || t(lang, "unavailable")}</Badge>
+          <button className="desk-link" type="button" onClick={() => {
+            filterHeading.current?.focus({ preventScroll: true });
+            filterHeading.current?.scrollIntoView({ block: "start" });
+          }}>
+            {t(lang, "filters")} <SlidersHorizontal size={15} />
+          </button>
         </div>
-        <p className="panel-note">
-          <Age at={result.fetched_at} limit={1800} lang={lang} reason={result.error} />
-        </p>
         {result.error && (
           <p role="alert" className="alert">
             {result.error}
@@ -929,7 +964,7 @@ function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean
         )}
       </Card>
       <Card>
-        <h2 className="panel-title">
+        <h2 className="panel-title" id="screener-filters" ref={filterHeading} tabIndex={-1}>
           <SlidersHorizontal />
           {t(lang, "filters")}
         </h2>
@@ -1007,16 +1042,16 @@ function Settings({ lang, paper }: { lang: Lang; paper: boolean }) {
     <div className="space-y-4">
       <PaperCheck lang={lang} enabled={paper} />
       <Card>
-        <h2 className="font-semibold">{t(lang, "settings")}</h2>
+        <PanelTitle icon={Settings2}>{t(lang, "configuration")}</PanelTitle>
         <p className="mt-1 text-sm text-zinc-400">{t(lang, "modeHelp")}</p>
-        <dl className="mt-4 space-y-2">
+        <dl className="config-ledger">
           {rows.map(([key, value]) => (
             <div
               key={key}
-              className="flex items-start justify-between gap-3 border-b border-white/5 py-2 text-sm"
+              className="config-row"
             >
-              <dt className="text-zinc-500">{key}</dt>
-              <dd className="max-w-[60%] break-all text-right">
+              <dt className="text-zinc-500" title={key}>{settingLabel(lang, key)}</dt>
+              <dd>
                 {Array.isArray(value) ? value.join(", ") : String(value)}
               </dd>
             </div>

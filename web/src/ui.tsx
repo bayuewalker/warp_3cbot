@@ -1,6 +1,7 @@
 import { type Lang, t } from "./i18n";
 import { cva, type VariantProps } from "class-variance-authority";
 import { ButtonHTMLAttributes, ReactNode } from "react";
+import { type LucideIcon } from "lucide-react";
 import { cn } from "./lib/utils";
 
 const buttonStyles = cva(
@@ -33,6 +34,33 @@ export function Button({
 
 export function Card({ className, children }: { className?: string; children: ReactNode }) {
   return <section className={cn("surface", className)}>{children}</section>;
+}
+
+export function DeskSummary({
+  icon: Icon, title, value, children, action,
+}: {
+  icon: LucideIcon;
+  title: string;
+  value?: ReactNode;
+  children?: ReactNode;
+  action?: ReactNode;
+}) {
+  return (
+    <section className="desk-summary">
+      <div className="summary-head">
+        <div>
+          <h2><Icon aria-hidden="true" size={18} />{title}</h2>
+          {value != null && <p className="summary-value">{value}</p>}
+        </div>
+        {action}
+      </div>
+      {children && <div className="summary-foot">{children}</div>}
+    </section>
+  );
+}
+
+export function PanelTitle({ icon: Icon, children }: { icon: LucideIcon; children: ReactNode }) {
+  return <h2 className="panel-title"><Icon aria-hidden="true" />{children}</h2>;
 }
 
 export function Badge({
