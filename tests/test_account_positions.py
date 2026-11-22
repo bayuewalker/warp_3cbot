@@ -133,6 +133,37 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(parse_position(ROW, bot=_bot(name="WARP-0a1b2c3d"), kind="dca")["owner"], "warp")
         self.assertEqual(parse_position(ROW, bot=_bot(name="OTHER"), kind="dca")["owner"], "external")
 
+    def test_unknown_entry_or_exit_leaves_only_matching_value_unavailable(self):
+        missing = object()
+        for field, derived, other, expected_other in (
+            ("totalEntryAmount", "size", "cost", "699.94"),
+            ("totalExitAmount", "size", "cost", "699.94"),
+            ("totalEntryCost", "cost", "size", "3101.1"),
+            ("totalExitCost", "cost", "size", "3101.1"),
+        ):
+            for value in (missing, None, "", "invalid", "NaN", "Infinity", True, False):
+                with self.subTest(field=field, value=value):
+                    raw = dict(ROW)
+                    if value is missing:
+                        raw.pop(field)
+                    else:
+                        raw[field] = value
+                    row = parse_position(raw, bot=_bot(), kind="dca")
+                    self.assertIsNone(row[derived])
+                    self.assertEqual(row[other], expected_other)
+
+    def test_valid_entry_and_exit_derive_remaining_size_and_cost(self):
+        for exit_amount, exit_cost, size, cost in (
+            (0, 0, "3101.1", "699.94"),
+            ("0", "0", "3101.1", "699.94"),
+            ("101.1", "20.04", "3000", "679.9"),
+        ):
+            with self.subTest(exit_amount=exit_amount, exit_cost=exit_cost):
+                raw = {**ROW, "totalExitAmount": exit_amount, "totalExitCost": exit_cost}
+                row = parse_position(raw, bot=_bot(), kind="dca")
+                self.assertEqual(row["size"], size)
+                self.assertEqual(row["cost"], cost)
+
 
 class CollectTests(unittest.TestCase):
     def test_reads_only_bots_with_open_positions(self):
@@ -167,6 +198,23 @@ class CollectTests(unittest.TestCase):
 
 
 class ViewTests(unittest.TestCase):
+    def test_unknown_exit_amount_cannot_produce_calculated_usd_pnl(self):
+        for last_price in (ROW["lastPrice"], None):
+            for pnl in (None, -43.99, 0):
+                with self.subTest(last_price=last_price, pnl=pnl):
+                    raw = {**ROW, "lastPrice": last_price}
+                    raw.pop("totalExitAmount")
+                    book = {"rows": [parse_position(raw, bot=_bot(pnl=pnl), kind="dca")]}
+                    row = positions_view(book, prices={"MMTUSDT": {"last": "0.25"}}, prices_fresh=True)["positions"][0]
+                    self.assertIsNone(row["size"])
+                    self.assertIsNotNone(row["current_price"])
+                    if pnl is None:
+                        self.assertIsNone(row["pnl_usd"])
+                        self.assertIsNone(row["pnl_usd_source"])
+                    else:
+                        self.assertEqual(row["pnl_usd"], str(pnl))
+                        self.assertEqual(row["pnl_usd_source"], "3commas")
+
     def test_binance_price_fills_only_missing_values_and_is_labelled(self):
         bare = {**ROW, "lastPrice": None, "currentPosition": None}
         book = {"rows": [parse_position(bare, bot=_bot(), kind="dca")], "as_of": "t", "errors": []}

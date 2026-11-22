@@ -110,11 +110,12 @@ def parse_position(row: dict, *, bot: dict | None, kind: str, owner: str | None 
     if pair and "/" in pair and not (base_asset and quote_asset):
         base_asset, quote_asset = pair.split("/", 1)
     entered = _dec(row.get("totalEntryAmount"))
-    exited = _dec(row.get("totalExitAmount")) or Decimal("0")
-    size = entered - exited if entered is not None and entered - exited > 0 else None
+    exited = _dec(row.get("totalExitAmount"))
+    # Unknown exits must not imply that the entire entry is still held.
+    size = entered - exited if entered is not None and exited is not None and entered - exited > 0 else None
     entry_cost = _dec(row.get("totalEntryCost"))
-    exit_cost = _dec(row.get("totalExitCost")) or Decimal("0")
-    cost = entry_cost - exit_cost if entry_cost is not None and entry_cost - exit_cost > 0 else None
+    exit_cost = _dec(row.get("totalExitCost"))
+    cost = entry_cost - exit_cost if entry_cost is not None and exit_cost is not None and entry_cost - exit_cost > 0 else None
     last = _dec(row.get("lastPrice"), positive=True)
     pnl_pct = _dec(row.get("currentPosition"))
     pnl_usd = _summary_pnl(bot, row_id)
