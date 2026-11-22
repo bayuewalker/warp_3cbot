@@ -17,4 +17,4 @@ PR #6 supplies stage state and selected counts, plus per-card signal and evidenc
 
 ## WalkerMind theme revision
 
-At e39e1e8, the mode and full language selector occupy different heights. The account cards precede the first indication of a blocked entry gate, even when no equity mark is available. Several source and timing labels are only 10–11px. The revision brings the scanner and gate into the first viewport and groups account figures below.
+PR #14 applied the WalkerMind theme on the stale `feat/vibe-pipeline-safe-auto-screening` base. This revision carries the theme onto `main` and keeps main's TradingView screener, SSE price stream and per-profile account handling. It also fixes labels that were 10–11px, mixed UTC/local times, raw source ids (`tradingview`, `binance_spot_public`) and raw eight-decimal numbers.

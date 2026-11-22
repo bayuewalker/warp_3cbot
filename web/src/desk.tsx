@@ -10,18 +10,32 @@ import {
 import { Key, Lang, t } from "./i18n";
 import { Age } from "./age";
 import { useLoad } from "./snapshot";
+import { fmtMoney, fmtQty } from "./format";
 import { Badge, Button, Card, Field, Loading, Problem, inputClass } from "./ui";
 
-function reasonLabel(reason: string, lang: Lang): string {
-  const known: Record<string, Key> = {
-    paper_requires_demo: "accountHelp",
-    live_ack_required: "accountHelp",
-    observe_refuses_real: "accountHelp",
-    spot_only: "notSpot",
-    quote_not_usdt: "accountHelp",
-  };
-  const key = known[reason];
+const REASONS: Record<string, Key> = {
+  paper_requires_demo: "rPaperDemo",
+  live_ack_required: "rLiveAck",
+  observe_refuses_real: "rObserveReal",
+  spot_only: "rSpotOnly",
+  quote_not_usdt: "rQuoteUsdt",
+  "balance unavailable": "rNoBalance",
+  balance_unavailable: "rNoBalance",
+  error: "rNoBalance",
+  usd_mark_unavailable: "rNoUsd",
+  account_unavailable: "rNoAccount",
+  quote_unavailable: "rQuoteUsdt",
+  reserves_unknown: "rReserves",
+};
+
+function humanReason(reason: string | null | undefined, lang: Lang): string {
+  if (!reason) return "";
+  const key = REASONS[reason];
   return key ? t(lang, key) : reason.replaceAll("_", " ");
+}
+
+function reasonLabel(reason: string, lang: Lang): string {
+  return humanReason(reason, lang) || t(lang, "accountHelp");
 }
 
 type AccountsPayload = {
@@ -77,9 +91,11 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
         </p>
         <p className="panel-note">
           {t(lang, "sleeve")}{" "}
-          {loaded.data?.sleeve?.eligible
-            ? `${loaded.data.sleeve.eligible} USDT`
-            : `${t(lang, "unavailable")} · ${loaded.data?.sleeve?.reason || t(lang, "noSnapshot")}`}
+          <b>
+            {loaded.data?.sleeve?.eligible
+              ? `${fmtMoney(loaded.data.sleeve.eligible, lang)} USDT`
+              : `${t(lang, "unavailable")} · ${humanReason(loaded.data?.sleeve?.reason, lang) || t(lang, "noSnapshot")}`}
+          </b>
         </p>
       </Card>
       {loaded.error ? <Problem lang={lang} retry={loaded.reload} /> : null}
@@ -89,56 +105,93 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
           <p className="text-sm text-zinc-400">{t(lang, "noAccounts")}</p>
         </Card>
       ) : null}
-      {rows?.map((row) => (
-        <Card key={row.code}>
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h3 className="font-semibold">{row.name}</h3>
-              <p className="text-xs text-zinc-500">{row.exchange_name || row.exchange_code}</p>
-            </div>
-            <Badge tone={row.demo ? "warn" : "bad"}>{row.demo ? t(lang, "demo") : t(lang, "real")}</Badge>
-          </div>
-          <p className="mt-3 text-sm text-zinc-200">
-            {t(lang, "balance")}{" "}
-            {row.total == null
-              ? `${t(lang, "unavailable")} · ${row.error || row.reason || t(lang, "noSnapshot")}`
-              : `${row.total} ${row.quote}`}
-          </p>
-          {row.assets?.length ? (
-            <ul className="event-log">
-              {row.assets.map((asset) => (
-                <li key={asset.asset}>
-                  <span>
-                    {asset.asset} {asset.total}
-                  </span>
-                  <span>
-                    {asset.usd == null
-                      ? `${t(lang, "unavailable")} · ${asset.usd_reason || t(lang, "usdUnavailable")}${
-                          asset.quote_age_seconds != null ? ` · ${asset.quote_age_seconds}s` : ""
-                        }`
-                      : `${asset.usd} USD`}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          <p className="mt-1 text-xs text-zinc-500">
-            {row.market === "spot" ? t(lang, "spot") : t(lang, "notSpot")} · {row.exchange_code}
-          </p>
-          {!row.selectable ? (
-            <p className="mt-2 text-xs text-zinc-400">{reasonLabel(row.reason, lang)}</p>
-          ) : null}
-          <Button
-            className="mt-3 w-full"
-            variant={selected === row.code ? "outline" : "default"}
-            type="button"
-            disabled={!row.selectable || selected === row.code}
-            onClick={() => void choose(row.code)}
+      {rows?.map((row) => {
+        const unavailable = row.total == null && row.free == null && row.used == null;
+        const quote = row.quote || "";
+        const money = (v: string | null) => {
+          const f = fmtMoney(v, lang);
+          return f == null ? t(lang, "unknown") : `${f}${quote ? " " + quote : ""}`;
+        };
+        const isSelected = selected === row.code;
+        return (
+          <Card
+            key={row.code}
+            className={`account-card${unavailable ? " is-unavailable" : ""}${!row.selectable ? " not-selectable" : ""}${isSelected ? " is-selected" : ""}`}
           >
-            {selected === row.code ? t(lang, "selectedAccount") : t(lang, "selectAccount")}
-          </Button>
-        </Card>
-      ))}
+            <div className="account-head">
+              <div>
+                <h3>{row.name}</h3>
+                <p>
+                  {row.exchange_name || row.exchange_code} ·{" "}
+                  {row.market === "spot" ? t(lang, "spot") : row.market === "futures" ? t(lang, "futures") : row.market || t(lang, "unknown")}
+                </p>
+              </div>
+              <Badge tone={row.demo ? "warn" : "bad"}>{row.badge || (row.demo ? t(lang, "demo") : t(lang, "real"))}</Badge>
+            </div>
+            {unavailable ? (
+              <p className="account-unavailable">
+                <b>{t(lang, "balanceUnavailable")}</b>
+                <span>
+                  {t(lang, "reason")}: {humanReason(row.error || row.reason || row.status, lang) || t(lang, "unknown")}
+                </span>
+              </p>
+            ) : (
+              <dl className="account-figures">
+                <div>
+                  <dt>{t(lang, "total")}</dt>
+                  <dd>{money(row.total)}</dd>
+                </div>
+                <div>
+                  <dt>{t(lang, "free")}</dt>
+                  <dd>{money(row.free)}</dd>
+                </div>
+                <div>
+                  <dt>{t(lang, "inUse")}</dt>
+                  <dd>{money(row.used)}</dd>
+                </div>
+              </dl>
+            )}
+            {row.assets?.length ? (
+              <div className="account-assets">
+                <h4>{t(lang, "assetsHeld")}</h4>
+                <ul>
+                  {row.assets.map((asset) => (
+                    <li key={asset.asset}>
+                      <span>
+                        <b>{asset.asset}</b> {fmtQty(asset.total, lang) ?? t(lang, "unknown")}
+                      </span>
+                      <span className={asset.usd == null ? "na" : undefined}>
+                        {asset.usd == null
+                          ? t(lang, "noUsd")
+                          : `≈ ${fmtMoney(asset.usd, lang)} USD`}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {row.selectable ? (
+              <Button
+                className="mt-3 w-full"
+                variant={isSelected ? "outline" : "default"}
+                type="button"
+                disabled={isSelected}
+                aria-pressed={isSelected}
+                onClick={() => void choose(row.code)}
+              >
+                {isSelected ? t(lang, "selectedAccount") : t(lang, "selectAccount")}
+              </Button>
+            ) : (
+              <p className="account-locked">
+                <b>{t(lang, "notSelectable")}</b>
+                {unavailable && humanReason(row.reason, lang) === humanReason(row.error || row.reason || row.status, lang)
+                  ? null
+                  : ` · ${reasonLabel(row.reason, lang)}`}
+              </p>
+            )}
+          </Card>
+        );
+      })}
       {note ? (
         <p role="status" className="text-sm text-zinc-400">
           {note}
@@ -184,8 +237,8 @@ export function BudgetForm({ lang, code }: { lang: Lang; code: string }) {
       <h2 className="font-semibold">{t(lang, "budget")}</h2>
       {!budget.error && view ? (
         <p className="mt-2 text-sm text-zinc-300">
-          {t(lang, "budgetUsed")} {view.used ?? t(lang, "unavailable")} · {t(lang, "budgetLeft")}{" "}
-          {view.remaining ?? t(lang, "unavailable")}
+          {t(lang, "budgetUsed")} <b>{fmtMoney(view.used, lang) ?? t(lang, "unknown")}</b> · {t(lang, "budgetLeft")}{" "}
+          <b>{fmtMoney(view.remaining, lang) ?? t(lang, "unknown")}</b>
         </p>
       ) : null}
       {budget.error && <Problem lang={lang} retry={budget.reload} />}
@@ -310,10 +363,10 @@ export function WarpBotsPanel({ lang, status }: { lang: Lang; status: Status | n
             </span>
           )}
           <span>
-            {t(lang, "budgetUsed")} <b>{list.data.budget.used ?? "—"}</b>
+            {t(lang, "budgetUsed")} <b>{fmtMoney(list.data.budget.used, lang) ?? t(lang, "unknown")}</b>
           </span>
           <span>
-            {t(lang, "budgetLeft")} <b>{list.data.budget.remaining ?? "—"}</b>
+            {t(lang, "budgetLeft")} <b>{fmtMoney(list.data.budget.remaining, lang) ?? t(lang, "unknown")}</b>
           </span>
         </div>
       )}
@@ -439,8 +492,8 @@ export function ForwardPanel({ lang }: { lang: Lang }) {
             {stats.horizons.map((label) => {
               const row = horizons[label];
               if (!row) return null;
-              const rate = row.hit_rate == null ? "—" : `${Math.round(Number(row.hit_rate) * 100)}%`;
-              const move = row.avg_move == null ? "—" : `${(Number(row.avg_move) * 100).toFixed(2)}%`;
+              const rate = row.hit_rate == null ? t(lang, "unknown") : `${Math.round(Number(row.hit_rate) * 100)}%`;
+              const move = row.avg_move == null ? t(lang, "unknown") : `${(Number(row.avg_move) * 100).toFixed(2)}%`;
               return (
                 <p key={label} className="mt-1 text-sm text-zinc-300">
                   {label} · {t(lang, "hitRate")} {rate} ({row.hits}/{row.n}) · {t(lang, "avgMove")} {move}

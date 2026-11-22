@@ -28,12 +28,13 @@ import { AccountsPanel, BudgetForm, ForwardPanel, PaperCheck, RulesPage, WarpBot
 import { Badge, Button, Card, Field, Loading, Problem, inputClass } from "./ui";
 import { Overview, Providers } from "./monitor";
 import { Age } from "./age";
+import { zoneLabel, fmtCompact, fmtMoney, fmtNumber, fmtPct, fmtPrice, fmtTime, ratingLabel, sourceLabel } from "./format";
 import { stopLive } from "./live";
 import { useLiveState, useLoad } from "./snapshot";
 
 const nav = [
   { id: "overview", short: "overview", icon: LayoutDashboard },
-  { id: "signals", short: "signals", icon: Crosshair },
+  { id: "signals", short: "minisignals", icon: Crosshair },
   { id: "assets", short: "minibots", icon: Bot },
   { id: "screener", short: "screener", icon: ListFilter },
   { id: "preferences", short: "minisettings", icon: SlidersHorizontal },
@@ -49,9 +50,7 @@ function WorkerStamp({ lang, publishedAt }: { lang: Lang; publishedAt?: string |
     <span>
       {t(lang, "workerSnapshot")}{" "}
       {known ? (
-        <time dateTime={publishedAt ?? undefined}>
-          {new Date(parsed).toLocaleTimeString(lang, { hour12: false, timeZone: "UTC" })} UTC
-        </time>
+        <time dateTime={publishedAt ?? undefined}>{fmtTime(parsed, lang)}</time>
       ) : (
         t(lang, "workerTimeUnavailable")
       )}
@@ -63,8 +62,11 @@ function WorkerStamp({ lang, publishedAt }: { lang: Lang; publishedAt?: string |
 function Brand() {
   return (
     <div className="brand">
-      <span className="mark">
-        <span aria-hidden="true">W</span>
+      <span className="mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="16" height="16" fill="none" strokeLinejoin="round">
+          <path d="M6 8 L16 24 L26 8" stroke="#00a8ff" strokeWidth="3" />
+          <path d="M11 14 L16 22 L21 14" stroke="#00d4aa" strokeWidth="2" />
+        </svg>
       </span>
       <strong>
         WARP <b>3C</b>
@@ -279,6 +281,9 @@ function Workspace({
           )}
           <div className="page-heading">
             <div>
+              <p className="eyebrow">
+                WARP 3C · {t(lang, "timesIn")} {zoneLabel(lang)}
+              </p>
               <h1 tabIndex={-1} ref={heading}>
                 {title}
               </h1>
@@ -288,7 +293,7 @@ function Workspace({
               <div className="snapshot-facts">
                 <span>
                   {t(lang, "received")}{" "}
-                  <time>{status.received?.toLocaleTimeString(lang, { hour12: false }) ?? "—"}</time>
+                  <time>{fmtTime(status.received, lang) ?? t(lang, "unknown")}</time>
                 </span>
                 <WorkerStamp lang={lang} publishedAt={status.data?.published_at} />
               </div>
@@ -442,16 +447,6 @@ function Empty({ text }: { lang: Lang; text: string }) {
     </Card>
   );
 }
-function pretty(value: string | null, digits = 8) {
-  return value == null || value === ""
-    ? "—"
-    : new Intl.NumberFormat("en", { maximumFractionDigits: digits }).format(Number(value));
-}
-function compact(value: string | null) {
-  return value == null
-    ? "—"
-    : new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 2 }).format(Number(value));
-}
 function Signals({ lang }: { lang: Lang }) {
   const loaded = useLoad<{ cards: CardRow[] }>("/api/opportunities", true);
   if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
@@ -468,7 +463,7 @@ function Signals({ lang }: { lang: Lang }) {
                 {card.symbol}
               </h2>
               <p className="text-xs text-zinc-500">
-                {card.regime ?? "—"} · RSI {card.rsi ?? "—"}
+                {card.regime ?? t(lang, "unknown")} · RSI {fmtNumber(card.rsi, lang, 1) ?? t(lang, "unknown")}
               </p>
             </div>
             <div className="flex flex-col items-end gap-1">
@@ -479,9 +474,9 @@ function Signals({ lang }: { lang: Lang }) {
             </div>
           </div>
           <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
-            <Metric label={t(lang, "entry")} value={card.entry} />
-            <Metric label={t(lang, "stop")} value={card.stop} />
-            <Metric label={t(lang, "target")} value={card.take} />
+            <Metric label={t(lang, "entry")} value={fmtPrice(card.entry, lang) ?? t(lang, "unknown")} />
+            <Metric label={t(lang, "stop")} value={fmtPrice(card.stop, lang) ?? t(lang, "unknown")} />
+            <Metric label={t(lang, "target")} value={fmtPrice(card.take, lang) ?? t(lang, "unknown")} />
           </div>
           {card.score ? (
             <p className="mt-3 text-sm text-zinc-300">
@@ -494,7 +489,7 @@ function Signals({ lang }: { lang: Lang }) {
             </p>
           ) : null}
           <p className="mt-3 text-sm text-zinc-300">
-            {t(lang, "confidence")} {card.confidence ?? "—"}
+            {t(lang, "confidence")} {card.confidence ?? t(lang, "unknown")}
             {card.model_action && card.model_action !== card.action
               ? ` · ${t(lang, "model")} ${card.model_action}`
               : ""}
@@ -510,7 +505,7 @@ function Signals({ lang }: { lang: Lang }) {
           </p>
           <div className="metadata">
             <span>
-              {t(lang, "source")} <b>{card.source || "—"}</b>
+              {t(lang, "source")} <b>{sourceLabel(card.source) || t(lang, "unknown")}</b>
             </span>
             <span>
               {t(lang, "exchange")}{" "}
@@ -525,10 +520,10 @@ function Signals({ lang }: { lang: Lang }) {
               </b>
             </span>
             <span>
-              {t(lang, "signalTime")} <time>{card.as_of ?? "—"}</time>
+              {t(lang, "signalTime")} <time>{fmtTime(card.as_of, lang, true) ?? t(lang, "unknown")}</time>
             </span>
             <span>
-              {t(lang, "marketTime")} <time>{card.evidence_as_of ?? "—"}</time>
+              {t(lang, "marketTime")} <time>{fmtTime(card.evidence_as_of, lang, true) ?? t(lang, "unknown")}</time>
             </span>
           </div>
           <details>
@@ -553,9 +548,9 @@ function Signals({ lang }: { lang: Lang }) {
 
 function Metric({ label, value }: { label: string; value: string | null }) {
   return (
-    <div className="rounded-xl bg-black/30 p-2">
-      <p className="text-[11px] uppercase tracking-wide text-zinc-500">{label}</p>
-      <p className="font-medium">{value ?? "—"}</p>
+    <div className="metric-cell">
+      <p>{label}</p>
+      <strong className={value == null ? "kpi-missing" : undefined}>{value ?? "—"}</strong>
     </div>
   );
 }
@@ -776,7 +771,11 @@ function Bots({ lang }: { lang: Lang }) {
       <Card>
         <h2 className="font-semibold">{t(lang, "preview")}</h2>
         <p className="mt-2 text-sm text-zinc-400">{t(lang, "capital")}</p>
-        <p className="text-2xl font-semibold">{pretty(preview.full_commitment)} USDT</p>
+        <p className="text-2xl font-semibold">
+          {fmtMoney(preview.full_commitment, lang) == null
+            ? t(lang, "unavailable")
+            : `${fmtMoney(preview.full_commitment, lang)} USDT`}
+        </p>
         <p className="mt-2 text-sm text-zinc-300">
           {t(lang, "share")} {(Number(preview.share_of_equity) * 100).toFixed(1)}%
           {preview.equity_is_live ? "" : ` · ${preview.equity_reference}`}
@@ -815,7 +814,7 @@ function Positions({ lang }: { lang: Lang }) {
             <h2 className="font-semibold">{row.symbol || "—"}</h2>
             <Badge tone={row.paper ? "warn" : "neutral"}>{row.status || "—"}</Badge>
           </div>
-          <p className="panel-note">{row.paper == null ? "—" : t(lang, row.paper ? "demo" : "real")}</p>
+          <p className="panel-note">{row.paper == null ? t(lang, "unknown") : t(lang, row.paper ? "demo" : "real")}</p>
           <p className="mt-2 break-all text-xs text-zinc-500">{row.strategy_id}</p>
         </Card>
       ))}
@@ -825,7 +824,13 @@ function Positions({ lang }: { lang: Lang }) {
 
 function LiveBadge({ lang }: { lang: Lang }) {
   const on = useLiveState();
-  return <Badge tone={on ? "good" : "warn"}>{t(lang, on ? "streamOn" : "reconnecting")}</Badge>;
+  return (
+    <span className="live-badge" title={t(lang, on ? "streamOn" : "reconnecting")}>
+      <Badge tone={on ? "good" : "warn"}>
+        <span className="live-text">{t(lang, on ? "streamOn" : "reconnecting")}</span>
+      </Badge>
+    </span>
+  );
 }
 
 function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean }) {
@@ -857,10 +862,10 @@ function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean
             <ListFilter />
             {t(lang, "candidates")}
           </h2>
-          <Badge>{result.source || t(lang, "unavailable")}</Badge>
+          <Badge tone="info">{sourceLabel(result.source) || t(lang, "unavailable")}</Badge>
         </div>
         <p className="panel-note">
-          {t(lang, "fetched")} <Age at={result.fetched_at} limit={60} lang={lang} reason={result.error} />
+          <Age at={result.fetched_at} limit={1800} lang={lang} reason={result.error} />
         </p>
         {result.error && (
           <p role="alert" className="alert">
@@ -870,7 +875,7 @@ function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean
         {marketFresh === false && <p className="panel-note text-amber-200">{t(lang, "stale")}</p>}
         {result.hits.length ? (
           <div className="table-scroll" tabIndex={0} role="region" aria-label={t(lang, "candidates")}>
-            <table>
+            <table className="screener-table">
               <caption className="sr-only">{t(lang, "candidates")}</caption>
               <thead>
                 <tr>
@@ -890,17 +895,32 @@ function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean
                 </tr>
               </thead>
               <tbody>
-                {result.hits.map((hit, index) => (
-                  <tr key={hit.symbol}>
-                    <td>{index + 1}</td>
-                    <th scope="row">{hit.symbol}</th>
-                    <td>{pretty(hit.last)}</td>
-                    <td>{hit.change_pct == null ? t(lang, "unavailable") : pretty(hit.change_pct) + "%"}</td>
-                    <td>{hit.quote_volume == null ? t(lang, "unavailable") : compact(hit.quote_volume)}</td>
-                    <td>{hit.rsi == null ? t(lang, "unavailable") : pretty(hit.rsi)}</td>
-                    <td>{hit.recommendation == null ? t(lang, "unavailable") : pretty(hit.recommendation)}</td>
-                  </tr>
-                ))}
+                {result.hits.map((hit, index) => {
+                  const na = t(lang, "unavailable");
+                  const change = fmtPct(hit.change_pct, lang);
+                  const rating = ratingLabel(hit.recommendation, lang);
+                  return (
+                    <tr key={hit.symbol}>
+                      <td className="num-muted cell-rank">{index + 1}</td>
+                      <th scope="row">{hit.symbol}</th>
+                      <td data-label={t(lang, "price")}>{fmtPrice(hit.last, lang) ?? na}</td>
+                      <td data-label={t(lang, "momentum")} className={change == null ? "na" : Number(hit.change_pct) > 0 ? "up" : Number(hit.change_pct) < 0 ? "down" : undefined}>
+                        {change ?? na}
+                      </td>
+                      <td data-label={t(lang, "volume") + " (USDT)"}>{fmtCompact(hit.quote_volume, lang) ?? na}</td>
+                      <td data-label="RSI">{fmtNumber(hit.rsi, lang, 1) ?? na}</td>
+                      <td data-label={t(lang, "recommendation")}>
+                        {rating ? (
+                          <span className={`rating ${rating.tone}`} title={fmtNumber(rating.value, lang, 2) ?? undefined}>
+                            {rating.text} <small>{fmtNumber(rating.value, lang, 2)}</small>
+                          </span>
+                        ) : (
+                          na
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

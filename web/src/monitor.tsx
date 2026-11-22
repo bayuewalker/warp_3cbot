@@ -18,6 +18,7 @@ import { t, type Lang, type Key } from "./i18n";
 import { Badge, Button, Card, Field, Loading, Problem, inputClass } from "./ui";
 import { Age } from "./age";
 import { useLoad } from "./snapshot";
+import { fmtMoney, fmtNumber, fmtPct, fmtPrice, fmtTime, sourceLabel } from "./format";
 
 type StatusRead = ReturnType<typeof useLoad<Status>>;
 export function stateLabel(lang: Lang, state?: string) {
@@ -198,10 +199,10 @@ function Pipeline({ lang, row }: { lang: Lang; row: Status }) {
                     </Badge>
                   </div>
                   <div className="stage-meta">
-                    <span>{source === "binance_spot_public" ? "Binance Spot" : source?.replaceAll("_", " ") || "—"}</span>
+                    <span className="stage-source">{sourceLabel(source) || t(lang, "unknown")}</span>
                     {stage && "count" in stage && (
                       <span>
-                        {t(lang, "outputs")} <b>{stage.count}</b>
+                        {t(lang, "outputs")} <b>{fmtNumber(stage.count, lang, 0)}</b>
                       </span>
                     )}
                     {stage && "reason" in stage && (
@@ -235,7 +236,9 @@ function Pipeline({ lang, row }: { lang: Lang; row: Status }) {
                 </dd>
                 <dt>{t(lang, "outputs")}</dt>
                 <dd>
-                  {stage && "count" in stage ? stage.count : `${t(lang, "unavailable")} · ${t(lang, "notInSnapshot")}`}
+                  {stage && "count" in stage
+                    ? fmtNumber(stage.count, lang, 0)
+                    : `${t(lang, "unavailable")} · ${t(lang, "notInSnapshot")}`}
                 </dd>
               </dl>
             </details>
@@ -249,19 +252,47 @@ function Pipeline({ lang, row }: { lang: Lang; row: Status }) {
 function ScannerSummary({ lang, row }: { lang: Lang; row: Status }) {
   const screen = row.pipeline?.screening;
   const analysis = row.pipeline?.analysis;
-  const source = screen?.source === "binance_spot_public" ? "Binance Spot" : screen?.source?.replaceAll("_", " ");
+  const source = sourceLabel(screen?.source);
+  const feed = useLoad<{ source: string; fetched_at?: string | null; error: string | null; hits: unknown[] }>(
+    "/api/screener",
+    true,
+  );
+  const feedSource = sourceLabel(feed.data?.source);
   const risk = row.halt ? "HALT" : row.gating === "awaiting_worker" ? t(lang, "awaitingWorker")
     : row.risk_permitted === false ? t(lang, "gateBlocked") : stateLabel(lang, row.pipeline?.risk?.state);
   return (
     <section className="scan-card" aria-labelledby="scan-title">
       <div className="scan-body">
         <div className="scan-copy">
-          <p className="scan-source"><ScanLine size={16} />{source || t(lang, "unknown")}</p>
+          <p className="scan-source">
+            <ScanLine size={16} />
+            <span>
+              {t(lang, "screenerFeed")} · <b>{feedSource || t(lang, "unknown")}</b>
+            </span>
+          </p>
           <h2 id="scan-title">{t(lang, "scanTitle")} <em>{t(lang, "scanAccent")}</em></h2>
-          <p className="scan-count"><strong>{screen?.count?.toLocaleString(lang) ?? "—"}</strong> {t(lang, "screenedSymbols")}</p>
+          <p className="scan-count">
+            <strong>{fmtNumber(screen?.count, lang, 0) ?? t(lang, "unknown")}</strong> {t(lang, "screenedSymbols")}
+          </p>
+          <dl className="scan-facts">
+            <div>
+              <dt>{t(lang, "feedStatus")}</dt>
+              <dd>
+                {feed.data ? (
+                  <Age at={feed.data.fetched_at} limit={1800} lang={lang} reason={feed.data.error} />
+                ) : (
+                  t(lang, "unknown")
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>{t(lang, "workerDiscovery")}</dt>
+              <dd>{source || t(lang, "unknown")}</dd>
+            </div>
+          </dl>
         </div>
         <div className="scan-dial">
-          <strong>{analysis?.count?.toLocaleString(lang) ?? "—"}</strong>
+          <strong>{fmtNumber(analysis?.count, lang, 0) ?? "—"}</strong>
           <span>{t(lang, "analysisOutputs")}</span>
         </div>
       </div>
@@ -309,7 +340,11 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
               <m.icon size={16} />
             </div>
             <strong className={m.value == null ? "kpi-missing" : undefined}>
-              {m.value == null ? t(lang, "unavailable") : m.value}{" "}
+              {m.value == null
+                ? t(lang, "unknown")
+                : "unit" in m
+                  ? fmtMoney(m.value, lang) ?? t(lang, "unknown")
+                  : fmtNumber(m.value, lang, 0)}{" "}
               {m.value != null && "unit" in m && <small>{m.unit}</small>}
             </strong>
             <small>{t(lang, m.detail)}</small>
@@ -326,7 +361,7 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
                 {t(lang, "coverage")}
               </h2>
               <small>
-                {t(lang, "symbols")} · {row.universe?.length ?? "—"}
+                {t(lang, "symbols")} · {row.universe?.length ?? t(lang, "unknown")}
               </small>
             </div>
             <div className="symbols">
@@ -396,8 +431,14 @@ function PriceTape({ lang }: { lang: Lang }) {
           {symbols.map(([symbol, quote]) => (
             <div key={symbol}>
               <span>{symbol}</span>
-              <b>{quote.last}</b>
-              <small>{quote.change_pct == null ? t(lang, "unavailable") : `${quote.change_pct}%`}</small>
+              <b>{fmtPrice(quote.last, lang) ?? t(lang, "unavailable")}</b>
+              <small
+                className={
+                  quote.change_pct == null ? "na" : Number(quote.change_pct) > 0 ? "up" : Number(quote.change_pct) < 0 ? "down" : undefined
+                }
+              >
+                {fmtPct(quote.change_pct, lang) ?? t(lang, "unavailable")}
+              </small>
             </div>
           ))}
         </div>
@@ -423,8 +464,8 @@ function EventLog({ lang }: { lang: Lang }) {
         <ul className="event-log">
           {events.slice(-8).map((row, index) => (
             <li key={`${row.ts}-${index}`}>
-              <time>{row.ts || t(lang, "noTimestamp")}</time>
-              <span>{row.event || t(lang, "unavailable")}</span>
+              <time dateTime={row.ts}>{fmtTime(row.ts, lang) ?? t(lang, "noTimestamp")}</time>
+              <span>{row.event ? row.event.replaceAll("_", " ") : t(lang, "unavailable")}</span>
             </li>
           ))}
         </ul>

@@ -1,18 +1,14 @@
 # WalkerMind dashboard verification
 
-Review base `feat/vibe-pipeline-safe-auto-screening at e39e1e8`. All browser checks used the built app, an ephemeral local session and the worker’s OBSERVE dispatcher.
+Review base `main` at `a3e9cd2` (TradingView screener, Binance price stream, per-profile account isolation). Browser checks used the built app against a local OBSERVE worker with no 3Commas or LLM keys. The accounts capture used the live read-only `/api/accounts` response.
 
 | Check | Result |
 | --- | --- |
-| Frontend | Clean `npm ci`, `npx tsc --noEmit` and `npm run build` passed |
-| Backend regression | Ruff passed. All 103 existing Python tests passed |
-| Layout | Chromium at 320, 390, 768 and 1440px, five destinations in both languages, no page overflow |
-| Header and navigation | Mode chip and control centers aligned, 44px alert and language targets, keyboard disclosure, Escape dismissal, saved language after refresh |
-| Accessibility | Eight axe-core WCAG A/AA Overview scans across EN and ID returned zero violations |
-| Authentication and recovery | Login, HttpOnly cookie with SameSite=Strict, logout, 401 returning to login, status refresh and retry after a simulated 503 passed |
-| Risk and sparse data | HALT stays visible on scroll. An incorrect confirmation word disables submission. An absent pipeline shows unavailable counts. A populated mobile table scrolls within its container |
-
-Screenshots in [the design system](DESIGN_SYSTEM.md#review-captures) show the actual local startup state. Browser-only fixtures exercise missing fields, expired sessions and request failures. This pass covers Chromium emulation. Physical devices, Safari and a connected broker account remain unverified.
+| Frontend | `npm ci`, `npx tsc --noEmit` and `npx vite build` passed |
+| Backend regression | Python unit suite passed; no backend files changed |
+| Layout | Chromium at 390, 768, 1280 and 1440px: no horizontal overflow on Overview, Screener, Settings & risk, Bots, Opportunities and sign-in |
+| Touch targets | No visible button, link, tab or field under 44px on the audited pages |
+| Data honesty | Null balances, equity and PnL render as “Not reported”/“Unavailable”; unavailable accounts are greyed with their reason and have no select button |
 
 ## Previous dashboard verification
 
