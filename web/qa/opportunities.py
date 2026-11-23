@@ -18,19 +18,20 @@ def verify(browser, base, password):
     status = context.request.get(base + "/api/status").json()
     assert status["mode"] == "observe"
     now = datetime.now(timezone.utc)
+    page.clock.install(time=now)
     at = now.isoformat()
     recorded = (now - timedelta(minutes=2)).isoformat()
     worker = {**status, "published_at": at, "universe": ["SOLUSDT", "BTCUSDT"],
               "pipeline": {**status["pipeline"], "screening": {"state": "ready", "source": "binance_spot_public", "count": 2}}}
     first = {"symbol": "SOLUSDT", "action": "BUY", "model_action": "BUY", "source": "llm evidence snapshot",
              "entry": "120.50", "stop": "118.00", "take": "125.00", "score": {"total": 82}, "fresh": True,
-             "thesis": "Closed-candle trend passed the market check.", "as_of": at, "evidence_as_of": at,
+             "thesis": "Closed-candle trend passed the market check.", "as_of": at, "evidence_as_of": (now - timedelta(minutes=25)).isoformat(),
              "backtest_passed": True, "backtest_reason": "ok"}
     second = {**first, "symbol": "BTCUSDT", "score": {"total": 95}, "action": "WAIT", "backtest_passed": False,
               "entry": None, "backtest_reason": "too_few_trades", "thesis": None}
     payloads = {
         "status": worker, "opportunities": {"cards": [first, second]},
-        "decisions": {"decisions": [{"symbol": "BTCUSDT", "status": "VETO", "reasons": ["spread"], "warnings": []}]},
+        "decisions": {"decisions": [{"symbol": "BTCUSDT", "status": "VETO", "reasons": ["spread", "secret_internal_code"], "warnings": []}]},
         "signals": {"decisions": [
             {"symbol": "BTCUSDT", "stage": "broker", "reason": "spread", "detail": "not_submitted", "recorded_at": recorded},
             {"symbol": "ETHUSDT", "stage": "universe", "reason": "outside_allowlist", "detail": "rejected", "recorded_at": recorded},
@@ -58,6 +59,10 @@ def verify(browser, base, password):
         expect(cards.first).to_contain_text("PROPOSED / NOT SUBMITTED" if en else "DIUSULKAN / BELUM DIKIRIM")
         expect(cards.last).to_contain_text("Not reported" if en else "Belum dilaporkan")
         expect(cards.first).to_contain_text("Rubric score" if en else "Skor rubrik")
+        line = cards.first.locator(".p4-status")
+        expect(line).to_contain_text("Fresh at worker publication" if en else "Terkini saat publikasi worker")
+        expect(line.locator("time")).to_have_attribute("datetime", at)
+        expect(line).to_contain_text("Evidence age 25 min" if en else "Usia bukti 25 menit")
         page.evaluate("document.fonts.ready")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         clickable = page.locator("a, button, summary, [role=button], input[type=submit], [onclick]")
@@ -81,6 +86,8 @@ def verify(browser, base, password):
         trigger.focus()
         page.keyboard.press("Enter")
         expect(drawer).to_contain_text("VETO")
+        expect(drawer).to_contain_text("Unlisted code (hidden)" if en else "Kode tidak terdaftar (disembunyikan)")
+        expect(drawer).not_to_contain_text("secret_internal_code")
         expect(drawer.locator(".p4-facts code").first).to_have_text("spread")
         expect(drawer.locator(".p4-facts dt", has_text="Assessment time" if en else "Waktu penilaian").locator("+ dd")
                ).to_have_text("Not reported" if en else "Belum dilaporkan")
@@ -90,6 +97,8 @@ def verify(browser, base, password):
         assert drawer.evaluate("el => el.scrollWidth <= el.clientWidth")
         page.keyboard.press("Escape")
         expect(trigger).to_be_focused()
+    page.clock.fast_forward(60_000)
+    expect(cards.first.locator(".p4-status")).to_contain_text("Usia bukti 26 menit")
     page.locator('nav:visible a[href="#screener"]').click()
     auto = page.locator(".p4-panel").first
     expect(auto.locator(".symbols")).to_contain_text("SOLUSDT")

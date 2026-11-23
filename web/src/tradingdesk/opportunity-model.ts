@@ -49,7 +49,10 @@ const publicCodes = new Set((
   "rsi_outside_band missing_min_notional spread_unknown spread_too_wide mtm_unreliable abnormal_volatility halt " +
   "observe_without_account observe duplicate_cooldown duplicate spot_only discovery_unavailable no_eligible_market screener_unavailable fail_closed excluded_spot_instrument not_usdt_spot missing_market_rule denylist outside_allowlist above_candidate_cap invalid_levels not_enough_candles too_few_trades non_positive_expectancy"
 ).split(" "));
-function code(value: unknown) { return typeof value === "string" && publicCodes.has(value) ? value : null; }
+function code(value: unknown) {
+  if (typeof value !== "string") return null;
+  return publicCodes.has(value) ? value : "unlisted";
+}
 
 const verdicts = new Set(["VETO", "WAIT_DATA_INCOMPLETE", "APPROVED_DEMO", "APPROVED_PAPER", "APPROVED_LIVE_PENDING_TRADE_DESK"]);
 export function gateDecisions(input: ReadInput, worker: Discovery, now: number) {
@@ -98,7 +101,9 @@ export function opportunities(input: ReadInput, worker: Discovery, gates: Return
   const list = rows(read, "cards")?.map(row => {
     const pair = symbol(row.symbol);
     const signalAt = stamp(row.as_of, now);
-    const evidenceAt = stamp(row.evidence_as_of, now);
+    const evidenceTime = sourceInstant(row.evidence_as_of, now);
+    const evidenceAt = evidenceTime === null ? null : String(row.evidence_as_of);
+    const evidenceAgeMs = evidenceTime === null ? null : Math.max(0, now - evidenceTime);
     const qualified = action(row.action);
     const score = object(row.score).total;
     const rubric = typeof score === "number" && Number.isFinite(score) && score >= 0 && score <= 100 ? score : null;
@@ -112,7 +117,8 @@ export function opportunities(input: ReadInput, worker: Discovery, gates: Return
     const evidence = observe(read, qualified, { source: "worker", at: signalAt, stale: isStale,
       partial: !isStale && (!pair || !qualified || !source || !validTimes || row.fresh !== true ||
         worker.publication.state !== "confirmed" || !worker.publication.sourceAt) }, now);
-    if (evidence.state === "confirmed" && validTimes && row.fresh === true) evidence.freshness = "fresh";
+    // The worker evaluated row.fresh when it published. Its signal expiry is not in the read contract.
+    const freshAtPublication = evidence.state === "confirmed" ? worker.publication.sourceAt : null;
     const components = ["trend", "reversal", "liquidity", "structure", "event"].map(k => {
       const value = object(row.score)[k];
       return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -125,7 +131,7 @@ export function opportunities(input: ReadInput, worker: Discovery, gates: Return
       (gates.state === "confirmed" || gates.state === "confirmed_empty") &&
       matching.every(g => g.verdict?.startsWith("APPROVED_"));
     return { symbol: pair, action: qualified, modelAction: action(row.model_action), rubric, components, minScore, scoreWarning: row.score_warning === true, confidence: decimal(row.confidence), thesis, source,
-      entry, stop, take, signalAt, evidenceAt, evidence, backtest, backtestReason: string(row.backtest_reason),
+      entry, stop, take, signalAt, evidenceAt, evidenceAgeMs, freshAtPublication, evidence, backtest, backtestReason: string(row.backtest_reason),
       why: string(row.why), whyId: string(row.why_id), regime: string(row.regime), rsi: decimal(row.rsi),
       gate: matching, proposed };
   }) ?? null;

@@ -13,6 +13,10 @@ type Gates = ReturnType<typeof gateDecisions>;
 type History = ReturnType<typeof journalEvidence>;
 const when = (v: string | null, lang: Lang) => fmtTime(v, lang, true) ?? t(lang, "unknown");
 
+function reasonLabel(code: string | null, lang: Lang) {
+  return code === "unlisted" ? t(lang, "unlistedCode") : code ?? t(lang, "unknown");
+}
+
 function useClock() {
   const [now, set] = useState(Date.now);
   useEffect(() => { const id = window.setInterval(() => set(Date.now()), 5000); return () => clearInterval(id); }, []);
@@ -40,7 +44,7 @@ function Checks({ history, pair, lang }: { history: History; pair?: string; lang
     <State item={history} lang={lang} />
     {rows?.map((row, i) => <div key={i} className="p4-record"><strong>{row.symbol ?? t(lang, "unknown")}</strong>
       <span>{row.stage} · {row.outcome ? t(lang, outcomes[row.outcome]) : t(lang, "unknown")}</span>
-      <code>{row.reasons.map(r => r ?? t(lang, "unknown")).join(", ") || t(lang, "unknown")}</code>
+      <code>{row.reasons.map(r => reasonLabel(r, lang)).join(", ") || t(lang, "unknown")}</code>
       <time dateTime={row.at ?? undefined}>{when(row.at, lang)}</time></div>)}
     {rows?.length === 0 && ["confirmed", "confirmed_empty"].includes(history.state) && <p>{t(lang, "noChecks")}</p>}
   </section>;
@@ -58,7 +62,7 @@ export function DiscoveryPanel({ status, lang }: Props) {
       ["autoSource", mode === "auto" ? sourceLabel(worker.source) : null], ["discoveryMode", mode === "auto" ? t(lang, "autoUniverse") : mode === "static" ? t(lang, "staticUniverse") : mode === "screener" ? "Screener" : null],
       ["roomState", worker.stage === "ready" || worker.stage === "blocked" ? t(lang, worker.stage) : null],
       ["roomPublication", when(worker.publication.sourceAt, lang)], ["clientReceipt", when(worker.universe.receivedAt, lang)],
-      ["reason", worker.reason],
+      ["reason", reasonLabel(worker.reason, lang)],
     ]} />
     <h3>{t(lang, "universeMembers")}</h3>
     <div className="symbols">{worker.universe.value?.length ? worker.universe.value.map((v, i) => <code key={i}>{v}</code>) :
@@ -116,7 +120,7 @@ const gateExplanation: Record<string, [string, string]> = {
 };
 function Reasons({ codes, lang }: { codes: (string | null)[] | null; lang: Lang }) {
   if (!codes?.length) return <>{t(lang, "unknown")}</>;
-  return <ul>{codes.map((code, i) => <li key={i}><code>{code ?? t(lang, "unknown")}</code>
+  return <ul>{codes.map((code, i) => <li key={i}><code>{reasonLabel(code, lang)}</code>
     {code && gateExplanation[code] && <span> · {gateExplanation[code][lang === "en" ? 0 : 1]}</span>}</li>)}</ul>;
 }
 
@@ -171,7 +175,10 @@ export function Opportunities({ status, lang }: Props) {
       return <Card className="p4-card" key={i}>
         <div className="p4-card-head"><div><span className="rank">#{i + 1}</span><h2>{card.symbol ?? na}</h2></div>
           <Badge tone={confirmed && card.action === "BUY" ? "good" : "neutral"}>{card.action ?? na}</Badge>
-        </div><div className="p4-status"><State lang={lang} item={card.evidence} />
+        </div><div className="p4-status">
+          {card.freshAtPublication ? <span>{t(lang, "freshAtPublication")} <time dateTime={card.freshAtPublication}>{when(card.freshAtPublication, lang)}</time></span> :
+            <State lang={lang} item={card.evidence} />}
+          <span>{t(lang, "evidenceAge")} {card.evidenceAgeMs === null ? na : Math.floor(card.evidenceAgeMs / 60_000) + " " + t(lang, "ageMinutes")}</span>
           {card.proposed && <strong>{t(lang, "proposedRead")}</strong>}</div>
         <h3>{t(lang, "thesis")}</h3><p>{card.thesis ?? na}</p>
         <h3>{t(lang, "levelsWorker")}</h3><div className="p4-levels">{([["entry", card.entry], ["stop", card.stop], ["target", card.take]] as const)
@@ -184,7 +191,7 @@ export function Opportunities({ status, lang }: Props) {
           ["signalClock", when(card.signalAt, lang)], ["marketTime", when(card.evidenceAt, lang)], ["modelClock", null],
         ]} />
         <details><summary>{t(lang, "why")}</summary><p>{(lang === "id" ? card.whyId : card.why) ?? na}</p>
-          <Facts lang={lang} rows={[["scoreComponents", components], ["scoreThreshold", card.minScore], ["confidence", fmtPct01(card.confidence, lang)],
+          <Facts lang={lang} rows={[["scoreComponents", components], ["scoreThreshold", card.minScore], ["modelSelfConfidence", fmtPct01(card.confidence, lang)],
             ["regime", card.regime], ["rsi", fmtNumber(card.rsi, lang, 1)]]} /></details>
         <div className="p4-actions"><Button variant="outline" disabled={!card.symbol} onClick={() => select(card.symbol)}>
           <ShieldCheck size={16} />{t(lang, "gateDetail")}</Button><Chart pair={card.symbol} lang={lang} /></div>

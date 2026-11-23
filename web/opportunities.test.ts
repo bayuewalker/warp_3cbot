@@ -66,3 +66,39 @@ test("manual research never supplies exchange membership or a missing market met
   assert.equal(researchFeed(read({ ...data, error: "TradingView scanner unavailable" }), worker, now).feed.state, "stale");
   assert.deepEqual(worker.universe.value, status.universe);
 });
+
+test("worker freshness is scoped to publication while exchange evidence ages independently", () => {
+  const readAt = (evidence_as_of: string, elapsed = 0, fresh = true) => {
+    const clock = now + elapsed;
+    return opportunities(read({ cards: [{ ...card, fresh, evidence_as_of }] }),
+      discovery(read(status), clock), emptyGates, clock).value![0];
+  };
+  const older = new Date(now - 25 * 60_000).toISOString();
+  const item = readAt(older);
+  assert.equal(item.freshAtPublication, at);
+  assert.equal(t("en", "freshAtPublication"), "Fresh at worker publication");
+  assert.equal(item.evidence.freshness, "unknown");
+  assert.equal(item.evidenceAgeMs, 25 * 60_000);
+  assert.equal(readAt(older, 60_000).evidenceAgeMs, 26 * 60_000);
+  assert.equal(readAt(new Date(now + 5_000).toISOString()).evidenceAgeMs, 0);
+  assert.equal(readAt(new Date(now + 5_001).toISOString()).evidenceAgeMs, null);
+  for (const stale of [readAt(older, 0, false), readAt(older, 900_001)]) {
+    assert.equal(stale.evidence.state, "stale");
+    assert.equal(stale.freshAtPublication, null);
+  }
+});
+
+test("AEGIS keeps a reported private reason distinct from missing evidence", () => {
+  const gate = (reasons: unknown) => gateDecisions(read({ decisions: [
+    { symbol: card.symbol, status: "VETO", reasons, warnings: [] },
+  ] }), worker, now);
+  const hidden = gate(["secret_internal_code"]);
+  assert.deepEqual(hidden.value![0].reasons, ["unlisted"]);
+  assert.equal(hidden.state, "confirmed");
+  assert.equal(t("en", "unlistedCode"), "Unlisted code (hidden)");
+  assert.equal(gate(undefined).value![0].reasons, null);
+  const missing = gate([null]);
+  assert.deepEqual(missing.value![0].reasons, [null]);
+  assert.equal(missing.state, "partial");
+  assert.equal(t("en", "unknown"), "Not reported");
+});
