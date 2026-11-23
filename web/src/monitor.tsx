@@ -1,4 +1,5 @@
-import { useCurrentRead } from "./account-read";
+import { overviewTelemetry } from "./tradingdesk/adapters";
+import { Evidence, readLabel } from "./tradingdesk/Evidence";
 import {
   Activity,
   ChevronRight,
@@ -15,8 +16,8 @@ import {
   ShieldCheck,
   Wallet,
 } from "lucide-react";
-import { useState } from "react";
-import { api, type Status, type Position, type WarpBot } from "./api";
+import { useEffect, useState } from "react";
+import { api, type Status } from "./api";
 import { t, type Lang, type Key } from "./i18n";
 import { Badge, Button, Card, CardHead, Field, Loading, Problem, inputClass } from "./ui";
 import { Age } from "./age";
@@ -310,53 +311,54 @@ function ScannerSummary({ lang, row }: { lang: Lang; row: Status }) {
 }
 
 export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
-  const positions = useLoad<{ positions: Position[]; as_of?: string; error?: string }>("/api/positions", true);
-  const positionsFresh = useCurrentRead(positions.data?.as_of, 300);
-  const positionsFailed = positions.refreshFailed || Boolean(positions.data?.error);
-
-  const bots = useLoad<{ bots: WarpBot[] }>("/api/warp-bots", true);
+  const positions = useLoad("/api/positions", true);
+  const bots = useLoad("/api/warp-bots", true);
+  const book = useLoad("/api/account-positions", true);
+  const accounts = useLoad("/api/accounts", true);
+  const events = useLoad<EventPayload>("/api/events", true);
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const timer = window.setInterval(() => tick(n => n + 1), 5000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const model = overviewTelemetry({ status, positions, bots, accounts, book, events }, Date.now());
+  if (status.issue === "awaiting_first_snapshot") return <p role="status">{t(lang, "awaitingWorker")}</p>;
   if (status.error) return <Problem lang={lang} retry={status.reload} />;
   if (!status.data) return <Loading lang={lang} />;
   const row = status.data;
-  const active = bots.data?.bots?.filter((bot) => ["confirmed", "active"].includes(bot.status)).length;
   const metrics = [
-    { title: "equity", value: row.equity, icon: Wallet, detail: "accountMark", unit: "USDT" },
-    { title: "pnl", value: row.pnl_today, icon: CircleDollarSign, detail: "todayUTC", unit: "USDT" },
-    {
-      title: "activeBots",
-      value: bots.error ? null : active,
-      icon: Bot,
-      detail: bots.error ? "refreshError" : "owned",
-    },
-    {
-      title: "open",
-      value: positionsFresh && !positionsFailed && Array.isArray(positions.data?.positions) ? positions.data.positions.length : null,
-      icon: Boxes,
-      detail: positionsFailed ? "refreshError" : "listPositions",
-    },
+    { title: "equity", icon: Wallet, detail: "accountMark", unit: "USDT" },
+    { title: "pnl", icon: CircleDollarSign, detail: "todayUTC", unit: "USDT" },
+    { title: "activeBots", icon: Bot, detail: "owned" },
+    { title: "open", icon: Boxes, detail: "listPositions" },
   ] as const;
   return (
     <div className="overview">
       <ScannerSummary lang={lang} row={row} />
       <div className="metrics">
-        {metrics.map((m) => (
-          <Card key={m.title} className="kpi">
-            <div>
-              <span>{t(lang, m.title)}</span>
-              <m.icon size={16} />
-            </div>
-            <strong className={m.value == null ? "kpi-missing" : undefined}>
-              {m.value == null
-                ? t(lang, "unknown")
-                : "unit" in m
-                  ? fmtMoney(m.value, lang) ?? t(lang, "unknown")
-                  : fmtNumber(m.value, lang, 0)}{" "}
-              {m.value != null && "unit" in m && <small>{m.unit}</small>}
-            </strong>
-            <small>{t(lang, m.detail)}</small>
-          </Card>
-        ))}
+        {metrics.map((m) => {
+          const observation = model.metrics[m.title];
+          const value = observation.value;
+          return (
+            <Card key={m.title} className="kpi">
+              <div>
+                <span>{t(lang, m.title)}</span>
+                <m.icon size={16} />
+              </div>
+              <strong className={value == null ? "kpi-missing" : undefined}>
+                {value == null
+                  ? t(lang, "unknown")
+                  : "unit" in m
+                    ? fmtMoney(value, lang) ?? t(lang, "unknown")
+                    : fmtNumber(value, lang, 0)}{" "}
+                {value != null && "unit" in m && <small>{m.unit}</small>}
+              </strong>
+              <small>{t(lang, m.detail)} · {readLabel(lang, observation.state)}</small>
+            </Card>
+          );
+        })}
       </div>
+      <Evidence lang={lang} model={model} />
       <div className="monitor-grid">
         <div className="monitor-col">
           <Pipeline lang={lang} row={row} />
@@ -408,7 +410,7 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
             <Providers lang={lang} data={row} />
           </Card>
           <PriceTape lang={lang} />
-          <EventLog lang={lang} />
+          <EventLog lang={lang} loaded={events} />
           <RiskControls lang={lang} row={row} reload={status.reload} />
         </div>
       </div>
@@ -458,8 +460,8 @@ function PriceTape({ lang }: { lang: Lang }) {
   );
 }
 
-function EventLog({ lang }: { lang: Lang }) {
-  const loaded = useLoad<{ events: { event?: string; ts?: string }[]; as_of?: string | null }>("/api/events", true);
+type EventPayload = { events: { event?: string; ts?: string }[]; as_of?: string | null };
+function EventLog({ lang, loaded }: { lang: Lang; loaded: ReturnType<typeof useLoad<EventPayload>> }) {
   const events = loaded.data?.events || [];
   return (
     <Card>

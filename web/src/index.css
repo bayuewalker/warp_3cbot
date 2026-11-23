@@ -2231,3 +2231,9 @@ tbody tr:hover {
     animation: none !important;
   }
 }
+
+.telemetry { padding: 0.75rem 1rem; }
+.telemetry summary { cursor: pointer; font-weight: 600; min-height: 44px; align-content: center; }
+.telemetry dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: 1rem; }
+.telemetry dt { font-weight: 600; }
+.telemetry dd { display: grid; gap: .2rem; margin: .35rem 0; font-size: .82rem; overflow-wrap: anywhere; }

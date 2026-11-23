@@ -136,8 +136,15 @@ def run(browser, base, password):
     expect(picker.get_by_text("Account not reported")).to_have_count(0)
     expect(page.locator(".position-card")).to_contain_text("QA/USDT")
     BUS.publish("positions", {**book, "as_of": old})
+    # A subsequent frame on the same stream is a processing barrier. The
+    # late successful book must not replace the newer one with a false zero.
+    BUS.publish("accounts", {**accounts, "accounts": [{**profile, "name": "Updated A"}]})
+    expect(picker).to_contain_text("Updated A")
+    expect(picker).to_contain_text("Open positions · 1")
+    # A new failed refresh may legitimately retain an older source time.
+    BUS.publish("positions", {**book, "as_of": old, "stale": True, "error": "strategies_stale"})
     expect(picker).to_contain_text("Open positions · Unavailable")
-    expect(page.locator(".fresh-lines p").nth(1)).to_contain_text("Stale")
+    expect(page.locator(".fresh-lines p").nth(1)).to_contain_text("Unavailable")
     BUS.publish("positions", book)
     expect(picker).to_contain_text("Open positions · 0")
     # A producer can stop publishing while healthy SSE heartbeats continue.
@@ -199,7 +206,7 @@ def layout(browser, base, password, output):
         raise SystemExit(1)
 
 
-def main():
+def main(check=run):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--layout", type=Path, metavar="SCREENSHOT_DIR")
     args = parser.parse_args()
@@ -226,13 +233,13 @@ def main():
                     if args.layout:
                         layout(browser, base, password, args.layout)
                     else:
-                        run(browser, base, password)
+                        check(browser, base, password)
                     browser.close()
             finally:
                 server.shutdown()
                 thread.join()
                 journal.close()
-    print("Account read browser regressions passed.")
+    print("Browser regressions passed.")
 
 
 if __name__ == "__main__":
