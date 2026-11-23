@@ -39,8 +39,8 @@
   .room-sprite { animation: station-idle 5s ease-in-out infinite alternate; animation-play-state: paused; }
   .station:nth-child(even) .room-sprite { animation-delay: -3s; }
   .station:nth-child(3n) .room-sprite { animation-delay: -1.6s; }
-  .trading-room[data-motion=on] .room-sprite { animation-play-state: running; }
-  .trading-room[data-motion=on] .station-event { animation: station-receipt 1.5s ease-out both; }
+  .trading-room[data-motion=on] .station[data-ambient=on] .room-sprite { animation-play-state: running; }
+  .trading-room[data-motion=on] .station[data-ambient=on] .station-event { animation: station-receipt 1.5s ease-out both; }
 }
 @keyframes station-idle { from { transform: translateY(0); } to { transform: translateY(-2px); } }
 @keyframes station-receipt { 0% { opacity: 0; } 25% { opacity: 1; } 100% { opacity: 0; transform: translateY(-50%); } }
@@ -113,7 +113,8 @@
   .station-optic { animation: room-optics 4s ease-in-out infinite alternate; animation-play-state: paused; }
   [data-role=SCAN] .station-optic { animation: room-dial 12s linear infinite; animation-play-state: paused; }
   .station:nth-child(even) .station-optic { animation-delay: -2s; }
-  .trading-room[data-motion=on] .station-optic { animation-play-state: running; }
+  .trading-room[data-motion=on] .station[data-ambient=on]:not([data-role=SCAN]) .station-optic,
+  .trading-room[data-motion=on] .station[data-ambient=on][data-role=SCAN][data-recent=on] .station-optic { animation-play-state: running; }
 }
 @keyframes room-dial { to { rotate: 1turn; } }
 @keyframes room-optics { from { opacity: .35; } to { opacity: .8; } }

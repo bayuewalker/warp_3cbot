@@ -6,7 +6,10 @@ import { t, type Lang } from "../i18n";
 import { useLiveState, useLoad } from "../snapshot";
 import { readLabel, roleLabel } from "./Evidence";
 import { record, sourceInstant } from "./frames";
-import { publishedCount, roleHistory, stationNames, stations, type Station } from "./room";
+import {
+  ambient, currentPublication, EVENT_WINDOW_MS, PUBLICATION_TTL_MS, publishedCount, roleHistory,
+  stationNames, stations, sweep, type Station,
+} from "./room";
 import type { ObservedValue } from "./types";
 import "./room.css";
 
@@ -29,12 +32,16 @@ function Sprite({ role }: { role: Station }) {
     src={'/assets/room/' + role.toLowerCase() + '.svg'} onError={() => setFailed(true)} />;
 }
 
+function executorPermitted(status: Status | null) {
+  return status?.halt === false && status.gating !== "halt" && status.gating !== "awaiting_worker" &&
+    (status.mode === "paper" || status.mode === "live");
+}
+
 function reading(lang: Lang, role: Station, item: ObservedValue<string | null>, status: Status | null) {
   if (item.state === "confirmed" && item.freshness === "unknown" && (item.value === "ready" || item.value === "pass")) {
     return t(lang, "freshnessUnknown");
   }
-  if (role === "EXECUTOR" && item.value === "permitted" && (item.freshness !== "fresh" || status?.halt !== false ||
-    status.gating === "halt" || status.gating === "awaiting_worker" || !["paper", "live"].includes(status.mode))) {
+  if (role === "EXECUTOR" && item.value === "permitted" && (item.freshness !== "fresh" || !executorPermitted(status))) {
     return item.state === "confirmed" ? t(lang, status?.halt || status?.gating === "halt" ? "blocked" : "unknown") : readLabel(lang, item.state);
   }
   return roleLabel(lang, item);
@@ -122,6 +129,25 @@ export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
     return () => { observer.disconnect(); document.removeEventListener("visibilitychange", update); };
   }, []);
   const logs = agents.WATCHER.state === "unauthorized" ? null : events;
+  // Expire motion at its evidence deadline even between two Overview refreshes.
+  const [expiredAt, setExpiredAt] = useState(now);
+  const motionNow = Math.max(now, expiredAt);
+  const publicationFresh = currentPublication(status?.published_at, motionNow);
+  useEffect(() => {
+    const clock = Date.now();
+    const deadlines: number[] = [];
+    function addDeadline(stamp: unknown, ttl: number) {
+      const time = sourceInstant(stamp, clock);
+      if (time !== null && time + ttl >= motionNow) deadlines.push(time + ttl + 1);
+    }
+    addDeadline(status?.published_at, PUBLICATION_TTL_MS);
+    if (Array.isArray(logs)) {
+      for (const entry of logs) if (record(entry)) addDeadline(entry.ts, EVENT_WINDOW_MS);
+    }
+    if (!deadlines.length) return;
+    const timer = window.setTimeout(() => setExpiredAt(Date.now()), Math.max(0, Math.min(...deadlines) - clock));
+    return () => window.clearTimeout(timer);
+  }, [logs, status?.published_at, motionNow]);
   return <>
     <section ref={room} className="room-summary trading-room" aria-labelledby="room-title"
       data-motion={motion && !text && visible && !selected ? "on" : "off"}>
@@ -136,16 +162,18 @@ export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
         const item = agents[role];
         const event = roleHistory(role, logs, now).latest;
         const at = event?.ts ?? item.sourceAt;
-        const recent = event && stream && agents.WATCHER.freshness === "fresh" && item.freshness === "fresh" &&
-          now - Date.parse(event.ts) <= 12000;
-        const count = publishedCount(item, role === "SCAN" ? status?.pipeline?.screening?.count :
+        const moving = ambient(role, item, stream, publicationFresh) && (role !== "EXECUTOR" || executorPermitted(status));
+        const recent = moving && agents.WATCHER.state === "confirmed" && agents.WATCHER.freshness === "fresh" &&
+          sweep(role, event, status?.mode, motionNow);
+        const count = publishedCount(item, role === "SCAN" && item.value !== "blocked" ? status?.pipeline?.screening?.count :
           role === "ANALYST" ? status?.pipeline?.analysis?.count : null);
         const clock = at && new Intl.DateTimeFormat(lang, { hour: "2-digit", minute: "2-digit", hour12: false }).format(Date.parse(at));
         const clockTitle = t(lang, event ? "roomEventTime" : stations[role].source === "/api/status" ? "roomPublication" : "sourceTime");
-        return <div key={role} className="station" data-role={role}>
+        return <div key={role} className="station" data-role={role} data-ambient={moving ? "on" : "off"}
+          data-recent={recent ? "on" : "off"}>
           <dt>
             {!text && <span className="station-stage" aria-hidden="true"><i className="station-optic" /><Sprite role={role} />
-              {recent && <i key={event.ts + event.event} className="station-event" />}</span>}
+              {recent && event && <i key={event.ts + event.event} className="station-event" />}</span>}
             <span>{role}</span><button className="station-open" aria-haspopup="dialog" aria-label={role}
               aria-describedby={'state-' + role} onClick={() => select(role)} /></dt>
           <dd id={'state-' + role}>{reading(lang, role, item, status) +

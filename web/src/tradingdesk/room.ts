@@ -39,6 +39,35 @@ export function roleHistory(role: Station, rows: unknown, now: number) {
   return history;
 }
 
+const ambientValue: Record<Station, string> = {
+  SCAN: "ready", ANALYST: "ready", AEGIS: "pass", EXECUTOR: "permitted", PORTFOLIO: "reported", WATCHER: "reported",
+};
+
+export const PUBLICATION_TTL_MS = 900_000;
+export const EVENT_WINDOW_MS = 12_000;
+
+export function currentPublication(stamp: unknown, now: number) {
+  const time = sourceInstant(stamp, now);
+  return time !== null && Math.max(0, now - time) <= PUBLICATION_TTL_MS;
+}
+
+export function ambient(role: Station, item: ObservedValue<string | null>, stream: boolean, publicationFresh: boolean) {
+  return stream && publicationFresh && item.state === "confirmed" && item.freshness === "fresh" &&
+    item.value === ambientValue[role];
+}
+
+/** Use the latest mapped event, never an older success superseded by a skip or a failure. */
+export function sweep(role: Station, event: RoleEvent | null, mode: string | undefined, now: number) {
+  if (!event) return false;
+  const time = sourceInstant(event.ts, now);
+  if (time === null || Math.max(0, now - time) > EVENT_WINDOW_MS) return false;
+  if (role === "WATCHER") return true;
+  const kind = Object.hasOwn(eventKind, event.event) ? eventKind[event.event] : null;
+  if (!kind || kind[0] !== role) return false;
+  if (role === "EXECUTOR") return kind[1] === "success" && (mode === "paper" || mode === "live");
+  return kind[1] !== "failure";
+}
+
 export function publishedCount(observation: ObservedValue<string | null>, value: unknown) {
   return observation.state === "confirmed" && observation.freshness === "fresh" &&
     typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;

@@ -14,6 +14,12 @@ ROUTES = {
 }
 
 
+def running_animations(root):
+    return root.evaluate("""el => document.getAnimations().filter(animation =>
+        animation.playState === "running" && el.contains(animation.effect?.target)
+    ).map(animation => animation.animationName)""")
+
+
 def verify(browser, base, password):
     context = browser.new_context(viewport={"width": 1440, "height": 960}, timezone_id="Asia/Jakarta",
                                   reduced_motion="no-preference")
@@ -38,6 +44,12 @@ def verify(browser, base, password):
     expect(room.locator("#state-AEGIS")).to_have_text("Blocked")
     expect(room.locator("#state-PORTFOLIO")).to_have_text("Unavailable")
     expect(room.locator(".station-event")).to_have_count(0)
+    scan = room.locator('[data-role=SCAN]')
+    expect(room).to_have_attribute("data-motion", "on")
+    expect(room.locator("#state-SCAN")).to_have_text("Blocked")
+    expect(scan).to_have_attribute("data-ambient", "off")
+    expect(scan.locator(".station-clock")).not_to_contain_text(" · ")
+    assert running_animations(scan) == []
     output = os.getenv("WARP_QA_SCREENSHOTS")
     for width in (1440, 390, 320):
         page.set_viewport_size({"width": width, "height": 960 if width == 1440 else 844})
@@ -63,20 +75,42 @@ def verify(browser, base, password):
             expect(drawer).to_have_count(0)
             expect(trigger).to_be_focused()
     assert len(streams) == 1
-    # A new event animates a single receipt. A publication or heartbeat alone cannot create one.
+    # Wait for WATCHER to acknowledge this receipt before checking the quiet OBSERVE executor.
     now = datetime.now(timezone.utc)
     event = {"event": "observe_candidate", "ts": now.isoformat(), "trace_id": "qa-receipt"}
     BUS.publish("snapshot", {"routes": {"/api/events": {"events": [event], "as_of": now.isoformat()}}})
-    expect(room.locator('[data-role=EXECUTOR] .station-event')).to_have_count(1)
+    expect(room.locator('[data-role=WATCHER] .station-event')).to_have_count(1)
+    executor_event = room.locator('[data-role=EXECUTOR] .station-event')
+    expect(executor_event).to_have_count(0)
     expect(room.locator('[data-role=AEGIS] .station-event')).to_have_count(0)
     room.get_by_role("button", name="EXECUTOR", exact=True).click()
     expect(drawer.get_by_text("observe_candidate", exact=False)).to_contain_text("qa-receipt")
     expect(drawer.get_by_text("Latest recorded success").locator("+ dd")).to_have_text("Not reported")
     page.keyboard.press("Escape")
 
+    # Exercise a successful receipt using only display frames on the local event bus.
+    # The engine remains in OBSERVE. No execution or settings path is called.
+    status = context.request.get(base + "/api/status").json()
+    assert status["mode"] == "observe"
+    stamp = datetime.now(timezone.utc).isoformat()
+    pipeline = {**status["pipeline"], "screening": {**status["pipeline"]["screening"], "state": "ready"}}
+    paper = {**status, "mode": "paper", "halt": False, "execution_permitted": True, "gating": "current",
+             "published_at": stamp, "pipeline": pipeline}
+    confirmation = {"event": "strategy_confirmed", "ts": stamp}
+    BUS.publish("snapshot", {"routes": {"/api/status": paper, "/api/events": {"events": [confirmation], "as_of": stamp}}})
+    expect(executor_event).to_have_count(1)
+    expect(scan).to_have_attribute("data-ambient", "on")
+    assert "station-idle" in running_animations(scan)
+    assert "room-dial" not in running_animations(scan)
+    stamp = datetime.now(timezone.utc).isoformat()
+    BUS.publish("snapshot", {"routes": {"/api/status": {**status, "published_at": stamp}}})
+    expect(room.locator("#state-EXECUTOR")).to_have_text("OBSERVE")
+    expect(executor_event).to_have_count(0)
+
     sprite = room.locator("img").first
     page.emulate_media(reduced_motion="reduce")
     assert sprite.evaluate("e => getComputedStyle(e).animationName") == "none"
+    assert running_animations(room) == []
     page.emulate_media(reduced_motion="no-preference")
     expect(room).to_have_attribute("data-motion", "on")
     page.evaluate("scrollTo(0, document.body.scrollHeight)")
@@ -99,8 +133,9 @@ def verify(browser, base, password):
     expect(drawer).to_be_visible()
     page.keyboard.press("Escape")
 
-    status = context.request.get(base + "/api/status").json()
-    assert status["mode"] == "observe"
+    # Restore functioning images and enable motion so the stale test exercises its telemetry gate.
+    page.unroute("**/assets/room/*.svg")
+    room.get_by_label("Ambient motion").check()
     page.route("**/api/stream", lambda route: route.abort())
     snapshot = {**status, "published_at": (now - timedelta(hours=2)).isoformat(), "halt": True}
     page.route("**/api/status", lambda route: route.fulfill(json=snapshot))
@@ -108,6 +143,10 @@ def verify(browser, base, password):
     expect(room.locator("#state-SCAN")).to_have_text("Stale")
     expect(room.locator('[data-role=SCAN] .station-clock')).not_to_contain_text("symbols")
     expect(room.locator("#state-WATCHER")).to_contain_text("Reconnecting")
+    expect(room).to_have_attribute("data-motion", "on")
+    expect(room.locator("img")).to_have_count(6)
+    expect(room.locator('.station[data-ambient=off]')).to_have_count(6)
+    assert running_animations(room) == []
     room.get_by_role("button", name="WATCHER", exact=True).click()
     expect(drawer.get_by_text("Reconnecting")).to_be_visible()
     expect(drawer.get_by_role("alert")).to_contain_text("HALT")
