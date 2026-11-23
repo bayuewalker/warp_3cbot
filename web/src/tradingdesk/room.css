@@ -15,11 +15,11 @@
   border-radius: 3px 3px 10px 3px; padding: 8px; min-height: 44px;
   background: linear-gradient(150deg, color-mix(in srgb, var(--station) 9%, #0f1621), #0c121c 80%);
 }
-.station[data-role=ANALYST] { --station: #bbabff; }
-.station[data-role=AEGIS] { --station: #ffd17e; }
-.station[data-role=EXECUTOR] { --station: #ffa88b; }
-.station[data-role=PORTFOLIO] { --station: #91cfff; }
-.station[data-role=WATCHER] { --station: #f7a9ca; }
+.station[data-role=ANALYST], .office-seat[data-seat=ANALYST] { --station: #bbabff; }
+.station[data-role=AEGIS], .office-seat[data-seat=AEGIS] { --station: #ffd17e; }
+.station[data-role=EXECUTOR], .office-seat[data-seat=EXECUTOR] { --station: #ffa88b; }
+.station[data-role=PORTFOLIO], .office-seat[data-seat=PORTFOLIO] { --station: #91cfff; }
+.station[data-role=WATCHER], .office-seat[data-seat=WATCHER] { --station: #f7a9ca; }
 .trading-room .station:focus-within, .trading-room .station:hover { border-color: var(--station); }
 .trading-room .station dt { color: var(--station); }
 .station-open { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: inherit; }
@@ -124,39 +124,48 @@
 .control-desk { display: grid; gap: 16px; min-width: 0; }
 .control-desk > .metrics { margin-bottom: 0; }
 .overview-room-link { width: fit-content; }
-.control-desk .trading-room { padding: 0; border-color: #334650; overflow: hidden; background: #0c141c; }
-.control-desk .trading-room > header { padding: 4px 14px; background: #111e29; border-bottom: 1px solid #334650; }
+.control-desk .trading-room { padding: 0; border-color: #384558; overflow: hidden; background: #101322; }
+.control-desk .trading-room > header { padding: 4px 14px; background: linear-gradient(105deg, #122735, #20182c); border-bottom: 1px solid #3e485c; }
 .control-desk .room-options { padding-inline: 14px; }
+.office-layout { display: grid; background: linear-gradient(145deg, #101e28, #151323); align-items: center; }
 .control-room-scene {
-  display: grid; justify-items: center; gap: clamp(10px, 2vw, 24px);
-  background: #14212a; padding: clamp(12px, 3vw, 40px);
+  position: relative; width: 100%; aspect-ratio: 1;
+  background: url("./art/control-room.webp") center / 100% 100% no-repeat #182128;
 }
-.trading-room[data-text=off] .control-room-scene {
-  background: linear-gradient(180deg, #0c141c28, #10192100 42%, #09131b90),
-    url("./art/control-room.webp") center / cover #14212a;
+.office-seat {
+  --seat-x: 19%; --seat-y: 29%;
+  position: absolute; left: var(--seat-x); top: var(--seat-y); transform: translate(-50%, -50%);
+  width: 25%; height: 22%; min-height: 44px; padding: 0;
+  display: flex; align-items: flex-start; justify-content: center; border-radius: 4px;
 }
-.control-desk .trading-room dl {
-  width: min(100%, 860px); grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: clamp(7px, 2vw, 18px);
+.office-seat[data-seat=ANALYST], .office-seat[data-seat=PORTFOLIO] { --seat-x: 50%; }
+.office-seat[data-seat=AEGIS], .office-seat[data-seat=WATCHER] { --seat-x: 81%; }
+.office-seat[data-seat=EXECUTOR], .office-seat[data-seat=PORTFOLIO], .office-seat[data-seat=WATCHER] { --seat-y: 57%; }
+.office-seat span {
+  color: #f2f5f6; background: #080e17f5; border: 1px solid #788798;
+  border-left: 3px solid var(--station, #73e9c7); border-radius: 3px;
+  box-shadow: 0 2px 6px #050914bb; font: 600 clamp(10px, 1.4vw, 13px)/1.35 var(--mono);
+  letter-spacing: .035em; padding: 1px 4px;
 }
+.office-seat:is(:hover, :focus-visible) span { color: #10151c; background: var(--station, #73e9c7); }
+.office-seat:focus-visible { outline: 2px solid white; outline-offset: 2px; }
+.office-instruments { min-width: 0; display: grid; gap: 14px; padding: clamp(9px, 1.4vw, 20px); }
+.control-desk .trading-room dl { min-width: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
 .control-desk .trading-room .station {
-  padding: clamp(5px, 1.1vw, 12px); border: 1px solid #5c6c78;
-  background: linear-gradient(155deg, #24323d, #0b121b 64%);
-  box-shadow: inset 0 1px #b5d0da20, 0 4px 0 #0a1017, 0 9px 18px #05090fa6;
-  border-radius: 6px; min-width: 0;
+  min-width: 0; padding: 7px; border: 1px solid #354754; border-radius: 5px;
+  background: linear-gradient(125deg, #13212b, #151726);
 }
-.control-desk .trading-room .station:hover, .control-desk .trading-room .station:focus-within { border-color: var(--station); }
-.control-desk .station dt { display: flex; flex-direction: column; align-items: stretch; gap: 5px; }
-.control-desk .station dt > span:last-of-type { width: max-content; max-width: 100%; overflow-wrap: anywhere; }
-.control-desk .station-stage {
-  display: grid; width: 100%; height: clamp(38px, 8vw, 82px);
-  margin: 0; border: 1px solid #516672; border-radius: 4px;
-  background: radial-gradient(ellipse at 50% 94%, color-mix(in srgb, var(--station) 28%, #13212a), #081119 74%);
-  box-shadow: inset 0 0 0 2px #101b24, 0 3px 0 #060d14;
-}
-.control-desk .station-stage::before { border: 0; inset: auto 8% 3%; background: #8195a330; height: 1px; }
-.control-desk .room-sprite { width: clamp(34px, 7vw, 79px); height: auto; position: relative; }
+.control-desk .station dt { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.control-desk .station-stage { width: 26px; height: 23px; margin: 0; border: 0; background: none; }
+.control-desk .station-stage::before, .control-desk .station-stage::after { display: none; }
+.control-desk .room-sprite { width: 26px; height: 23px; }
+.control-desk .station-optic { left: 0; top: 0; scale: .45; }
 .control-desk .station-clock { color: #afc3d1; }
+@media (min-width: 750px) {
+  .trading-room[data-text=off] .office-layout { grid-template-columns: minmax(0, 1.25fr) minmax(250px, .85fr); }
+  .office-instruments { align-content: center; }
+  .control-desk .trading-room[data-text=off] dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 .market-wall {
   width: min(100%, 650px); min-width: 0; display: grid; gap: 6px;
   background: #08131c; border: 1px solid #637d89; border-top-color: #96bac9;

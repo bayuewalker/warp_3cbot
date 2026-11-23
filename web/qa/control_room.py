@@ -50,12 +50,29 @@ def verify(browser, base, password):
         if lang == "ID":
             page.locator(".language-button").click()
             expect(page.locator("h1")).to_have_text("Terminal trading")
+        floor = room.locator(".control-room-scene")
+        seats = floor.get_by_role("button")
+        expect(seats).to_have_count(6)
+        bounds = floor.bounding_box()
+        for seat in seats.all():
+            role = seat.get_attribute("data-seat")
+            box = seat.bounding_box()
+            assert box["width"] >= 44 and box["height"] >= 44
+            assert bounds["x"] <= box["x"] and box["x"] + box["width"] <= bounds["x"] + bounds["width"]
+            assert bounds["y"] <= box["y"] and box["y"] + box["height"] <= bounds["y"] + bounds["height"]
+            seat.click()
+            drawer = page.get_by_role("dialog")
+            expect(drawer).to_have_accessible_name(role)
+            page.keyboard.press("Escape")
+            expect(seat).to_be_focused()
+        page.mouse.click(1, 1)
+        page.evaluate("window.scrollTo(0, 0)")
         assert page.evaluate("document.documentElement.scrollWidth === innerWidth")
         if getenv("WARP_QA_SCREENSHOTS"):
             folder = Path(getenv("WARP_QA_SCREENSHOTS"))
             folder.mkdir(parents=True, exist_ok=True)
             page.evaluate("document.fonts.ready")
-            page.screenshot(path=str(folder / f"WARP-Desk-{width}-{lang}.png"), full_page=True)
+            page.screenshot(path=str(folder / f"WARP-Office-{width}-{lang}.png"))
     page.locator(".language-button").click()
     page.set_viewport_size({"width": 390, "height": 844})
 

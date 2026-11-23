@@ -2,7 +2,7 @@
 
 Open `/dashboard#desk` from the sidebar, mobile navigation or Overview. The page opens at the same destination when an operator signs in through its direct link. Overview keeps account KPIs, the pipeline and existing controls.
 
-The room uses an original generated environment with six interactive WARP stations. Each station opens its telemetry detail. OBSERVE, HALT and connection status remain visible in the shared header. Text-only mode hides the set and illustrations. Existing reduced-motion and evidence requirements govern workstation animations.
+The trading floor is an original cyberpunk office interior with a rain-lit city window and industrial consoles for six seated robot agents. Tap a desk nameplate to inspect the corresponding worker evidence. The illustration is static. The adjacent status list supplies the actual agent state and opens the same detail from the keyboard. On phones, the market screen and status list sit below the office. OBSERVE, HALT and connection status remain visible in the shared header. Text-only mode hides the set and illustrations. Existing reduced-motion and evidence requirements govern workstation animations.
 
 ## Data on the desk
 
@@ -26,4 +26,4 @@ Base `b548838`. Local Chromium used a temporary authenticated OBSERVE worker wit
 | Browser | Account reads, telemetry, shell, room and dedicated desk suites passed. Verified direct authenticated navigation, shared transport, no desk mutations, price-state transitions and all six details. |
 | Responsive matrix | 140 layouts, 0 with horizontal overflow, 0 page errors. Covers seven widths and both languages. |
 
-The assets are served locally. The backdrop is approximately 117 kB. No production price feed, physical device or authenticated production deployment was used for QA.
+The assets are served locally. The backdrop is approximately 249 kB. No production price feed, physical device or authenticated production deployment was used for QA.
