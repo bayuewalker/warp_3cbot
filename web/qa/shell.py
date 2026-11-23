@@ -42,6 +42,27 @@ def verify(browser, base, password):
             output.mkdir(parents=True, exist_ok=True)
             page.screenshot(path=str(output / f"after-{width}.png"))
     page.set_viewport_size({"width": 320, "height": 844})
+    page.locator(".language-button").click()
+    expect(page.locator(".room-summary dd", has_text="Kosong terkonfirmasi").first).to_be_visible()
+    page.evaluate("document.fonts.ready")
+    for width, columns in ((320, 2), (359, 2), (360, 3)):
+        page.set_viewport_size({"width": width, "height": 844})
+        assert page.locator(".room-summary dl").evaluate(
+            "el => getComputedStyle(el).gridTemplateColumns.split(' ').length"
+        ) == columns
+    page.set_viewport_size({"width": 320, "height": 844})
+    # An element can fit horizontally while one word spans two line boxes.
+    assert page.locator(".room-summary dd").evaluate_all(r"""items => items.every(item => {
+      if (item.scrollWidth > item.clientWidth) return false;
+      const text = item.firstChild;
+      return Array.from(text.textContent.matchAll(/\S+/g)).every(match => {
+        const range = document.createRange();
+        range.setStart(text, match.index);
+        range.setEnd(text, match.index + match[0].length);
+        return range.getClientRects().length === 1;
+      });
+    })""")
+    page.locator(".language-button").click()
     page.locator("nav:visible a").nth(1).focus()
     page.keyboard.press("Enter")
     expect(page.locator("h1")).to_be_focused()
@@ -116,10 +137,35 @@ def verify(browser, base, password):
     expect(page.locator(".status-strip dt", has_text="Execution").locator("+ dd")).to_have_text("Not reported")
     page.evaluate("document.documentElement.style.fontSize='200%'")
     assert page.evaluate("document.documentElement.scrollWidth === innerWidth")
+    verify_stale_position_count(context, base)
     page.get_by_role("button", name="Sign out").click()
     expect(page.locator("input[type=password]")).to_be_visible()
     assert not errors, errors
     context.close()
+
+
+def verify_stale_position_count(context, base):
+    page = context.new_page()
+    page.route("**/api/stream", lambda route: route.abort())
+    old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    strategy = {"id": "qa-strategy", "kind": "strategy", "take_profits": []}
+    retained_book = [strategy, {"id": "qa-dca", "kind": "dca", "take_profits": []}]
+    page.route("**/api/account-positions", lambda route: route.fulfill(json={
+        "as_of": old, "positions": retained_book, "stale": True, "errors": ["strategies_stale"],
+    }))
+    page.route("**/api/positions", lambda route: route.fulfill(json={"as_of": old, "positions": [strategy]}))
+    page.goto(base + "/dashboard", wait_until="domcontentloaded")
+    for heading, label, stale, partial in (
+        ("Accounts & capital", "Open positions", "Stale", "Partial read"),
+        ("Akun & modal", "Posisi terbuka", "Kedaluwarsa", "Data sebagian"),
+    ):
+        card = page.locator("section.surface").filter(has=page.get_by_role("heading", name=heading, exact=True))
+        # Wait for the retained book to reach PORTFOLIO before asserting the count.
+        expect(card.locator(".ledger", has_text="PORTFOLIO").locator("b")).to_have_text(partial)
+        expect(card.locator(".ledger", has_text=label).locator("b")).to_have_text(stale)
+        if heading == "Accounts & capital":
+            page.locator(".language-button").click()
+    page.close()
 
 
 if __name__ == "__main__":

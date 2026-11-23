@@ -34,3 +34,13 @@ The layout matrix covers nine views in English and Indonesian at 320, 360, 390, 
 Screenshots use actual local OBSERVE startup reads with an empty journal and no broker credentials. The test process injects status faults only after capturing screenshots. Set `PYTHONPATH=src` and `CHROMIUM_PATH` to run browser checks. Set `WARP_QA_SCREENSHOTS` to capture the P2 views.
 
 Physical Android, assistive technology and production broker connectivity remain unverified. All browser tests ran in Chromium. Production deployment requires owner review.
+
+## Review follow-up to `37c04de`
+
+The Accounts & capital ledger uses the P1 SmartTrade count from `/api/positions`. A current, successful list supplies its count, including zero. On expiry the adapter clears the count. The ledger displays only `Stale` in English or `Kedaluwarsa` in Indonesian.
+
+The shell regression supplies one expired strategy and two retained combined-book rows. It waits for PORTFOLIO to report the partial book in each language, then checks the complete text of the open-position value. The renderer also supports a non-confirmed numeric value by appending its translated state. A partial-with-value browser assertion is skipped because the P1 open-position adapter emits numeric counts only for confirmed or confirmed-empty reads.
+
+Below 360 px the room summary has two columns. The browser checks cell width and individual word bounds in Indonesian at 320 px, including “Kosong terkonfirmasi”, and verifies the column change between 359 and 360 px. The screenshot pairs above show the original P2 review head, before this follow-up.
+
+Follow-up verification passed: 148 Python tests, 22 frontend tests, TypeScript, Vite, Ruff and all three Chromium regression suites. The layout run reported `126 layouts, 0 with horizontal overflow, 0 page errors`.

@@ -390,7 +390,13 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
           <RiskControls lang={lang} row={row} reload={status.reload} />
           <Card>
             <h2 className="panel-title"><Wallet />{t(lang, "venues")}</h2>
-            <div className="ledger"><span>{t(lang, "open")}</span><b>{model.metrics.open.value ?? readLabel(lang, model.metrics.open.state)}</b></div>
+            <div className="ledger">
+              <span>{t(lang, "open")}</span>
+              <b>{model.metrics.open.value ?? readLabel(lang, model.metrics.open.state)}
+                {model.metrics.open.value != null && model.metrics.open.state !== "confirmed" &&
+                  model.metrics.open.state !== "confirmed_empty" && " · " + readLabel(lang, model.metrics.open.state)}
+              </b>
+            </div>
             <div className="ledger"><span>PORTFOLIO</span><b>{roleLabel(lang, model.agents.PORTFOLIO)}</b></div>
             <a className="desk-link" href="#preferences">{t(lang, "venues")} <ChevronRight size={16} /></a>
           </Card>

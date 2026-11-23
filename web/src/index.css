@@ -2246,7 +2246,7 @@ tbody tr:hover {
 .room-summary dl { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
 .room-summary dl > div { min-width: 0; padding-left: 8px; border-left: 2px solid var(--line3); }
 .room-summary dt { font: 600 12px/1.4 var(--mono); color: var(--agent-accent); }
-.room-summary dd { color: var(--text2); font-size: 14px; overflow-wrap: anywhere; }
+.room-summary dd { color: var(--text2); font-size: 14px; overflow-wrap: break-word; }
 .desk-link { display: inline-flex; align-items: center; gap: 4px; color: var(--primary-2); }
 .terminal :is(button, input:not([type=checkbox]), select, summary, a) { min-height: var(--touch); min-width: var(--touch); }
 .overview { display: grid; gap: 12px; }
@@ -2271,4 +2271,11 @@ tbody tr:hover {
   .room-summary dd { font-size: 13px; }
   .snapshot-clock { width: auto; flex-wrap: nowrap; }
   .page-heading { align-items: center; }
+}
+
+@media (max-width: 359px) {
+  .room-summary { padding-block: 8px; }
+  .room-summary h2 { margin-bottom: 5px; }
+  .room-summary dl { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 4px; }
+  .room-summary dt, .room-summary dd { line-height: 1.25; }
 }
