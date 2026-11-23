@@ -32,7 +32,10 @@
 /* ── Tokens ── */
 :root {
   color-scheme: dark;
-  --bg: #0a0a0a;
+  --bg: #0a0a0f;
+  --command-surface: #10131a;
+  --agent-accent: #bfa8fc;
+  --touch: 44px;
   --bg2: #0e1014;
   --bg3: #14181f;
   --bg4: #1a1f28;
@@ -76,7 +79,6 @@ body {
   font: 16px/1.6 var(--body);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  overflow-x: hidden;
 }
 body::before,
 body::after {
@@ -338,10 +340,6 @@ code {
 .toolbar {
   flex: none;
   gap: 4px;
-}
-.toolbar > .badge,
-.live-badge .badge {
-  min-height: 30px;
 }
 .live-badge {
   display: inline-flex;
@@ -670,7 +668,7 @@ h3.panel-title {
 }
 .sticky-card {
   position: sticky;
-  top: 84px;
+  top: 112px;
 }
 
 /* ── Key/value rows ── */
@@ -1957,6 +1955,7 @@ tbody tr:hover {
   }
   .sticky-card {
     position: relative;
+    top: auto;
   }
   .metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2022,23 +2021,6 @@ tbody tr:hover {
   }
   .toolbar {
     gap: 2px;
-  }
-  .live-badge .badge {
-    gap: 0;
-    padding: 4px 8px;
-  }
-  .live-badge .live-text {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-  }
-  .alerts-list {
-    position: fixed;
-    top: 58px;
-    right: 10px;
   }
   .page-heading {
     flex-wrap: wrap;
@@ -2214,10 +2196,6 @@ tbody tr:hover {
   .brand strong {
     font-size: 14px;
   }
-  .toolbar > .badge {
-    padding: 4px 7px;
-    letter-spacing: 0.02em;
-  }
   .field-pair,
   .action-grid {
     grid-template-columns: minmax(0, 1fr);
@@ -2237,3 +2215,60 @@ tbody tr:hover {
 .telemetry dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: 1rem; }
 .telemetry dt { font-weight: 600; }
 .telemetry dd { display: grid; gap: .2rem; margin: .35rem 0; font-size: .82rem; overflow-wrap: anywhere; }
+
+/* Command and telemetry share one sticky header; the alert panel opens below both. */
+.header-group { background: var(--command-surface); padding-top: env(safe-area-inset-top); }
+.topbar { position: static; min-height: 54px; }
+.command-identity { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; }
+.command-identity .badge { overflow-wrap: anywhere; white-space: normal; }
+.alerts-tool { position: static; }
+.alerts-list { top: 100%; right: max(12px, env(safe-area-inset-right)); max-height: 50dvh; overflow-y: auto; }
+.status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 24px;
+  margin: 0;
+  padding: 8px clamp(18px, 3vw, 48px);
+  background: var(--bg2);
+}
+.status-strip > div, .status-strip dt { display: flex; align-items: center; gap: 6px; }
+.status-strip dt { font: 500 12px/1.3 var(--body); color: var(--muted); }
+.status-strip svg { width: 14px; height: 14px; flex-shrink: 0; }
+.status-strip dd { margin: 0; font: 600 12px/1.4 var(--mono); overflow-wrap: anywhere; }
+.status-strip [data-tone=good] { color: var(--success-2); }
+.status-strip [data-tone=warn] { color: var(--warning); }
+.status-strip [data-tone=bad] { color: var(--danger-2); }
+.room-summary { border: 1px solid var(--line2); border-radius: var(--radius); background: var(--command-surface); padding: 14px 16px; }
+@media (min-width: 901px) {
+  .workarea:has(.halt-strip) .sticky-card { top: 160px; }
+}
+.room-summary h2 { color: var(--text2); font: 600 16px/1.3 var(--display); margin-bottom: 10px; }
+.room-summary dl { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+.room-summary dl > div { min-width: 0; padding-left: 8px; border-left: 2px solid var(--line3); }
+.room-summary dt { font: 600 12px/1.4 var(--mono); color: var(--agent-accent); }
+.room-summary dd { color: var(--text2); font-size: 14px; overflow-wrap: anywhere; }
+.desk-link { display: inline-flex; align-items: center; gap: 4px; color: var(--primary-2); }
+.terminal :is(button, input:not([type=checkbox]), select, summary, a) { min-height: var(--touch); min-width: var(--touch); }
+.overview { display: grid; gap: 12px; }
+.overview .metrics, .overview .scan-card { margin-bottom: 0; }
+.terminal :is(.desk-link, .scan-foot a) { min-height: var(--touch); }
+.terminal :is(button, a, summary, input, select) { scroll-margin-block: 165px 80px; }
+@media (max-width: 900px) {
+  .workspace, .topbar, .status-strip { padding-left: max(14px, env(safe-area-inset-left)); padding-right: max(14px, env(safe-area-inset-right)); }
+  .bottom-nav { padding-inline: env(safe-area-inset-left) env(safe-area-inset-right); }
+  .room-summary dl { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 650px) {
+  .topbar { column-gap: 4px; padding-inline: max(8px, env(safe-area-inset-left)) max(8px, env(safe-area-inset-right)); }
+  .command-identity { gap: 4px 8px; }
+  .command-identity .badge { padding: 3px 6px; font-size: 11px; }
+  .status-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding-block: 6px; }
+  .status-strip > div { display: grid; align-content: start; gap: 2px; }
+  .status-strip dt { gap: 3px; }
+  .status-strip svg { width: 12px; height: 12px; }
+  .room-summary { padding: 10px 12px; }
+  .room-summary dl { gap: 8px; }
+  .room-summary dd { font-size: 13px; }
+  .snapshot-clock { width: auto; flex-wrap: nowrap; }
+  .page-heading { align-items: center; }
+}

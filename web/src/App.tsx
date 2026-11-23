@@ -1,8 +1,6 @@
 import { useCurrentRead } from "./account-read";
 import {
-  Activity,
   ArrowUpRight,
-  Bell,
   Bot,
   Boxes,
   Cpu,
@@ -10,12 +8,9 @@ import {
   Settings2,
   ShieldCheck,
   Shapes,
-  ChevronRight,
   Clock3,
   Crosshair,
-  LayoutDashboard,
   ListFilter,
-  LogOut,
   RefreshCw,
   SlidersHorizontal,
 } from "lucide-react";
@@ -38,53 +33,9 @@ import { Age, ReceivedAge } from "./age";
 import { settingLabel, settingValue } from "./labels";
 import { zoneLabel, fmtCompact, fmtMoney, fmtPct01, fmtNumber, fmtPct, fmtPrice, fmtTime, ratingLabel, sourceLabel } from "./format";
 import { stopLive } from "./live";
-import { useLiveState, useLoad } from "./snapshot";
+import { useLoad } from "./snapshot";
+import { Brand, CommandBar, pageFromHash, TradingDeskNav, type Page } from "./tradingdesk/Shell";
 
-const nav = [
-  { id: "overview", short: "overview", icon: LayoutDashboard },
-  { id: "signals", short: "minisignals", icon: Crosshair },
-  { id: "assets", short: "minibots", icon: Bot },
-  { id: "screener", short: "screener", icon: ListFilter },
-  { id: "preferences", short: "minisettings", icon: SlidersHorizontal },
-] as const;
-type Page = (typeof nav)[number]["id"];
-const WORKER_STALE_MS = 15 * 60 * 1000;
-
-function WorkerStamp({ lang, publishedAt }: { lang: Lang; publishedAt?: string | null }) {
-  const parsed = publishedAt ? Date.parse(publishedAt) : Number.NaN;
-  const known = Number.isFinite(parsed);
-  const stale = known && Date.now() - parsed > WORKER_STALE_MS;
-  return (
-    <span>
-      {t(lang, "workerSnapshot")}{" "}
-      {known ? (
-        <time dateTime={publishedAt ?? undefined}>{fmtTime(parsed, lang)}</time>
-      ) : (
-        t(lang, "workerTimeUnavailable")
-      )}
-      {stale ? <Badge tone="warn">{t(lang, "workerStale")}</Badge> : null}
-    </span>
-  );
-}
-
-function Brand() {
-  return (
-    <div className="brand">
-      <span className="mark" aria-hidden="true">
-        <svg viewBox="0 0 32 32" width="16" height="16" fill="none" strokeLinejoin="round">
-          <path d="M6 8 L16 24 L26 8" stroke="#00a8ff" strokeWidth="3" />
-          <path d="M11 14 L16 22 L21 14" stroke="#00d4aa" strokeWidth="2" />
-        </svg>
-      </span>
-      <strong>
-        WARP <b>3C</b>
-      </strong>
-    </div>
-  );
-}
-function pageFromHash(): Page {
-  return nav.find((item) => item.id === location.hash.slice(1))?.id ?? "overview";
-}
 export function App() {
   const [lang, setLang] = useState<Lang>(() => (localStorage.getItem("warp.lang") === "id" ? "id" : "en"));
   const [authed, setAuthed] = useState(false);
@@ -140,7 +91,7 @@ export function App() {
       </main>
     );
   return (
-    <Workspace
+    <TradingDeskLayout
       lang={lang}
       language={language}
       logout={async () => {
@@ -203,7 +154,7 @@ function Login({ lang, onSuccess }: { lang: Lang; onSuccess: () => void }) {
   );
 }
 
-function Workspace({
+function TradingDeskLayout({
   lang,
   language,
   logout,
@@ -226,13 +177,6 @@ function Workspace({
     window.addEventListener("hashchange", navigate);
     return () => window.removeEventListener("hashchange", navigate);
   }, []);
-  const links = (mobile: boolean) =>
-    nav.map(({ id, short, icon: Icon }) => (
-      <a key={id} href={`#${id}`} aria-current={page === id ? "page" : undefined} aria-label={t(lang, id)}>
-        <Icon size={18} />
-        <span>{t(lang, mobile ? short : id)}</span>
-      </a>
-    ));
   const title = t(lang, page === "overview" ? "portfolio" : page);
   return (
     <div className="terminal">
@@ -246,42 +190,10 @@ function Workspace({
       >
         {t(lang, "skipNav")}
       </a>
-      <aside className="rail">
-        <Brand />
-        <div className="rail-label">{t(lang, "desk")}</div>
-        <nav aria-label={t(lang, "navigation")}>{links(false)}</nav>
-      </aside>
+      <TradingDeskNav lang={lang} page={page} placement="rail" />
       <div className="workarea">
-        <div className="header-group">
-          <header className="topbar">
-            <div className="breadcrumb">
-              <Activity size={16} />
-              <span>{t(lang, "desk")}</span>
-              <ChevronRight size={14} />
-              <strong>{t(lang, page)}</strong>
-            </div>
-            <div className="mobile-brand">
-              <Brand />
-            </div>
-            <div className="toolbar">
-              <LiveBadge lang={lang} />
-              <Badge tone={row?.halt || row?.mode === "live" ? "bad" : row?.mode === "paper" ? "warn" : "info"}>
-                {row?.mode?.toUpperCase() ?? "—"}
-              </Badge>
-              <Alerts lang={lang} row={row} halted={status.data?.halt === true} error={status.error} />
-              {language}
-              <button
-                className="icon-button"
-                aria-label={t(lang, "logout")}
-                title={t(lang, "logout")}
-                onClick={() => void logout().catch(() => setLogoutError(true))}
-              >
-                <LogOut size={17} />
-              </button>
-            </div>
-          </header>
-          {status.data?.halt && <div className="halt-strip" role="alert"><strong>HALT</strong> {t(lang, "haltHelp")}</div>}
-        </div>
+        <CommandBar lang={lang} page={page} row={status.issue ? null : row} halted={status.data?.halt === true} error={status.refreshFailed}
+          language={language} onLogout={() => void logout().catch(() => setLogoutError(true))} />
         <main id="workspace" className="workspace">
           {(status.error || logoutError) && (
             <div className="alert" role="alert">
@@ -309,7 +221,6 @@ function Workspace({
                   {t(lang, "received")}{" "}
                   <time>{fmtTime(status.received, lang) ?? t(lang, "unknown")}</time>
                 </span>
-                <WorkerStamp lang={lang} publishedAt={status.data?.published_at} />
               </div>
               <button
                 className="icon-button"
@@ -332,57 +243,10 @@ function Workspace({
           {page === "preferences" && <Preferences lang={lang} status={row} />}
         </main>
       </div>
-      <nav className="bottom-nav" aria-label={t(lang, "navigation")}>
-        {links(true)}
-      </nav>
+      <TradingDeskNav lang={lang} page={page} placement="bottom" />
     </div>
   );
 }
-function Alerts({ lang, row, halted, error }: { lang: Lang; row: Status | null; halted: boolean; error: boolean }) {
-  const [open, setOpen] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    function dismiss(event: PointerEvent) {
-      if (!root.current?.contains(event.target as Node)) setOpen(false);
-    }
-    function escape(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setOpen(false);
-        trigger.current?.focus();
-      }
-    }
-    document.addEventListener("pointerdown", dismiss);
-    document.addEventListener("keydown", escape);
-    return () => {
-      document.removeEventListener("pointerdown", dismiss);
-      document.removeEventListener("keydown", escape);
-    };
-  }, [open]);
-  const messages: string[] = [];
-  if (halted) messages.push("HALT · " + t(lang, "haltHelp"));
-  if (error) messages.push(t(lang, "noSnapshot"));
-  if (row?.market_data_fresh === false) messages.push(t(lang, "stale"));
-  if (!halted && row?.risk_permitted === false) messages.push(t(lang, "gateBlocked"));
-  return (
-    <div className="alerts-tool" ref={root} onBlur={(event) => {
-      if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
-    }}>
-      <button ref={trigger} type="button" className="tool-button" aria-controls="desk-alerts"
-        aria-expanded={open} aria-label={t(lang, "statusAlerts") + (messages.length ? " (" + messages.length + ")" : "")}
-        onClick={() => setOpen(!open)}>
-        <span><Bell size={16} />{messages.length > 0 && <i className="alert-dot" />}</span>
-      </button>
-      <section id="desk-alerts" className="alerts-list" hidden={!open} aria-label={t(lang, "statusAlerts")}>
-        <h2>{t(lang, "statusAlerts")}</h2>
-        {messages.length ? <ul>{messages.map(message => <li key={message}>{message}</li>)}</ul>
-          : <p>{t(lang, row ? "noDeskAlerts" : "loading")}</p>}
-      </section>
-    </div>
-  );
-}
-
 function Sections<K extends Key>({
   lang,
   items,
@@ -863,17 +727,6 @@ function Positions({ lang }: { lang: Lang }) {
         ))}
       </div>
     </div>
-  );
-}
-
-function LiveBadge({ lang }: { lang: Lang }) {
-  const on = useLiveState();
-  return (
-    <span className="live-badge" title={t(lang, on ? "streamOn" : "reconnecting")}>
-      <Badge tone={on ? "good" : "warn"}>
-        <span className="live-text">{t(lang, on ? "streamOn" : "reconnecting")}</span>
-      </Badge>
-    </span>
   );
 }
 

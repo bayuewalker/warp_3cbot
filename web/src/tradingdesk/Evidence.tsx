@@ -25,6 +25,12 @@ export function readLabel(lang: Lang, state: ReadState) {
   return t(lang, states[state]);
 }
 
+export function roleLabel(lang: Lang, item: ObservedValue<string | null>) {
+  if (item.state !== "confirmed" || !item.value) return readLabel(lang, item.state);
+  const label = t(lang, outcomes[item.value]);
+  return item.freshness === "unknown" ? label + " · " + t(lang, "freshnessUnknown") : label;
+}
+
 export function Evidence({ lang, model }: { lang: Lang; model: ReturnType<typeof overviewTelemetry> }) {
   const metrics = Object.entries(model.metrics).map(([key, item]) => ({ label: t(lang, key as Key), item, outcome: null }));
   const roles = Object.entries(model.agents).map(([label, item]) => ({

@@ -1,5 +1,5 @@
 import { overviewTelemetry } from "./tradingdesk/adapters";
-import { Evidence, readLabel } from "./tradingdesk/Evidence";
+import { Evidence, readLabel, roleLabel } from "./tradingdesk/Evidence";
 import {
   Activity,
   ChevronRight,
@@ -249,6 +249,7 @@ function Pipeline({ lang, row }: { lang: Lang; row: Status }) {
           </li>
         ))}
       </ol>
+      <a className="desk-link" href="#signals">{t(lang, "signals")} <ChevronRight size={16} /></a>
     </Card>
   );
 }
@@ -334,7 +335,12 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
   ] as const;
   return (
     <div className="overview">
-      <ScannerSummary lang={lang} row={row} />
+      <section className="room-summary" aria-labelledby="room-title">
+        <h2 id="room-title">{t(lang, "room")}</h2>
+        <dl>{Object.entries(model.agents).map(([name, item]) => (
+          <div key={name}><dt>{name}</dt><dd>{roleLabel(lang, item)}</dd></div>
+        ))}</dl>
+      </section>
       <div className="metrics">
         {metrics.map((m) => {
           const observation = model.metrics[m.title];
@@ -361,6 +367,7 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
       <Evidence lang={lang} model={model} />
       <div className="monitor-grid">
         <div className="monitor-col">
+          <ScannerSummary lang={lang} row={row} />
           <Pipeline lang={lang} row={row} />
           <Card>
             <div className="panel-heading">
@@ -380,6 +387,13 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
           </Card>
         </div>
         <div className="monitor-col">
+          <RiskControls lang={lang} row={row} reload={status.reload} />
+          <Card>
+            <h2 className="panel-title"><Wallet />{t(lang, "venues")}</h2>
+            <div className="ledger"><span>{t(lang, "open")}</span><b>{model.metrics.open.value ?? readLabel(lang, model.metrics.open.state)}</b></div>
+            <div className="ledger"><span>PORTFOLIO</span><b>{roleLabel(lang, model.agents.PORTFOLIO)}</b></div>
+            <a className="desk-link" href="#preferences">{t(lang, "venues")} <ChevronRight size={16} /></a>
+          </Card>
           <Card>
             <h2 className="panel-title">
               <Activity />
@@ -411,7 +425,6 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
           </Card>
           <PriceTape lang={lang} />
           <EventLog lang={lang} loaded={events} />
-          <RiskControls lang={lang} row={row} reload={status.reload} />
         </div>
       </div>
     </div>
