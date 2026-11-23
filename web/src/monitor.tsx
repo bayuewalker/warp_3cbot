@@ -1,3 +1,4 @@
+import { currentPublication } from "./tradingdesk/room";
 import { TradingRoom } from "./tradingdesk/TradingRoom";
 import { overviewTelemetry } from "./tradingdesk/adapters";
 import { Evidence, readLabel, roleLabel } from "./tradingdesk/Evidence";
@@ -150,6 +151,7 @@ function RiskControls({ lang, row, reload }: { lang: Lang; row: Status; reload: 
 }
 
 function Pipeline({ lang, row }: { lang: Lang; row: Status }) {
+  const current = currentPublication(row.published_at, Date.now());
   const p = row.pipeline;
   const stages = [
     { key: "stepScreen", icon: ScanLine, stage: p?.screening, source: p?.screening?.source },
@@ -191,7 +193,7 @@ function Pipeline({ lang, row }: { lang: Lang; row: Status }) {
                     <h3>{t(lang, key)}</h3>
                     <Badge
                       tone={
-                        stage?.state === "blocked"
+                        !current || stage?.state === "blocked"
                           ? "bad"
                           : stage?.state === "pending"
                             ? "warn"
@@ -200,12 +202,12 @@ function Pipeline({ lang, row }: { lang: Lang; row: Status }) {
                               : "neutral"
                       }
                     >
-                      {stateLabel(lang, stage?.state)}
+                      {current ? stateLabel(lang, stage?.state) : t(lang, "readStale")}
                     </Badge>
                   </div>
                   <div className="stage-meta">
                     <span className="stage-source">{sourceLabel(source) || t(lang, "unknown")}</span>
-                    {stage && "count" in stage && (
+                    {current && stage && stage.state !== "blocked" && "count" in stage && (
                       <span>
                         {t(lang, "outputs")} <b>{fmtNumber(stage.count, lang, 0)}</b>
                       </span>
@@ -218,7 +220,7 @@ function Pipeline({ lang, row }: { lang: Lang; row: Status }) {
                       </span>
                     )}
                     {key === "stepScreen" && (
-                      <span>{t(lang, row.market_data_fresh ? "fresh" : "stale")}</span>
+                      <span>{t(lang, current && row.market_data_fresh ? "fresh" : "stale")}</span>
                     )}
                   </div>
                 </div>
@@ -232,7 +234,7 @@ function Pipeline({ lang, row }: { lang: Lang; row: Status }) {
                 <dt>{t(lang, "freshness")}</dt>
                 <dd>
                   {key === "stepScreen"
-                    ? t(lang, row.market_data_fresh ? "fresh" : "stale")
+                    ? t(lang, current && row.market_data_fresh ? "fresh" : "stale")
                     : t(lang, "unknown")}
                 </dd>
                 <dt>{t(lang, "inputCount")}</dt>
@@ -241,7 +243,7 @@ function Pipeline({ lang, row }: { lang: Lang; row: Status }) {
                 </dd>
                 <dt>{t(lang, "outputs")}</dt>
                 <dd>
-                  {stage && "count" in stage
+                  {current && stage && stage.state !== "blocked" && "count" in stage
                     ? fmtNumber(stage.count, lang, 0)
                     : `${t(lang, "unavailable")} · ${t(lang, "notInSnapshot")}`}
                 </dd>
@@ -256,6 +258,7 @@ function Pipeline({ lang, row }: { lang: Lang; row: Status }) {
 }
 
 function ScannerSummary({ lang, row }: { lang: Lang; row: Status }) {
+  const current = currentPublication(row.published_at, Date.now());
   const screen = row.pipeline?.screening;
   const analysis = row.pipeline?.analysis;
   const source = sourceLabel(screen?.source);
@@ -264,7 +267,7 @@ function ScannerSummary({ lang, row }: { lang: Lang; row: Status }) {
     true,
   );
   const feedSource = sourceLabel(feed.data?.source);
-  const risk = row.halt ? "HALT" : row.gating === "awaiting_worker" ? t(lang, "awaitingWorker")
+  const risk = row.halt ? "HALT" : !current ? t(lang, "readStale") : row.gating === "awaiting_worker" ? t(lang, "awaitingWorker")
     : row.risk_permitted === false ? t(lang, "gateBlocked") : stateLabel(lang, row.pipeline?.risk?.state);
   return (
     <section className="scan-card" aria-labelledby="scan-title">
@@ -273,12 +276,12 @@ function ScannerSummary({ lang, row }: { lang: Lang; row: Status }) {
           <p className="scan-source">
             <ScanLine size={16} />
             <span>
-              {t(lang, "screenerFeed")} · <b>{feedSource || t(lang, "unknown")}</b>
+              {t(lang, "workerDiscovery")} · <b>{source || t(lang, "unknown")}</b>
             </span>
           </p>
           <h2 id="scan-title">{t(lang, "scanTitle")} <em>{t(lang, "scanAccent")}</em></h2>
           <p className="scan-count">
-            <strong>{fmtNumber(screen?.count, lang, 0) ?? t(lang, "unknown")}</strong> {t(lang, "screenedSymbols")}
+            <strong>{current && screen?.state === "ready" ? fmtNumber(screen.count, lang, 0) ?? t(lang, "unknown") : t(lang, current && screen?.state === "blocked" ? "blocked" : "unknown")}</strong> {current && screen?.state === "ready" && t(lang, "symbols")}
           </p>
           <dl className="scan-facts">
             <div>
@@ -292,13 +295,13 @@ function ScannerSummary({ lang, row }: { lang: Lang; row: Status }) {
               </dd>
             </div>
             <div>
-              <dt>{t(lang, "workerDiscovery")}</dt>
-              <dd>{source || t(lang, "unknown")}</dd>
+              <dt>{t(lang, "manualResearch")}</dt>
+              <dd>{feedSource || t(lang, "unknown")}</dd>
             </div>
           </dl>
         </div>
         <div className="scan-dial">
-          <strong>{fmtNumber(analysis?.count, lang, 0) ?? "—"}</strong>
+          <strong>{current ? fmtNumber(analysis?.count, lang, 0) ?? "—" : "—"}</strong>
           <span>{t(lang, "analysisOutputs")}</span>
         </div>
       </div>
