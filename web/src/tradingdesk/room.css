@@ -1,0 +1,120 @@
+.room-summary.trading-room {
+  background: radial-gradient(ellipse at 20% 0%, #182b38 0%, transparent 65%), #101520;
+  padding: 8px 14px 14px;
+}
+.trading-room header, .room-dialog header, .room-options { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.trading-room header h2 { display: flex; align-items: center; gap: 8px; color: #e0edf4; margin: 0; }
+.trading-room header h2 svg { color: #65daca; }
+.room-settings, .room-dialog header button { display: grid; place-items: center; color: #c1d6e1; border-radius: 6px; }
+.room-options { justify-content: flex-start; flex-wrap: wrap; gap: 4px 18px; }
+.room-options label { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; cursor: pointer; }
+.room-options input { accent-color: #64dccc; }
+.trading-room .station {
+  --station: #73e9c7;
+  position: relative; border: 1px solid #354451; border-top: 2px solid var(--station);
+  border-radius: 3px 3px 10px 3px; padding: 8px; min-height: 44px;
+  background: linear-gradient(150deg, color-mix(in srgb, var(--station) 9%, #0f1621), #0c121c 80%);
+}
+.station[data-role=ANALYST] { --station: #bbabff; }
+.station[data-role=AEGIS] { --station: #ffd17e; }
+.station[data-role=EXECUTOR] { --station: #ffa88b; }
+.station[data-role=PORTFOLIO] { --station: #91cfff; }
+.station[data-role=WATCHER] { --station: #f7a9ca; }
+.trading-room .station:focus-within, .trading-room .station:hover { border-color: var(--station); }
+.trading-room .station dt { color: var(--station); }
+.station-open { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: inherit; }
+.station-open:focus-visible { outline: none; }
+.station:has(.station-open:focus-visible) { outline: 2px solid white; outline-offset: 2px; }
+.station-stage {
+  position: relative; display: grid; place-items: center; width: 100%; height: 77px; margin-bottom: 5px;
+  background: radial-gradient(ellipse at 50% 85%, color-mix(in srgb, var(--station) 15%, transparent), transparent 66%),
+    radial-gradient(#354454 0.7px, transparent 1px) 0 0 / 7px 7px;
+  border-bottom: 1px solid #344352;
+}
+.room-sprite { width: 80px; height: 70px; transform-origin: center 85%; }
+.station-event { position: absolute; inset: 0 8%; border-bottom: 2px solid var(--station); opacity: 0; }
+.trading-room .station dd { color: #e1e9ee; }
+.trading-room .station-clock { font: 400 11px/1.4 var(--mono); color: #a9bbc8; }
+@media (prefers-reduced-motion: no-preference) {
+  .room-sprite { animation: station-idle 5s ease-in-out infinite alternate; animation-play-state: paused; }
+  .station:nth-child(even) .room-sprite { animation-delay: -3s; }
+  .station:nth-child(3n) .room-sprite { animation-delay: -1.6s; }
+  .trading-room[data-motion=on] .station[data-ambient=on] .room-sprite { animation-play-state: running; }
+  .trading-room[data-motion=on] .station[data-ambient=on] .station-event { animation: station-receipt 1.5s ease-out both; }
+}
+@keyframes station-idle { from { transform: translateY(0); } to { transform: translateY(-2px); } }
+@keyframes station-receipt { 0% { opacity: 0; } 25% { opacity: 1; } 100% { opacity: 0; transform: translateY(-50%); } }
+.room-dialog {
+  position: fixed; inset: 0 0 0 auto; margin: 0; padding: 0 22px 24px; color: #dfe8ef;
+  background: #111924; border: 1px solid #425261; width: min(440px, 100%); height: 100dvh;
+  max-height: 100dvh; max-width: 100%; overflow: auto; overscroll-behavior: contain;
+}
+.room-dialog::backdrop { background: rgb(3 7 13 / 57%); }
+.room-dialog header { position: sticky; top: 0; padding: 14px 0; background: #111924; border-bottom: 1px solid #414f5c; z-index: 1; }
+.room-dialog header strong { font: 600 20px var(--mono); letter-spacing: .06em; color: #8fe0d9; }
+.room-dialog header button { width: 44px; height: 44px; border: 1px solid #41515e; }
+.room-dialog h3 { margin: 16px 0 4px; font: 600 16px var(--display); }
+.room-dialog code, .room-dialog p { font-size: 13px; color: #b4c5d2; }
+.room-dialog dl > div { display: grid; grid-template-columns: minmax(7rem, .9fr) minmax(0, 1.2fr); gap: 8px; padding: 7px 0; border-bottom: 1px solid #293742; font-size: 14px; }
+.room-dialog dt { color: #adc0cf; }
+.room-dialog dd, .room-dialog code, .room-records li { overflow-wrap: anywhere; }
+.room-dialog .room-halt { color: #ffabab; padding: 8px 0; font-weight: bold; }
+.room-records { padding-top: 4px; }
+.room-records li { padding: 5px 0; }
+@media (max-width: 650px) {
+  .room-summary.trading-room { padding: 0 8px 7px; }
+  .trading-room .station { padding: 4px 5px; }
+  .trading-room .station dt { display: flex; align-items: center; gap: 3px; font-size: 11px; }
+  .station-stage { width: 23px; height: 20px; flex: none; margin: 0; border: 0; }
+  .room-sprite { width: 23px; height: 20px; }
+  .trading-room .station-clock { font-size: 10px; }
+  .room-dialog { inset: auto 0 0; padding: 0 16px max(20px, env(safe-area-inset-bottom)); border-radius: 18px 18px 0 0; width: 100%; height: auto; max-height: 77dvh; }
+  .overview .metrics .kpi { padding: 10px; }
+  .overview .metrics .kpi strong { margin: 5px 0 3px; }
+}
+
+@media (max-width: 650px) {
+  .overview .metrics .kpi > small { display: block; font-size: 12px; line-height: 1.35; }
+  .overview .metrics .kpi > div { letter-spacing: .06em; }
+}
+@media (min-width: 360px) and (max-width: 650px) {
+  .trading-room .station dt { flex-direction: column; align-items: flex-start; gap: 0; }
+  .station-stage { width: 100%; height: 36px; }
+  .room-sprite { width: 41px; height: 36px; }
+}
+@media (min-width: 651px) {
+  .station-stage::before {
+    content: ""; position: absolute; inset: auto 9% 7%; height: 14%;
+    border: 1px solid color-mix(in srgb, var(--station) 40%, transparent);
+    transform: skewX(-32deg); box-shadow: 0 3px 0 #0b121b, 0 4px 0 #354650;
+  }
+  .room-sprite { position: relative; }
+  .station-stage::after {
+    content: ""; position: absolute; top: 6px; right: 6px; width: 10px; height: 6px;
+    border-top: 1px solid var(--station); border-right: 1px solid var(--station);
+  }
+}
+/* Ambient optics belong to the station scenery, independent of trading state. */
+@media (min-width: 360px) {
+  .station-optic { position: absolute; display: block; left: 12%; top: 18%; width: 16px; height: 16px;
+    color: var(--station); opacity: .6; pointer-events: none; }
+  [data-role=SCAN] .station-optic { border: 1px dashed; border-radius: 50%; }
+  [data-role=SCAN] .station-optic::after { content: ""; display: block; width: 50%; height: 50%; border-right: 1px solid; }
+  [data-role=ANALYST] .station-optic { border: 1px solid; transform: rotate(45deg); width: 11px; height: 11px; }
+  [data-role=AEGIS] .station-optic { border: 1px solid; border-radius: 60% 60% 80% 80%; }
+  [data-role=EXECUTOR] .station-optic { width: 14px; height: 9px; border-inline: 2px solid; border-bottom: 1px solid; }
+  [data-role=PORTFOLIO] .station-optic { height: 9px; border-block: 1px solid; box-shadow: 0 3px 0 -1px currentColor; }
+  [data-role=WATCHER] .station-optic { height: 10px; border: 1px solid; border-radius: 70% 15%; transform: rotate(32deg); }
+}
+@media (min-width: 360px) and (max-width: 650px) {
+  .station-optic { scale: .55; left: 4%; top: 20%; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .station-optic { animation: room-optics 4s ease-in-out infinite alternate; animation-play-state: paused; }
+  [data-role=SCAN] .station-optic { animation: room-dial 12s linear infinite; animation-play-state: paused; }
+  .station:nth-child(even) .station-optic { animation-delay: -2s; }
+  .trading-room[data-motion=on] .station[data-ambient=on]:not([data-role=SCAN]) .station-optic,
+  .trading-room[data-motion=on] .station[data-ambient=on][data-role=SCAN][data-recent=on] .station-optic { animation-play-state: running; }
+}
+@keyframes room-dial { to { rotate: 1turn; } }
+@keyframes room-optics { from { opacity: .35; } to { opacity: .8; } }
