@@ -5,6 +5,7 @@ import { fmtTime } from "../format";
 import { t, type Lang } from "../i18n";
 import { useLiveState, useLoad } from "../snapshot";
 import { readLabel, roleLabel } from "./Evidence";
+import { MarketWall } from "./MarketWall";
 import { record, sourceInstant } from "./frames";
 import {
   ambient, currentPublication, EVENT_WINDOW_MS, PUBLICATION_TTL_MS, publishedCount, roleHistory,
@@ -149,7 +150,7 @@ export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
     return () => window.clearTimeout(timer);
   }, [logs, status?.published_at, motionNow]);
   return <>
-    <section ref={room} className="room-summary trading-room" aria-labelledby="room-title"
+    <section ref={room} className="room-summary trading-room" aria-labelledby="room-title" data-text={text ? "on" : "off"}
       data-motion={motion && !text && visible && !selected ? "on" : "off"}>
       <header><h2 id="room-title"><Activity size={17} />{t(lang, "room")}</h2>
         <button className="room-settings" aria-label={t(lang, "roomSettings")} aria-expanded={settings}
@@ -158,6 +159,8 @@ export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
         <label><input type="checkbox" checked={motion} onChange={e => { setMotion(e.target.checked); save("warp.room.motion", e.target.checked); }} />{t(lang, "roomMotion")}</label>
         <label><input type="checkbox" checked={text} onChange={e => { setText(e.target.checked); save("warp.room.text", e.target.checked); }} />{t(lang, "roomText")}</label>
       </div>}
+      <div className="control-room-scene">
+      <MarketWall lang={lang} now={now} />
       <dl>{stationNames.map(role => {
         const item = agents[role];
         const event = roleHistory(role, logs, now).latest;
@@ -182,6 +185,7 @@ export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
             {clock ?? "—"}{count !== null && ' · ' + count + ' ' + t(lang, role === "SCAN" ? "symbols" : "outputs").toLowerCase()}</dd>
         </div>;
       })}</dl>
+      </div>
     </section>
     {selected && <RoomDetail role={selected} lang={lang} item={agents[selected]} status={status}
       history={roleHistory(selected, logs, now)} stream={stream} historyState={readLabel(lang, agents.WATCHER.state)} close={() => select(null)} />}

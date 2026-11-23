@@ -181,7 +181,7 @@ def layout(browser, base, password, output):
             page.locator(".language-button").click()
         for width in (320, 360, 390, 768, 1024, 1440, 1920):
             page.set_viewport_size({"width": width, "height": 844 if width < 600 else 960})
-            for route in ("overview", "signals", "assets", "screener", "preferences"):
+            for route in ("overview", "desk", "signals", "assets", "screener", "preferences"):
                 page.locator(f'a[href="#{route}"]:visible').first.click()
                 page.wait_for_selector(f'a[href="#{route}"][aria-current=page]', state="attached")
                 page.evaluate("document.fonts.ready")

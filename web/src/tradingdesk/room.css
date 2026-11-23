@@ -118,3 +118,74 @@
 }
 @keyframes room-dial { to { rotate: 1turn; } }
 @keyframes room-optics { from { opacity: .35; } to { opacity: .8; } }
+
+/* Dedicated control room. The backdrop and instrumentation frames are decorative. */
+.desk-workspace .page-heading { margin-bottom: 16px; }
+.control-desk { display: grid; gap: 16px; min-width: 0; }
+.control-desk > .metrics { margin-bottom: 0; }
+.overview-room-link { width: fit-content; }
+.control-desk .trading-room { padding: 0; border-color: #334650; overflow: hidden; background: #0c141c; }
+.control-desk .trading-room > header { padding: 4px 14px; background: #111e29; border-bottom: 1px solid #334650; }
+.control-desk .room-options { padding-inline: 14px; }
+.control-room-scene {
+  display: grid; justify-items: center; gap: clamp(10px, 2vw, 24px);
+  background: #14212a; padding: clamp(12px, 3vw, 40px);
+}
+.trading-room[data-text=off] .control-room-scene {
+  background: linear-gradient(180deg, #0c141c28, #10192100 42%, #09131b90),
+    url("./art/control-room.webp") center / cover #14212a;
+}
+.control-desk .trading-room dl {
+  width: min(100%, 860px); grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: clamp(7px, 2vw, 18px);
+}
+.control-desk .trading-room .station {
+  padding: clamp(5px, 1.1vw, 12px); border: 1px solid #5c6c78;
+  background: linear-gradient(155deg, #24323d, #0b121b 64%);
+  box-shadow: inset 0 1px #b5d0da20, 0 4px 0 #0a1017, 0 9px 18px #05090fa6;
+  border-radius: 6px; min-width: 0;
+}
+.control-desk .trading-room .station:hover, .control-desk .trading-room .station:focus-within { border-color: var(--station); }
+.control-desk .station dt { display: flex; flex-direction: column; align-items: stretch; gap: 5px; }
+.control-desk .station dt > span:last-of-type { width: max-content; max-width: 100%; overflow-wrap: anywhere; }
+.control-desk .station-stage {
+  display: grid; width: 100%; height: clamp(38px, 8vw, 82px);
+  margin: 0; border: 1px solid #516672; border-radius: 4px;
+  background: radial-gradient(ellipse at 50% 94%, color-mix(in srgb, var(--station) 28%, #13212a), #081119 74%);
+  box-shadow: inset 0 0 0 2px #101b24, 0 3px 0 #060d14;
+}
+.control-desk .station-stage::before { border: 0; inset: auto 8% 3%; background: #8195a330; height: 1px; }
+.control-desk .room-sprite { width: clamp(34px, 7vw, 79px); height: auto; position: relative; }
+.control-desk .station-clock { color: #afc3d1; }
+.market-wall {
+  width: min(100%, 650px); min-width: 0; display: grid; gap: 6px;
+  background: #08131c; border: 1px solid #637d89; border-top-color: #96bac9;
+  border-radius: 8px; padding: 9px 12px; box-shadow: 0 0 0 3px #0b121bb5, 0 6px 22px #080d14ca;
+}
+.market-wall-head, .market-quote, .market-quote > div, .market-trace figcaption {
+  display: flex; justify-content: space-between; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.market-wall h3, .market-wall-head > span { font: 600 12px/1.4 var(--mono); }
+.market-wall h3 { display: flex; align-items: center; gap: 6px; }
+.market-wall h3 small, .market-wall footer, .market-trace figcaption { color: #a1bcca; font: 11px/1.45 var(--mono); }
+.market-wall-head > span { color: #e3bb83; }
+.market-wall-head > [data-fresh=true] { color: #91e0d7; }
+.market-wall select { background: #102533; border: 1px solid #3b6171; padding-inline: 6px; border-radius: 4px; }
+.market-quote > div { justify-content: flex-end; }
+.market-quote strong { font: 600 clamp(16px, 2vw, 23px) var(--mono); }
+.market-wait { padding: 12px 4px; color: #b3c8d4; font-size: 13px; }
+.market-trace { margin: 0; color: #87e5d8; }
+.market-trace svg { width: 100%; height: 60px; background: repeating-linear-gradient(0deg, #203540 0 1px, transparent 1px 20px); }
+.desk-research-body p { margin-block: 4px; }
+.desk-research-body small { color: var(--muted); }
+
+@media (max-width: 359px) {
+  .control-desk .trading-room dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 650px) {
+  .desk-workspace .page-heading .eyebrow { display: none; }
+  .desk-workspace .page-heading { gap: 4px; }
+  .desk-workspace .page-heading h1 { font-size: clamp(20px, 5.7vw, 29px); }
+  .control-desk .trading-room .station dd { font-size: 12px; }
+  .control-desk .trading-room .station-clock { font-size: 10px; }
+}
