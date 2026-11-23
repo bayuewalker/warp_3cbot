@@ -2,6 +2,10 @@ export type Lang = "en" | "id";
 
 const copy = {
   en: {
+    workerAge: "Worker age",
+    freshnessUnknown: "Age unknown",
+    streamLabel: "Stream",
+    room: "Trading room",
     telemetryEvidence: "Telemetry evidence",
     sourceTime: "Source time",
     clientReceipt: "Browser receipt",
@@ -351,6 +355,10 @@ const copy = {
     providersHelp: "AI models used for analysis, and whether each is ready.",
   },
   id: {
+    workerAge: "Usia worker",
+    freshnessUnknown: "Usia tidak diketahui",
+    streamLabel: "Koneksi",
+    room: "Ruang trading",
     telemetryEvidence: "Bukti telemetri",
     sourceTime: "Waktu sumber",
     clientReceipt: "Diterima browser",
