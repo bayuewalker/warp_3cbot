@@ -1,3 +1,4 @@
+import { TradingRoom } from "./tradingdesk/TradingRoom";
 import { overviewTelemetry } from "./tradingdesk/adapters";
 import { Evidence, readLabel, roleLabel } from "./tradingdesk/Evidence";
 import {
@@ -322,10 +323,12 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
     const timer = window.setInterval(() => tick(n => n + 1), 5000);
     return () => window.clearInterval(timer);
   }, []);
-  const model = overviewTelemetry({ status, positions, bots, accounts, book, events }, Date.now());
-  if (status.issue === "awaiting_first_snapshot") return <p role="status">{t(lang, "awaitingWorker")}</p>;
-  if (status.error) return <Problem lang={lang} retry={status.reload} />;
-  if (!status.data) return <Loading lang={lang} />;
+  const now = Date.now();
+  const model = overviewTelemetry({ status, positions, bots, accounts, book, events }, now);
+  const room = <TradingRoom lang={lang} agents={model.agents} status={status.data} events={events.data?.events} now={now} />;
+  if (status.issue === "awaiting_first_snapshot") return <>{room}<p role="status">{t(lang, "awaitingWorker")}</p></>;
+  if (status.error) return <>{room}<Problem lang={lang} retry={status.reload} /></>;
+  if (!status.data) return <>{room}<Loading lang={lang} /></>;
   const row = status.data;
   const metrics = [
     { title: "equity", icon: Wallet, detail: "accountMark", unit: "USDT" },
@@ -335,12 +338,7 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
   ] as const;
   return (
     <div className="overview">
-      <section className="room-summary" aria-labelledby="room-title">
-        <h2 id="room-title">{t(lang, "room")}</h2>
-        <dl>{Object.entries(model.agents).map(([name, item]) => (
-          <div key={name}><dt>{name}</dt><dd>{roleLabel(lang, item)}</dd></div>
-        ))}</dl>
-      </section>
+      {room}
       <div className="metrics">
         {metrics.map((m) => {
           const observation = model.metrics[m.title];
