@@ -182,8 +182,13 @@ def layout(browser, base, password, output):
         for width in (320, 360, 390, 768, 1024, 1440, 1920):
             page.set_viewport_size({"width": width, "height": 844 if width < 600 else 960})
             for route in ("overview", "desk", "signals", "assets", "screener", "preferences"):
-                page.locator(f'a[href="#{route}"]:visible').first.click()
-                page.wait_for_selector(f'a[href="#{route}"][aria-current=page]', state="attached")
+                if route == "desk" and width <= 900:
+                    page.locator(".overview-room-link").click()
+                    expect(page.locator(".desk-workspace")).to_be_visible()
+                else:
+                    link = page.locator(f'nav:visible a[href="#{route}"]')
+                    link.click()
+                    expect(link).to_have_attribute("aria-current", "page")
                 page.evaluate("document.fonts.ready")
                 tabs = page.locator(".sections button")
                 for tab in range(3 if route in ("assets", "preferences") else 1):

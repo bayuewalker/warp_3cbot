@@ -9,7 +9,7 @@ import { sourceInstant } from "./frames";
 
 const nav = [
   { id: "overview", short: "overview", icon: LayoutDashboard },
-  { id: "desk", short: "miniDesk", icon: Monitor },
+  { id: "desk", short: "desk", icon: Monitor },
   { id: "signals", short: "minisignals", icon: Crosshair },
   { id: "assets", short: "minibots", icon: Bot },
   { id: "screener", short: "screener", icon: ListFilter },
@@ -37,9 +37,10 @@ export function pageFromHash(): Page {
 
 export function TradingDeskNav({ lang, page, placement }: { lang: Lang; page: Page; placement: "rail" | "bottom" }) {
   const mobile = placement === "bottom";
+  const items = mobile ? nav.filter(({ id }) => id !== "desk") : nav;
   const menu = (
     <nav aria-label={t(lang, "navigation")} className={mobile ? "bottom-nav" : undefined}>
-      {nav.map(({ id, short, icon: Icon }) => (
+      {items.map(({ id, short, icon: Icon }) => (
         <a key={id} href={`#${id}`} aria-current={page === id ? "page" : undefined} aria-label={t(lang, id)}>
           <Icon size={18} aria-hidden="true" /><span>{t(lang, mobile ? short : id)}</span>
         </a>

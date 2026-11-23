@@ -5,7 +5,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -212,22 +212,27 @@ def _filters(cfg, journal) -> ScreenerFilters:
         return ScreenerFilters.from_settings(cfg)
 
 
-def _card_fresh(card: dict, now: datetime, max_age_minutes: int) -> bool:
-    """Fail closed unless both model response and exchange evidence are recent."""
+def _card_expires_at(card: dict, now: datetime, max_age_minutes: int) -> datetime | None:
+    """Return the first deadline for the model response and exchange evidence."""
+    timestamps = []
     for field in ("as_of", "evidence_as_of"):
         raw = card.get(field)
         if not isinstance(raw, str) or not raw:
-            return False
+            return None
         try:
             timestamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        except ValueError:
-            return False
-        if timestamp.tzinfo is None:
-            return False
-        age = (now - timestamp.astimezone(timezone.utc)).total_seconds()
-        if not -60 <= age <= max_age_minutes * 60:
-            return False
-    return True
+            if timestamp.tzinfo is None:
+                return None
+            timestamp = timestamp.astimezone(timezone.utc)
+        except (ValueError, OverflowError):
+            return None
+        if (timestamp - now).total_seconds() > 60:
+            return None
+        timestamps.append(timestamp)
+    try:
+        return min(timestamps) + timedelta(minutes=max_age_minutes)
+    except OverflowError:
+        return datetime.max.replace(tzinfo=timezone.utc)
 
 
 def publish(cfg, journal, engine) -> None:
@@ -240,7 +245,12 @@ def publish(cfg, journal, engine) -> None:
     for card in getattr(engine, "last_opportunities", []) or []:
         if not isinstance(card, dict):
             continue
-        cards.append({**card, "fresh": _card_fresh(card, now, cfg.max_signal_age)})
+        expires_at = _card_expires_at(card, now, cfg.max_signal_age)
+        cards.append({
+            **card,
+            "fresh": expires_at is not None and now <= expires_at,
+            "expires_at": expires_at.isoformat() if expires_at is not None else None,
+        })
     current_cards = [card for card in cards if card["fresh"]]
     discovered = list(getattr(engine, "universe", ()))
     pipeline = {

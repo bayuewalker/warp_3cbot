@@ -1,5 +1,5 @@
 import { currentPublication } from "./tradingdesk/room";
-import { sourceInstant } from "./tradingdesk/frames";
+import { instant, sourceInstant } from "./tradingdesk/frames";
 import { TradingRoom } from "./tradingdesk/TradingRoom";
 import { overviewTelemetry } from "./tradingdesk/adapters";
 import { Evidence, readLabel, roleLabel } from "./tradingdesk/Evidence";
@@ -347,15 +347,28 @@ export function DeskPage({ lang, status }: { lang: Lang; status: StatusRead }) {
 function DeskResearch({ lang, status, now }: { lang: Lang; status: StatusRead; now: number }) {
   const loaded = useLoad<{ cards: CardRow[] }>("/api/opportunities", true);
   const card = loaded.data?.cards?.[0];
-  const current = !status.issue && currentPublication(status.data?.published_at, now);
-  const evidenceAt = sourceInstant(card?.evidence_as_of, now);
-  const signalAt = sourceInstant(card?.as_of, now);
-  const fresh = Boolean(current && !loaded.issue && card?.fresh && signalAt !== null && evidenceAt !== null);
+  const [checkedAt, setCheckedAt] = useState(0);
+  const clock = Math.max(now, checkedAt);
+  const current = !status.issue && currentPublication(status.data?.published_at, clock);
+  const evidenceAt = sourceInstant(card?.evidence_as_of, clock);
+  const signalAt = sourceInstant(card?.as_of, clock);
+  const expiresAt = instant(card?.expires_at);
+  const expired = expiresAt !== null && clock > expiresAt;
+  const fresh = current && !loaded.issue && card?.fresh === true && signalAt !== null &&
+    evidenceAt !== null && expiresAt !== null && !expired;
+  useEffect(() => {
+    if (!fresh || expiresAt === null) return;
+    const delay = Math.max(0, expiresAt + 1 - Date.now());
+    // Longer deadlines are still checked by the desk clock.
+    if (delay > 2_147_483_647) return;
+    const timer = window.setTimeout(() => setCheckedAt(Date.now()), delay);
+    return () => window.clearTimeout(timer);
+  }, [fresh, expiresAt]);
   const verdict = card && ["BUY", "WAIT", "SKIP"].includes(card.action) ? card.action : t(lang, "unknown");
   const state = loaded.issue ? t(lang, "refreshError") : !loaded.data ? t(lang, "loading") :
-    !current || card?.fresh === false ? t(lang, "readStale") : !card ? t(lang, "readEmpty") :
+    !current || card?.fresh === false || expired ? t(lang, "readStale") : !card ? t(lang, "readEmpty") :
     fresh ? t(lang, "readFresh") : t(lang, "freshnessUnknown");
-  return <Card>
+  return <Card className="desk-research">
     <CardHead icon={Cpu} title={t(lang, "deskResearch")} aside={<Badge tone={fresh ? "info" : "neutral"}>{state}</Badge>} />
     {card ? <div className="desk-research-body">
       <strong>{card.symbol} · {verdict}</strong>

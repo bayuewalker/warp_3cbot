@@ -18,7 +18,7 @@ from warp3c.config import Settings
 from warp3c.engine import Engine
 from warp3c.market import MarketDataError
 from warp3c.models import Account, AssetBalance
-from warp3c.operator import _card_fresh
+from warp3c.operator import _card_expires_at
 from warp3c.risk import signal_executable
 from warp3c.screener import Screener, ScreenerError, ScreenerFilters
 from warp3c.state import OrderJournal
@@ -26,15 +26,19 @@ from warp3c.universe import Candidate, classify
 
 
 class SafeVibePipelineTests(unittest.TestCase):
-    def test_retained_card_requires_both_fresh_signal_and_candle(self):
+    def test_retained_card_deadline_uses_older_clock_and_configured_age(self):
         now = datetime.now(timezone.utc)
         signal_time = (now - timedelta(minutes=20)).isoformat()
         stale_candle = (now - timedelta(minutes=35)).isoformat()
         recent_candle = (now - timedelta(minutes=10)).isoformat()
         card = {"as_of": signal_time, "evidence_as_of": stale_candle}
-        self.assertFalse(_card_fresh(card, now, 30))
-        self.assertFalse(_card_fresh({"as_of": signal_time}, now, 30))
-        self.assertTrue(_card_fresh({**card, "evidence_as_of": recent_candle}, now, 30))
+        self.assertEqual(_card_expires_at(card, now, 30), now - timedelta(minutes=5))
+        self.assertIsNone(_card_expires_at({"as_of": signal_time}, now, 30))
+        self.assertEqual(
+            _card_expires_at({**card, "evidence_as_of": recent_candle}, now, 20), now
+        )
+        future_candle = (now + timedelta(seconds=61)).isoformat()
+        self.assertIsNone(_card_expires_at({**card, "evidence_as_of": future_candle}, now, 30))
 
     def test_missing_scanner_does_not_substitute_binance(self):
         values = ScreenerFilters.from_mapping({"rsi_min": "50", "rsi_max": "65"})

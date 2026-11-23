@@ -28,8 +28,18 @@ def verify(browser, base, password):
         page.evaluate("document.fonts.ready")
         nav = page.locator("nav:visible")
         expect(nav).to_have_count(1)
-        expect(nav.locator("a")).to_have_count(6)
-        expect(page.locator(".bottom-nav" if width <= 900 else ".rail")).to_be_visible()
+        mobile = width <= 900
+        expect(nav.locator("a")).to_have_count(5 if mobile else 6)
+        expect(nav.locator('a[href="#desk"]')).to_have_count(0 if mobile else 1)
+        expect(page.locator(".bottom-nav" if mobile else ".rail")).to_be_visible()
+        if width in (320, 360, 390):
+            assert nav.locator("a").evaluate_all(
+                "links => links.every(link => parseFloat(getComputedStyle(link).fontSize) >= 12)"
+            ), width
+            page.get_by_role("link", name="Open Trading Desk").click()
+            expect(page.locator(".desk-workspace")).to_be_visible()
+            expect(page.locator(".bottom-nav a")).to_have_count(5)
+            nav.locator('a[href="#overview"]').click()
         for control in [*nav.locator("a").all(), *page.locator(".toolbar button").all()]:
             box = control.bounding_box()
             assert box and box["width"] >= 44 and box["height"] >= 44, (width, box)
