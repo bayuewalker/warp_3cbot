@@ -4,7 +4,7 @@ import type { ReadIssue } from "./types";
 const lists: Record<string, string> = {
   "/api/accounts": "accounts", "/api/account-positions": "positions", "/api/positions": "positions",
   "/api/warp-bots": "bots", "/api/events": "events", "/api/opportunities": "cards",
-  "/api/decisions": "decisions", "/api/screener": "hits", "/api/alerts": "alerts",
+  "/api/signals": "decisions", "/api/decisions": "decisions", "/api/screener": "hits", "/api/alerts": "alerts",
 };
 
 export function payloadIssue(path: string, data: unknown): ReadIssue | null {

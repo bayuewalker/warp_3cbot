@@ -12,7 +12,7 @@ type Evidence = {
   traceId?: unknown;
 };
 
-function observe<T>(read: ReadInput, value: T | null, evidence: Evidence, now: number): ObservedValue<T> {
+export function observe<T>(read: ReadInput, value: T | null, evidence: Evidence, now: number): ObservedValue<T> {
   if (read.issue === "unauthorized") return {
     value: null, availability: "unavailable", freshness: "unknown", state: "unauthorized",
     source: evidence.source, sourceAt: null, receivedAt: null, reason: read.issue, traceId: null,

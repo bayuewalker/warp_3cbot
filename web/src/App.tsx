@@ -1,6 +1,7 @@
+import { DiscoveryPanel, Opportunities, ResearchPanel } from "./tradingdesk/opportunities";
+import type { ReadInput } from "./tradingdesk/types";
 import { useCurrentRead } from "./account-read";
 import {
-  ArrowUpRight,
   Bot,
   Boxes,
   Cpu,
@@ -9,8 +10,6 @@ import {
   ShieldCheck,
   Shapes,
   Clock3,
-  Crosshair,
-  ListFilter,
   RefreshCw,
   SlidersHorizontal,
 } from "lucide-react";
@@ -18,7 +17,6 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import {
   api,
   AuthError,
-  type CardRow,
   type Filters,
   type Hit,
   type Position,
@@ -31,7 +29,7 @@ import { Badge, Button, Card, CardHead, Choice, Empty, Field, KV, Loading, Note,
 import { Overview, Providers } from "./monitor";
 import { Age, ReceivedAge } from "./age";
 import { settingLabel, settingValue } from "./labels";
-import { zoneLabel, fmtCompact, fmtMoney, fmtPct01, fmtNumber, fmtPct, fmtPrice, fmtTime, ratingLabel, sourceLabel } from "./format";
+import { zoneLabel, fmtCompact, fmtMoney, fmtPct01, fmtNumber, fmtTime } from "./format";
 import { stopLive } from "./live";
 import { useLoad } from "./snapshot";
 import { Brand, CommandBar, pageFromHash, TradingDeskNav, type Page } from "./tradingdesk/Shell";
@@ -234,12 +232,12 @@ function TradingDeskLayout({
           {page === "overview" && <Overview lang={lang} status={status} />}
           {page === "signals" && (
             <div className="monitor-col">
-              <Signals lang={lang} />
+              <Opportunities lang={lang} status={status} />
               <ForwardPanel lang={lang} />
             </div>
           )}
           {page === "assets" && <AssetDesk lang={lang} status={row} />}
-          {page === "screener" && <ScreenerPage lang={lang} marketFresh={row?.market_data_fresh} />}
+          {page === "screener" && <ScreenerPage lang={lang} status={status} />}
           {page === "preferences" && <Preferences lang={lang} status={row} />}
         </main>
       </div>
@@ -318,123 +316,6 @@ function Preferences({ lang, status }: { lang: Lang; status: Status | null }) {
     </>
   );
 }
-function Signals({ lang }: { lang: Lang }) {
-  const loaded = useLoad<{ cards: CardRow[] }>("/api/opportunities", true);
-  if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
-  if (!loaded.data) return <Loading lang={lang} />;
-  const fresh = (
-    <p className="panel-note page-fresh">
-      <ReceivedAge at={loaded.received} lang={lang} />
-    </p>
-  );
-  if (!loaded.data.cards.length)
-    return (
-      <div className="stack">
-        {fresh}
-        <Empty icon={Crosshair} text={t(lang, "noSignals")} />
-      </div>
-    );
-  const na = t(lang, "unknown");
-  return (
-    <div className="stack">
-    {fresh}
-    <div className="opportunity-grid">
-      {loaded.data.cards.map((card, index) => {
-        const confidence = fmtPct01(card.confidence, lang);
-        return (
-          <Card key={card.symbol} className="signal-card">
-            <CardHead
-              title={
-                <>
-                  <span className="rank">#{index + 1}</span>
-                  {card.symbol}
-                </>
-              }
-              help={`${card.regime ? card.regime[0].toUpperCase() + card.regime.slice(1) : na} · RSI ${fmtNumber(card.rsi, lang, 1) ?? na}`}
-              aside={
-                <>
-                  <Badge tone={card.action === "BUY" ? "good" : card.action === "SKIP" ? "bad" : "warn"}>
-                    {card.action ?? na}
-                  </Badge>
-                  {card.fresh === false ? <Badge tone="warn">{t(lang, "staleEvidence")}</Badge> : null}
-                </>
-              }
-            />
-            <div className="metric-grid">
-              <Metric label={t(lang, "entry")} value={fmtPrice(card.entry, lang)} empty={na} />
-              <Metric label={t(lang, "stop")} value={fmtPrice(card.stop, lang)} empty={na} />
-              <Metric label={t(lang, "target")} value={fmtPrice(card.take, lang)} empty={na} />
-            </div>
-            <KV
-              rows={[
-                [
-                  t(lang, "score"),
-                  card.score ? (
-                    <>
-                      <b>{card.score.total}</b> / 100
-                      {card.score_warning ? <span className="text-warn"> · {t(lang, "scoreWarning")}</span> : null}
-                    </>
-                  ) : (
-                    na
-                  ),
-                  card.score
-                    ? `${t(lang, "weightTrend")} ${card.score.trend} · ${t(lang, "weightReversal")} ${card.score.reversal} · ${t(lang, "weightLiquidity")} ${card.score.liquidity} · ${t(lang, "weightStructure")} ${card.score.structure} · ${t(lang, "weightEvent")} ${card.score.event}`
-                    : undefined,
-                ],
-                [
-                  t(lang, "confidence"),
-                  <>
-                    {confidence ?? na}
-                    {card.model_action && card.model_action !== card.action
-                      ? ` · ${t(lang, "model")} ${card.model_action}`
-                      : ""}
-                  </>,
-                ],
-                [
-                  t(lang, "backtest"),
-                  <>
-                    {card.backtest_passed == null ? na : card.backtest_passed ? t(lang, "passed") : t(lang, "failed")}
-                    {card.backtest_reason ? ` · ${card.backtest_reason.replaceAll("_", " ")}` : ""}
-                  </>,
-                ],
-                [t(lang, "source"), sourceLabel(card.source) || na],
-                [t(lang, "signalTime"), <time>{fmtTime(card.as_of, lang, true) ?? na}</time>],
-                [t(lang, "marketTime"), <time>{fmtTime(card.evidence_as_of, lang, true) ?? na}</time>],
-                [t(lang, "exchange"), <span className="na">{t(lang, "unavailable")} · {t(lang, "notInSnapshot")}</span>],
-                [t(lang, "riskScore"), <span className="na">{t(lang, "unavailable")} · {t(lang, "notInSnapshot")}</span>],
-              ]}
-            />
-            <details className="disclosure">
-              <summary>{t(lang, "why")}</summary>
-              <p>{lang === "id" ? card.why_id : card.why}</p>
-            </details>
-            {/^[A-Z0-9]+USDT$/.test(card.symbol) && (
-              <a
-                className="btn btn-ghost link-button"
-                href={`https://www.tradingview.com/chart/?symbol=BINANCE%3A${encodeURIComponent(card.symbol)}`}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                {t(lang, "chart")} · TradingView <ArrowUpRight size={15} />
-              </a>
-            )}
-          </Card>
-        );
-      })}
-    </div>
-    </div>
-  );
-}
-
-function Metric({ label, value, empty }: { label: string; value: string | null; empty: string }) {
-  return (
-    <div className="metric-cell">
-      <p>{label}</p>
-      <strong className={value == null ? "kpi-missing" : undefined}>{value ?? empty}</strong>
-    </div>
-  );
-}
-
 function helpKey(preset: "conservative" | "moderate" | "aggressive"): Key {
   if (preset === "conservative") return "conservativeHelp";
   if (preset === "aggressive") return "aggressiveHelp";
@@ -730,7 +611,7 @@ function Positions({ lang }: { lang: Lang }) {
   );
 }
 
-function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean }) {
+function ScreenerPage({ lang, status }: { lang: Lang; status: ReadInput }) {
   const loaded = useLoad<{
     filters: Filters;
     hits: Hit[];
@@ -742,86 +623,17 @@ function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean
   const form = draft ?? loaded.data?.filters;
   const [note, setNote] = useState("");
 
-  if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
-  if (!loaded.data || !form) return <Loading lang={lang} />;
   async function save(event: FormEvent) {
     event.preventDefault();
     if (!form) return;
     await api("/api/screener/filters", { method: "POST", body: JSON.stringify(form) });
     setNote(t(lang, "saved"));
   }
-  const result = loaded.data;
   return (
     <div className="monitor-col">
-      <Card>
-        <CardHead
-          icon={ListFilter}
-          title={t(lang, "candidates")}
-          help={<Age at={result.fetched_at} limit={1800} lang={lang} reason={result.error} />}
-          aside={<Badge tone="info">{sourceLabel(result.source) || t(lang, "unavailable")}</Badge>}
-        />
-        {result.error && (
-          <p role="alert" className="alert">
-            {result.error}
-          </p>
-        )}
-        {marketFresh === false && <Note tone="warn">{t(lang, "stale")}</Note>}
-        {result.hits.length ? (
-          <div className="table-scroll" tabIndex={0} role="region" aria-label={t(lang, "candidates")}>
-            <table className="data-table screener-table">
-              <caption className="sr-only">{t(lang, "candidates")}</caption>
-              <thead>
-                <tr>
-                  {[
-                    t(lang, "rank"),
-                    t(lang, "symbols"),
-                    t(lang, "price"),
-                    t(lang, "momentum"),
-                    t(lang, "volume") + " (USDT)",
-                    "RSI",
-                    t(lang, "recommendation"),
-                  ].map((label) => (
-                    <th key={label} scope="col">
-                      {label}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {result.hits.map((hit, index) => {
-                  const na = t(lang, "unavailable");
-                  const change = fmtPct(hit.change_pct, lang);
-                  const rating = ratingLabel(hit.recommendation, lang);
-                  return (
-                    <tr key={hit.symbol}>
-                      <td className="num-muted cell-rank">{index + 1}</td>
-                      <th scope="row">{hit.symbol}</th>
-                      <td data-label={t(lang, "price")}>{fmtPrice(hit.last, lang) ?? na}</td>
-                      <td data-label={t(lang, "momentum")} className={change == null ? "na" : Number(hit.change_pct) > 0 ? "up" : Number(hit.change_pct) < 0 ? "down" : undefined}>
-                        {change ?? na}
-                      </td>
-                      <td data-label={t(lang, "volume") + " (USDT)"}>{fmtCompact(hit.quote_volume, lang) ?? na}</td>
-                      <td data-label="RSI">{fmtNumber(hit.rsi, lang, 1) ?? na}</td>
-                      <td data-label={t(lang, "recommendation")}>
-                        {rating ? (
-                          <span className={`rating ${rating.tone}`} title={fmtNumber(rating.value, lang, 2) ?? undefined}>
-                            {rating.text} <small>{fmtNumber(rating.value, lang, 2)}</small>
-                          </span>
-                        ) : (
-                          na
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          !result.error && <p className="empty-line">{t(lang, "noHits")}</p>
-        )}
-      </Card>
-      <Card>
+      <DiscoveryPanel lang={lang} status={status} />
+      <ResearchPanel lang={lang} status={status} feed={loaded} />
+      {loaded.error ? <Problem lang={lang} retry={loaded.reload} /> : !form ? <Loading lang={lang} /> : <Card>
         <CardHead icon={SlidersHorizontal} title={t(lang, "filters")} help={t(lang, "filtersHelp")} />
         <form
           className="form-stack"
@@ -883,7 +695,7 @@ function ScreenerPage({ lang, marketFresh }: { lang: Lang; marketFresh?: boolean
           <Button type="submit">{t(lang, "apply")}</Button>
           {note ? <Note>{note}</Note> : null}
         </form>
-      </Card>
+      </Card>}
     </div>
   );
 }

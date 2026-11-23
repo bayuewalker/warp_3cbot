@@ -2279,3 +2279,33 @@ tbody tr:hover {
   .room-summary dl { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 4px; }
   .room-summary dt, .room-summary dd { line-height: 1.25; }
 }
+
+/* P4A discovery and opportunity evidence */
+.p4-workbench, .p4-grid { display: grid; gap: 14px; min-width: 0; }
+.p4-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 350px), 1fr)); align-items: start; }
+.p4-card, .p4-band, .p4-panel, .p4-dialog { min-width: 0; overflow-wrap: anywhere; }
+.p4-band, .p4-card { border-top: 2px solid #57889d; }
+.p4-card-head, .p4-card-head > div, .p4-actions, .p4-status, .p4-context, .p4-gate-read {
+  display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap;
+}
+.p4-card-head, .p4-actions { justify-content: space-between; }
+.p4-card-head h2 { font: 600 20px var(--display); }
+.p4-card h3, .p4-panel h3, .p4-checks h3 { color: var(--text2); font: 600 14px var(--body); margin: 15px 0 6px; }
+.p4-status { margin: 8px 0; font-size: 12px; color: var(--primary-2); }
+.p4-levels { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); border-block: 1px solid var(--line2); }
+.p4-levels > div { padding: 8px 3px; min-width: 0; }
+.p4-levels small, .p4-levels b { display: block; }
+.p4-levels small, .p4-context, .p4-gate-read, .p4-panel .panel-note, .p4-checks time { color: var(--muted); font-size: 13px; }
+.p4-levels b { font: 600 15px var(--mono); }
+.p4-facts { margin-block: 8px; }
+.p4-facts > div { display: grid; grid-template-columns: minmax(90px,.9fr) minmax(0,1.4fr); gap: 8px; padding-block: 5px; border-bottom: 1px solid var(--line); font-size: 14px; }
+.p4-facts dt { color: var(--muted); }
+.p4-actions { margin: 8px 0; }
+.p4-checks { margin-top: 12px; }
+.p4-record { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 4px 10px; padding: 8px 0; border-bottom: 1px solid var(--line2); }
+.p4-record code { color: var(--primary-2); }
+.p4-dialog .p4-checks p, .p4-panel p, .p4-dialog > p { margin-block: 8px; }
+.p4-empty { padding: 18px; border: 1px solid var(--line2); border-radius: var(--radius); color: var(--text2); }
+.p4-card summary, .p4-link summary { display: flex; align-items: center; cursor: pointer; color: var(--primary-2); }
+.p4-card summary::before, .p4-link summary::before { content: "+"; margin-right: .5em; }
+.p4-card details[open] summary::before, .p4-link[open] summary::before { content: "−"; }
