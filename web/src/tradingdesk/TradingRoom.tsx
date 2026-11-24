@@ -5,6 +5,7 @@ import { fmtTime } from "../format";
 import { t, type Lang } from "../i18n";
 import { useLiveState, useLoad } from "../snapshot";
 import { readLabel, roleLabel } from "./Evidence";
+import { MarketWall } from "./MarketWall";
 import { record, sourceInstant } from "./frames";
 import {
   ambient, currentPublication, EVENT_WINDOW_MS, PUBLICATION_TTL_MS, publishedCount, roleHistory,
@@ -149,7 +150,7 @@ export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
     return () => window.clearTimeout(timer);
   }, [logs, status?.published_at, motionNow]);
   return <>
-    <section ref={room} className="room-summary trading-room" aria-labelledby="room-title"
+    <section ref={room} className="room-summary trading-room" aria-labelledby="room-title" data-text={text ? "on" : "off"}
       data-motion={motion && !text && visible && !selected ? "on" : "off"}>
       <header><h2 id="room-title"><Activity size={17} />{t(lang, "room")}</h2>
         <button className="room-settings" aria-label={t(lang, "roomSettings")} aria-expanded={settings}
@@ -158,30 +159,42 @@ export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
         <label><input type="checkbox" checked={motion} onChange={e => { setMotion(e.target.checked); save("warp.room.motion", e.target.checked); }} />{t(lang, "roomMotion")}</label>
         <label><input type="checkbox" checked={text} onChange={e => { setText(e.target.checked); save("warp.room.text", e.target.checked); }} />{t(lang, "roomText")}</label>
       </div>}
-      <dl>{stationNames.map(role => {
-        const item = agents[role];
-        const event = roleHistory(role, logs, now).latest;
-        const at = event?.ts ?? item.sourceAt;
-        const moving = ambient(role, item, stream, publicationFresh) && (role !== "EXECUTOR" || executorPermitted(status));
-        const recent = moving && agents.WATCHER.state === "confirmed" && agents.WATCHER.freshness === "fresh" &&
-          sweep(role, event, status?.mode, motionNow);
-        const count = publishedCount(item, role === "SCAN" && item.value !== "blocked" ? status?.pipeline?.screening?.count :
-          role === "ANALYST" ? status?.pipeline?.analysis?.count : null);
-        const clock = at && new Intl.DateTimeFormat(lang, { hour: "2-digit", minute: "2-digit", hour12: false }).format(Date.parse(at));
-        const clockTitle = t(lang, event ? "roomEventTime" : stations[role].source === "/api/status" ? "roomPublication" : "sourceTime");
-        return <div key={role} className="station" data-role={role} data-ambient={moving ? "on" : "off"}
-          data-recent={recent ? "on" : "off"}>
-          <dt>
-            {!text && <span className="station-stage" aria-hidden="true"><i className="station-optic" /><Sprite role={role} />
-              {recent && event && <i key={event.ts + event.event} className="station-event" />}</span>}
-            <span>{role}</span><button className="station-open" aria-haspopup="dialog" aria-label={role}
-              aria-describedby={'state-' + role} onClick={() => select(role)} /></dt>
-          <dd id={'state-' + role}>{reading(lang, role, item, status) +
-            (role === "WATCHER" && !stream ? " · " + t(lang, "reconnecting") : "")}</dd>
-          <dd className="station-clock" aria-label={clockTitle + ' · ' + (fmtTime(at, lang, true) ?? t(lang, "unknown"))} title={clockTitle + ' · ' + (fmtTime(at, lang, true) ?? t(lang, "unknown"))}>
-            {clock ?? "—"}{count !== null && ' · ' + count + ' ' + t(lang, role === "SCAN" ? "symbols" : "outputs").toLowerCase()}</dd>
-        </div>;
-      })}</dl>
+      <div className="office-layout">
+        {!text && <div className="control-room-scene" role="group" aria-label={t(lang, "officeFloor")}>
+          {stationNames.map(role => <button key={role} className="office-seat" data-seat={role}
+            aria-label={t(lang, "officeFloor") + " · " + role} aria-haspopup="dialog"
+            aria-describedby={'state-' + role} onClick={() => select(role)}>
+            <span>{role}</span>
+          </button>)}
+        </div>}
+        <div className="office-instruments">
+          <MarketWall lang={lang} now={now} />
+          <dl>{stationNames.map(role => {
+            const item = agents[role];
+            const event = roleHistory(role, logs, now).latest;
+            const at = event?.ts ?? item.sourceAt;
+            const moving = ambient(role, item, stream, publicationFresh) && (role !== "EXECUTOR" || executorPermitted(status));
+            const recent = moving && agents.WATCHER.state === "confirmed" && agents.WATCHER.freshness === "fresh" &&
+              sweep(role, event, status?.mode, motionNow);
+            const count = publishedCount(item, role === "SCAN" && item.value !== "blocked" ? status?.pipeline?.screening?.count :
+              role === "ANALYST" ? status?.pipeline?.analysis?.count : null);
+            const clock = at && new Intl.DateTimeFormat(lang, { hour: "2-digit", minute: "2-digit", hour12: false }).format(Date.parse(at));
+            const clockTitle = t(lang, event ? "roomEventTime" : stations[role].source === "/api/status" ? "roomPublication" : "sourceTime");
+            return <div key={role} className="station" data-role={role} data-ambient={moving ? "on" : "off"}
+              data-recent={recent ? "on" : "off"}>
+              <dt>
+                {!text && <span className="station-stage" aria-hidden="true"><i className="station-optic" /><Sprite role={role} />
+                  {recent && event && <i key={event.ts + event.event} className="station-event" />}</span>}
+                <span>{role}</span><button className="station-open" aria-haspopup="dialog" aria-label={role}
+                  aria-describedby={'state-' + role} onClick={() => select(role)} /></dt>
+              <dd id={'state-' + role}>{reading(lang, role, item, status) +
+                (role === "WATCHER" && !stream ? " · " + t(lang, "reconnecting") : "")}</dd>
+              <dd className="station-clock" aria-label={clockTitle + ' · ' + (fmtTime(at, lang, true) ?? t(lang, "unknown"))} title={clockTitle + ' · ' + (fmtTime(at, lang, true) ?? t(lang, "unknown"))}>
+                {clock ?? "—"}{count !== null && ' · ' + count + ' ' + t(lang, role === "SCAN" ? "symbols" : "outputs").toLowerCase()}</dd>
+            </div>;
+          })}</dl>
+        </div>
+      </div>
     </section>
     {selected && <RoomDetail role={selected} lang={lang} item={agents[selected]} status={status}
       history={roleHistory(selected, logs, now)} stream={stream} historyState={readLabel(lang, agents.WATCHER.state)} close={() => select(null)} />}

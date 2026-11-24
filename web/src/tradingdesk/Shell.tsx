@@ -1,4 +1,4 @@
-import { Activity, Bell, Bot, ChevronRight, Clock3, Crosshair, LayoutDashboard, ListFilter, LogOut, Radio, ShieldCheck, ShieldOff, SlidersHorizontal } from "lucide-react";
+import { Activity, Bell, Bot, ChevronRight, Clock3, Crosshair, LayoutDashboard, ListFilter, LogOut, Monitor, Radio, ShieldCheck, ShieldOff, SlidersHorizontal } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Status } from "../api";
 import { t, type Lang } from "../i18n";
@@ -9,6 +9,7 @@ import { sourceInstant } from "./frames";
 
 const nav = [
   { id: "overview", short: "overview", icon: LayoutDashboard },
+  { id: "desk", short: "desk", icon: Monitor },
   { id: "signals", short: "minisignals", icon: Crosshair },
   { id: "assets", short: "minibots", icon: Bot },
   { id: "screener", short: "screener", icon: ListFilter },
@@ -36,9 +37,10 @@ export function pageFromHash(): Page {
 
 export function TradingDeskNav({ lang, page, placement }: { lang: Lang; page: Page; placement: "rail" | "bottom" }) {
   const mobile = placement === "bottom";
+  const items = mobile ? nav.filter(({ id }) => id !== "desk") : nav;
   const menu = (
     <nav aria-label={t(lang, "navigation")} className={mobile ? "bottom-nav" : undefined}>
-      {nav.map(({ id, short, icon: Icon }) => (
+      {items.map(({ id, short, icon: Icon }) => (
         <a key={id} href={`#${id}`} aria-current={page === id ? "page" : undefined} aria-label={t(lang, id)}>
           <Icon size={18} aria-hidden="true" /><span>{t(lang, mobile ? short : id)}</span>
         </a>

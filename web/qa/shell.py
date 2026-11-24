@@ -20,7 +20,7 @@ def verify(browser, base, password):
     expect(page.locator("html")).to_have_attribute("lang", "en")
     expect(page.locator(".command-identity .badge")).to_contain_text("OBSERVE")
     expect(page.locator(".status-strip").get_by_text("Blocked", exact=True)).to_be_visible()
-    expect(page.locator(".room-summary dt")).to_have_count(6)
+    expect(page.locator(".room-summary")).to_have_count(0)
     expect(page.locator(".live-badge")).to_have_text("Live")
     for width in (320, 360, 390, 768, 900, 901, 1024, 1440, 1920):
         height = 844 if width < 600 else 960
@@ -28,8 +28,18 @@ def verify(browser, base, password):
         page.evaluate("document.fonts.ready")
         nav = page.locator("nav:visible")
         expect(nav).to_have_count(1)
-        expect(nav.locator("a")).to_have_count(5)
-        expect(page.locator(".bottom-nav" if width <= 900 else ".rail")).to_be_visible()
+        mobile = width <= 900
+        expect(nav.locator("a")).to_have_count(5 if mobile else 6)
+        expect(nav.locator('a[href="#desk"]')).to_have_count(0 if mobile else 1)
+        expect(page.locator(".bottom-nav" if mobile else ".rail")).to_be_visible()
+        if width in (320, 360, 390):
+            assert nav.locator("a").evaluate_all(
+                "links => links.every(link => parseFloat(getComputedStyle(link).fontSize) >= 12)"
+            ), width
+            page.get_by_role("link", name="Open Trading Desk").click()
+            expect(page.locator(".desk-workspace")).to_be_visible()
+            expect(page.locator(".bottom-nav a")).to_have_count(5)
+            nav.locator('a[href="#overview"]').click()
         for control in [*nav.locator("a").all(), *page.locator(".toolbar button").all()]:
             box = control.bounding_box()
             assert box and box["width"] >= 44 and box["height"] >= 44, (width, box)
@@ -42,6 +52,8 @@ def verify(browser, base, password):
             output.mkdir(parents=True, exist_ok=True)
             page.screenshot(path=str(output / f"after-{width}.png"))
     page.set_viewport_size({"width": 320, "height": 844})
+    page.get_by_role("link", name="Open Trading Desk").click()
+    expect(page.locator(".room-summary dt")).to_have_count(6)
     page.locator(".language-button").click()
     expect(page.locator(".room-summary dd", has_text="Kosong terkonfirmasi").first).to_be_visible()
     page.evaluate("document.fonts.ready")
@@ -63,12 +75,13 @@ def verify(browser, base, password):
       });
     })""")
     page.locator(".language-button").click()
-    page.locator("nav:visible a").nth(1).focus()
+    page.locator('nav:visible a[href="#signals"]').focus()
     page.keyboard.press("Enter")
     expect(page.locator("h1")).to_be_focused()
     page.go_back()
     expect(page.locator(".room-summary")).to_be_visible()
 
+    page.locator('nav:visible a[href="#overview"]').click()
     page.get_by_role("button", name="HALT new entries").click()
     confirm = page.locator(".confirm-box")
     expect(confirm.get_by_role("button", name="HALT", exact=True)).to_be_disabled()

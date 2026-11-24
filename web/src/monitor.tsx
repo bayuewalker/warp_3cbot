@@ -1,4 +1,5 @@
 import { currentPublication } from "./tradingdesk/room";
+import { instant, sourceInstant } from "./tradingdesk/frames";
 import { TradingRoom } from "./tradingdesk/TradingRoom";
 import { overviewTelemetry } from "./tradingdesk/adapters";
 import { Evidence, readLabel, roleLabel } from "./tradingdesk/Evidence";
@@ -19,7 +20,7 @@ import {
   Wallet,
 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api, type Status } from "./api";
+import { api, type CardRow, type Status } from "./api";
 import { t, type Lang, type Key } from "./i18n";
 import { Badge, Button, Card, CardHead, Field, Loading, Problem, inputClass } from "./ui";
 import { Age } from "./age";
@@ -315,7 +316,7 @@ function ScannerSummary({ lang, row }: { lang: Lang; row: Status }) {
   );
 }
 
-export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
+function useDeskTelemetry(status: StatusRead) {
   const positions = useLoad("/api/positions", true);
   const bots = useLoad("/api/warp-bots", true);
   const book = useLoad("/api/account-positions", true);
@@ -328,11 +329,57 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
   }, []);
   const now = Date.now();
   const model = overviewTelemetry({ status, positions, bots, accounts, book, events }, now);
-  const room = <TradingRoom lang={lang} agents={model.agents} status={status.data} events={events.data?.events} now={now} />;
-  if (status.issue === "awaiting_first_snapshot") return <>{room}<p role="status">{t(lang, "awaitingWorker")}</p></>;
-  if (status.error) return <>{room}<Problem lang={lang} retry={status.reload} /></>;
-  if (!status.data) return <>{room}<Loading lang={lang} /></>;
-  const row = status.data;
+  return { now, model, events };
+}
+
+export function DeskPage({ lang, status }: { lang: Lang; status: StatusRead }) {
+  const { now, model, events } = useDeskTelemetry(status);
+  return <div className="control-desk">
+    <TradingRoom lang={lang} agents={model.agents} status={status.data} events={events.data?.events} now={now} />
+    <DeskMetrics lang={lang} model={model} />
+    <div className="monitor-grid">
+      <DeskResearch lang={lang} status={status} now={now} />
+      <EventLog lang={lang} loaded={events} now={now} />
+    </div>
+  </div>;
+}
+
+function DeskResearch({ lang, status, now }: { lang: Lang; status: StatusRead; now: number }) {
+  const loaded = useLoad<{ cards: CardRow[] }>("/api/opportunities", true);
+  const card = loaded.data?.cards?.[0];
+  const [checkedAt, setCheckedAt] = useState(0);
+  const clock = Math.max(now, checkedAt);
+  const current = !status.issue && currentPublication(status.data?.published_at, clock);
+  const evidenceAt = sourceInstant(card?.evidence_as_of, clock);
+  const signalAt = sourceInstant(card?.as_of, clock);
+  const expiresAt = instant(card?.expires_at);
+  const expired = expiresAt !== null && clock > expiresAt;
+  const fresh = current && !loaded.issue && card?.fresh === true && signalAt !== null &&
+    evidenceAt !== null && expiresAt !== null && !expired;
+  useEffect(() => {
+    if (!fresh || expiresAt === null) return;
+    const delay = Math.max(0, expiresAt + 1 - Date.now());
+    // Longer deadlines are still checked by the desk clock.
+    if (delay > 2_147_483_647) return;
+    const timer = window.setTimeout(() => setCheckedAt(Date.now()), delay);
+    return () => window.clearTimeout(timer);
+  }, [fresh, expiresAt]);
+  const verdict = card && ["BUY", "WAIT", "SKIP"].includes(card.action) ? card.action : t(lang, "unknown");
+  const state = loaded.issue ? t(lang, "refreshError") : !loaded.data ? t(lang, "loading") :
+    !current || card?.fresh === false || expired ? t(lang, "readStale") : !card ? t(lang, "readEmpty") :
+    fresh ? t(lang, "readFresh") : t(lang, "freshnessUnknown");
+  return <Card className="desk-research">
+    <CardHead icon={Cpu} title={t(lang, "deskResearch")} aside={<Badge tone={fresh ? "info" : "neutral"}>{state}</Badge>} />
+    {card ? <div className="desk-research-body">
+      <strong>{card.symbol} · {verdict}</strong>
+      <p>{(lang === "id" ? card.why_id : card.thesis) || t(lang, "unknown")}</p>
+      <small>{t(lang, "marketTime")} · {fmtTime(evidenceAt, lang, true) ?? t(lang, "unknown")}</small>
+    </div> : loaded.data && !loaded.issue ? <p>{t(lang, "deskNoResearch")}</p> : null}
+    <a className="desk-link" href="#signals">{t(lang, "signals")} <ChevronRight size={16} /></a>
+  </Card>;
+}
+
+function DeskMetrics({ lang, model }: { lang: Lang; model: ReturnType<typeof overviewTelemetry> }) {
   const metrics = [
     { title: "equity", icon: Wallet, detail: "accountMark", unit: "USDT" },
     { title: "pnl", icon: CircleDollarSign, detail: "todayUTC", unit: "USDT" },
@@ -340,8 +387,6 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
     { title: "open", icon: Boxes, detail: "listPositions" },
   ] as const;
   return (
-    <div className="overview">
-      {room}
       <div className="metrics">
         {metrics.map((m) => {
           const observation = model.metrics[m.title];
@@ -365,6 +410,19 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
           );
         })}
       </div>
+  );
+}
+
+export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
+  const { now, model, events } = useDeskTelemetry(status);
+  if (status.issue === "awaiting_first_snapshot") return <p role="status">{t(lang, "awaitingWorker")}</p>;
+  if (status.error) return <Problem lang={lang} retry={status.reload} />;
+  if (!status.data) return <Loading lang={lang} />;
+  const row = status.data;
+  return (
+    <div className="overview">
+      <DeskMetrics lang={lang} model={model} />
+      <a className="desk-link overview-room-link" href="#desk">{t(lang, "roomEntry")} <ChevronRight size={16} /></a>
       <Evidence lang={lang} model={model} />
       <div className="monitor-grid">
         <div className="monitor-col">
@@ -431,7 +489,7 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
             <Providers lang={lang} data={row} />
           </Card>
           <PriceTape lang={lang} />
-          <EventLog lang={lang} loaded={events} />
+          <EventLog lang={lang} loaded={events} now={now} />
         </div>
       </div>
     </div>
@@ -481,20 +539,20 @@ function PriceTape({ lang }: { lang: Lang }) {
 }
 
 type EventPayload = { events: { event?: string; ts?: string }[]; as_of?: string | null };
-function EventLog({ lang, loaded }: { lang: Lang; loaded: ReturnType<typeof useLoad<EventPayload>> }) {
+function EventLog({ lang, loaded, now }: { lang: Lang; loaded: ReturnType<typeof useLoad<EventPayload>>; now: number }) {
   const events = loaded.data?.events || [];
   return (
     <Card>
       <CardHead
         icon={ScrollText}
         title={t(lang, "events")}
-        help={<Age at={loaded.data?.as_of} limit={60} lang={lang} />}
+        help={<Age at={loaded.data?.as_of} limit={60} lang={lang} reason={loaded.issue ? t(lang, "refreshError") : null} />}
       />
       {events.length ? (
         <ul className="event-log">
           {events.slice(-8).map((row, index) => (
             <li key={`${row.ts}-${index}`}>
-              <time dateTime={row.ts}>{fmtTime(row.ts, lang) ?? t(lang, "noTimestamp")}</time>
+              <time dateTime={row.ts}>{fmtTime(sourceInstant(row.ts, now), lang) ?? t(lang, "noTimestamp")}</time>
               <span>{row.event ? row.event.replaceAll("_", " ") : t(lang, "unavailable")}</span>
             </li>
           ))}

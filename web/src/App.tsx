@@ -26,7 +26,7 @@ import {
 import { Key, Lang, t } from "./i18n";
 import { AccountsPanel, BudgetForm, ForwardPanel, PaperCheck, RulesPage, WarpBotsPanel } from "./desk";
 import { Badge, Button, Card, CardHead, Choice, Empty, Field, KV, Loading, Note, Problem, inputClass } from "./ui";
-import { Overview, Providers } from "./monitor";
+import { DeskPage, Overview, Providers } from "./monitor";
 import { Age, ReceivedAge } from "./age";
 import { settingLabel, settingValue } from "./labels";
 import { zoneLabel, fmtCompact, fmtMoney, fmtPct01, fmtNumber, fmtTime } from "./format";
@@ -81,7 +81,7 @@ export function App() {
             lang={lang}
             onSuccess={() => {
               setExpired(false);
-              location.hash = "overview";
+              if (!location.hash) location.hash = "overview";
               setAuthed(true);
             }}
           />
@@ -192,7 +192,7 @@ function TradingDeskLayout({
       <div className="workarea">
         <CommandBar lang={lang} page={page} row={status.issue ? null : row} halted={status.data?.halt === true} error={status.refreshFailed}
           language={language} onLogout={() => void logout().catch(() => setLogoutError(true))} />
-        <main id="workspace" className="workspace">
+        <main id="workspace" className={page === "desk" ? "workspace desk-workspace" : "workspace"}>
           {(status.error || logoutError) && (
             <div className="alert" role="alert">
               {status.error && (
@@ -230,6 +230,7 @@ function TradingDeskLayout({
             </div>
           </div>
           {page === "overview" && <Overview lang={lang} status={status} />}
+          {page === "desk" && <DeskPage lang={lang} status={status} />}
           {page === "signals" && (
             <div className="monitor-col">
               <Opportunities lang={lang} status={status} />

@@ -77,6 +77,7 @@ export type CardRow = {
   thesis: string;
   as_of?: string;
   evidence_as_of?: string | null;
+  expires_at?: string | null;
   source?: string;
   fresh?: boolean;
   backtest_passed: boolean;

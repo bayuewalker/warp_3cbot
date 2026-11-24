@@ -35,7 +35,7 @@ def verify(browser, base, password):
             streams.append(request.url)
 
     page.on("request", record)
-    page.goto(base + "/dashboard", wait_until="domcontentloaded")
+    page.goto(base + "/dashboard#desk", wait_until="domcontentloaded")
     room = page.locator(".trading-room")
     drawer = page.get_by_role("dialog")
     expect(room.locator("img")).to_have_count(6)
@@ -113,8 +113,11 @@ def verify(browser, base, password):
     assert running_animations(room) == []
     page.emulate_media(reduced_motion="no-preference")
     expect(room).to_have_attribute("data-motion", "on")
+    viewport = page.viewport_size
+    page.set_viewport_size({"width": viewport["width"], "height": 480})
     page.evaluate("scrollTo(0, document.body.scrollHeight)")
     expect(room).to_have_attribute("data-motion", "off")
+    page.set_viewport_size(viewport)
     room.scroll_into_view_if_needed()
     settings = room.get_by_role("button", name="Room display")
     settings.click()
