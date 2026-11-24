@@ -1,8 +1,8 @@
 import { FormEvent, useEffect, useState } from "react";
 import {
   api,
-  type AccountPosition,
   type AccountPositionsPayload,
+  type AccountsPayload,
   type BrokerAccount,
   type BudgetView,
   type ForwardStats,
@@ -10,13 +10,17 @@ import {
   type Status,
 } from "./api";
 import { Key, Lang, t } from "./i18n";
-import { useCurrentRead } from "./account-read";
 import { Age, ReceivedAge } from "./age";
 import { useLoad } from "./snapshot";
 import { fmtMoney, fmtNumber, fmtPct, fmtPct01, fmtPrice, fmtQty, fmtSignedMoney, fmtTime } from "./format";
 import { Badge, Button, Card, CardHead, Choice, Empty, Field, KV, Loading, Note, Problem, inputClass } from "./ui";
 import { Bot, FlaskConical, Layers, ListChecks, PiggyBank, Scale, Target, Wallet } from "lucide-react";
 import { settingHint, settingLabel } from "./labels";
+import {
+  UNASSIGNED, accountsView, botGroups, botsView, bookView, capital, scope, shown, sourceKey,
+  type AccountView, type BookError, type BookView, type Capital, type Fact, type PositionView,
+} from "./tradingdesk/accounts-model";
+import type { ReadInput, ReadIssue } from "./tradingdesk/types";
 
 const REASONS: Record<string, Key> = {
   paper_requires_demo: "rPaperDemo",
@@ -45,24 +49,39 @@ function reasonLabel(reason: string, lang: Lang): string {
   return humanReason(reason, lang) || t(lang, "accountHelp");
 }
 
-type AccountsPayload = {
-  accounts: BrokerAccount[];
-  selected: { code?: string } | null;
-  as_of?: string | null;
-  error?: string | null;
-  sleeve?: { eligible: string | null; sleeve: string | null; reason: string | null; basis?: string };
-  readonly?: boolean;
-  cadence_seconds?: number;
-};
+function useTick(ms = 1000) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setTick((value) => value + 1), ms);
+    return () => window.clearInterval(id);
+  }, [ms]);
+}
+
+function readOf<T>(load: { data: T | null; received: Date | null; issue: ReadIssue | null }): ReadInput {
+  return { data: load.data, received: load.received, issue: load.issue };
+}
+
+/** Source and its own clock for a single value. A source without a clock says so. */
+function tag(item: Fact<unknown>, lang: Lang): string {
+  const source = sourceKey(item.source);
+  if (!source) return "";
+  const at = fmtTime(item.sourceAt, lang, true);
+  return `${t(lang, source)} · ${at ?? t(lang, "sourceTimeMissing")}`;
+}
 
 export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code: string) => void }) {
   const loaded = useLoad<AccountsPayload>("/api/accounts", true);
   const book = useLoad<AccountPositionsPayload>("/api/account-positions", true);
-  const rows = Array.isArray(loaded.data?.accounts) ? loaded.data.accounts : undefined;
-  const positions = Array.isArray(book.data?.positions) ? book.data.positions : undefined;
+  const botsLoad = useLoad<{ bots: WarpBot[]; budget: BudgetView | null }>("/api/warp-bots", true);
   const [selected, setSelected] = useState("");
   const [viewing, setViewing] = useState("");
   const [note, setNote] = useState("");
+  useTick();
+  const now = Date.now();
+
+  const accounts = accountsView(readOf(loaded), now);
+  const positions = bookView(readOf(book), now);
+  const bots = botsView(readOf(botsLoad), now);
 
   useEffect(() => {
     const code = loaded.data?.selected?.code || "";
@@ -70,30 +89,16 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
     onSelect(code);
   }, [loaded.data?.selected?.code]);
 
-  const cadence = loaded.data?.cadence_seconds || 30;
-  const bookCadence = book.data?.cadence_seconds || 60;
-  const balancesFresh = useCurrentRead(loaded.data?.as_of, cadence * 3);
-  const positionsFresh = useCurrentRead(book.data?.as_of, bookCadence * 2.5);
-  const accountsCurrent = Array.isArray(rows) && balancesFresh && !loaded.refreshFailed && !loaded.data?.error;
-  const bookComplete = Array.isArray(positions) && positionsFresh && !book.refreshFailed &&
-    !book.data?.error && !book.data?.stale && Array.isArray(book.data?.errors) && book.data.errors.length === 0;
-  const counts = book.data?.by_account || {};
+  const rows = accounts.known ? accounts.accounts : undefined;
   const accountReason = loaded.refreshFailed ? t(lang, "error") : humanReason(loaded.data?.error, lang) ||
     (loaded.data && !rows ? t(lang, "awaitingWorker") : "");
   const bookReason = book.refreshFailed ? t(lang, "error") : humanReason(book.data?.error, lang) ||
-    (book.data && (!positions || !Array.isArray(book.data.errors) || book.data.errors.length > 0) ? t(lang, "incompleteBook") : "");
+    (book.data && (!positions.known || positions.errors.length > 0 || !Array.isArray(book.data.errors))
+      ? t(lang, "incompleteBook") : "");
   const bookIssue = bookReason || (book.data?.stale ? t(lang, "staleRow") : "");
-  const unassigned = (positions || []).filter((row) => !accountsCurrent || !row.account_code || !rows?.some((a) => a.code === row.account_code));
-  const fallback =
-    (!accountsCurrent && unassigned.length > 0 && UNASSIGNED) ||
-    (selected && rows?.some((row) => row.code === selected) && selected) ||
-    rows?.find((row) => counts[row.code])?.code ||
-    rows?.[0]?.code ||
-    (unassigned.length ? UNASSIGNED : "");
-  const current = viewing && ((viewing === UNASSIGNED && unassigned.length > 0) || rows?.some((row) => row.code === viewing)) ? viewing : fallback;
-  const account = rows?.find((row) => row.code === current) || null;
-  const shown =
-    current === UNASSIGNED ? unassigned : (positions || []).filter((row) => accountsCurrent && row.account_code === current);
+  const view = scope(accounts, positions, viewing, selected);
+  const { current, account, shown, unassigned } = view;
+  const markStale = shown.some((row) => row.markState.stale) || Boolean(account?.assets.some((asset) => asset.markStale));
 
   async function choose(code: string) {
     setNote("");
@@ -133,7 +138,7 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
             <span className="fresh-label">{t(lang, "balancesFresh")}</span>
             <Age
               at={accountReason ? null : loaded.data?.as_of}
-              limit={cadence * 3}
+              limit={accounts.cadenceSeconds * 3}
               lang={lang}
               reason={accountReason || (!loaded.data?.as_of ? t(lang, "awaitingWorker") : null)}
             />
@@ -142,47 +147,64 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
             <span className="fresh-label">{t(lang, "positionsFresh")}</span>
             <Age
               at={bookIssue ? null : book.data?.as_of}
-              limit={bookCadence * 2.5}
+              limit={positions.cadenceSeconds * 2.5}
               lang={lang}
               reason={bookIssue || null}
             />
           </p>
         </div>
+        {positions.brokerStale || accounts.stale || markStale ? (
+          <ul className="p4b-flags" aria-label={t(lang, "readState")}>
+            {positions.brokerStale ? <li><Badge tone="warn">{t(lang, "brokerStaleBadge")}</Badge></li> : null}
+            {accounts.stale ? <li><Badge tone="warn">{t(lang, "accountStaleBadge")}</Badge></li> : null}
+            {markStale ? <li><Badge tone="warn">{t(lang, "markStaleBadge")}</Badge></li> : null}
+          </ul>
+        ) : null}
         <p className="card-line">
           {t(lang, "sleeve")}{" "}
           <b>
-            {accountsCurrent && loaded.data?.sleeve?.eligible
-              ? `${fmtMoney(loaded.data.sleeve.eligible, lang)} USDT`
+            {accounts.current && accounts.sleeve.eligible.value !== null
+              ? `${fmtMoney(accounts.sleeve.eligible.value, lang)} USDT`
               : `${t(lang, "unavailable")} · ${humanReason(loaded.data?.sleeve?.reason, lang) || t(lang, "noSnapshot")}`}
           </b>
         </p>
         {(rows && rows.length) || unassigned.length ? (
           <div className="account-picker" role="group" aria-label={t(lang, "accounts")}>
-            {(rows || []).map((row) => (
-              <Choice
-                key={row.code}
-                pressed={row.code === current}
-                onClick={() => setViewing(row.code)}
-                title={row.name}
-                state={<Badge tone={row.demo ? "warn" : "bad"}>{row.badge || (row.demo ? t(lang, "demo") : t(lang, "real"))}</Badge>}
-                detail={
-                  <>
-                    {row.exchange_name || row.exchange_code}
-                    {" · "}
-                    {t(lang, "openPositions")} · {accountsCurrent && bookComplete
-                      ? positions.filter((position) => position.account_code === row.code).length
-                      : t(lang, "unavailable")}
-                    {selected === row.code ? ` · ${t(lang, "selectedAccount")}` : ""}
-                  </>
-                }
-              />
-            ))}
+            {(rows || []).map((row) => {
+              const total = view.count(row.code);
+              return (
+                <Choice
+                  key={row.code}
+                  pressed={row.code === current}
+                  onClick={() => setViewing(row.code)}
+                  title={row.name}
+                  state={
+                    <Badge tone={row.badge === "DEMO" ? "warn" : "bad"}>
+                      {row.badge ? (row.badge === "DEMO" ? t(lang, "demo") : t(lang, "real")) : t(lang, "unknown")}
+                    </Badge>
+                  }
+                  detail={
+                    <>
+                      {row.exchange || t(lang, "unknown")}
+                      {" · "}
+                      {marketLabel(row.market, lang)}
+                      {" · "}
+                      {row.status || t(lang, "unknown")}
+                      {row.quote ? ` · ${row.quote}` : ""}
+                      {" · "}
+                      {t(lang, "openPositions")} · {total !== null ? total : t(lang, "unavailable")}
+                      {selected === row.code ? ` · ${t(lang, "selectedAccount")}` : ""}
+                    </>
+                  }
+                />
+              );
+            })}
             {unassigned.length ? (
               <Choice
                 pressed={current === UNASSIGNED}
                 onClick={() => setViewing(UNASSIGNED)}
                 title={t(lang, "unassigned")}
-                detail={`${unassigned.length} ${t(lang, bookComplete ? "openCount" : "reportedRows")}`}
+                detail={`${unassigned.length} ${t(lang, positions.complete ? "openCount" : "reportedRows")}`}
               />
             ) : null}
           </div>
@@ -190,12 +212,13 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
       </Card>
       {loaded.refreshFailed ? <Problem lang={lang} retry={loaded.reload} /> : null}
       {!loaded.data && !loaded.error && <Loading lang={lang} />}
-      {accountsCurrent && rows?.length === 0 ? <Empty icon={Wallet} text={t(lang, "noAccounts")} /> : null}
+      {accounts.current && rows?.length === 0 ? <Empty icon={Wallet} text={t(lang, "noAccounts")} /> : null}
       {account ? (
         <AccountBalance
           lang={lang}
           row={account}
-          retained={!accountsCurrent}
+          capitalView={capital(accounts, account, bots, now)}
+          sleeveReason={humanReason(loaded.data?.sleeve?.reason, lang)}
           isSelected={selected === account.code}
           choose={choose}
         />
@@ -204,38 +227,61 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
         <OpenPositions
           lang={lang}
           rows={shown}
-          book={book.data}
-          complete={bookComplete && (accountsCurrent || current === UNASSIGNED)}
+          book={positions}
+          loading={!book.data}
+          complete={positions.complete && (accounts.current || current === UNASSIGNED)}
           failed={book.refreshFailed}
           retry={book.reload}
+          unassigned={current === UNASSIGNED}
         />
       ) : null}
+      {shown.length ? <BotsReporting lang={lang} rows={shown} /> : null}
       {note ? <Note>{note}</Note> : null}
     </div>
   );
 }
 
-const UNASSIGNED = "__unassigned__";
+function marketLabel(market: string | null, lang: Lang) {
+  return market === "spot" ? t(lang, "spot") : market === "futures" ? t(lang, "futures") : market || t(lang, "unknown");
+}
 
 function AccountBalance({
   lang,
   row,
-  retained,
+  capitalView,
+  sleeveReason,
   isSelected,
   choose,
 }: {
   lang: Lang;
-  row: BrokerAccount;
-  retained: boolean;
+  row: AccountView;
+  capitalView: Capital;
+  sleeveReason: string;
   isSelected: boolean;
   choose: (code: string) => void;
 }) {
-  const unavailable = row.total == null && row.free == null && row.used == null;
+  const unavailable = row.total.value === null && row.free.value === null && row.used.value === null;
   const quote = row.quote || "";
-  const money = (v: string | null) => {
-    const f = fmtMoney(v, lang);
-    return f == null ? t(lang, "unknown") : `${f}${quote ? " " + quote : ""}`;
+  const money = (item: Fact<string>) => {
+    const text = shown(item, lang, (value) => fmtMoney(value, lang));
+    return item.value === null ? text : `${text}${quote ? " " + quote : ""}`;
   };
+  const cell = (label: string, item: Fact<unknown>, value: string, extra?: string) => (
+    <div className="p4b-cell">
+      <dt>{label}</dt>
+      <dd className={item.value === null ? "na" : undefined}>{value}</dd>
+      <small>
+        {item.value === null ? extra || t(lang, "unknown") : tag(item, lang)}
+        {item.state === "stale" ? ` · ${t(lang, "staleRow")}` : ""}
+      </small>
+    </div>
+  );
+  const usdt = (item: Fact<string>) => {
+    const text = shown(item, lang, (value) => fmtMoney(value, lang));
+    return item.value === null ? text : `${text} USDT`;
+  };
+  const budget = capitalView;
+  const absent = budget.openBots.value !== null ? t(lang, "notPublished") : undefined;
   return (
     <Card
       className={`account-card${unavailable ? " is-unavailable" : ""}${!row.selectable ? " not-selectable" : ""}${isSelected ? " is-selected" : ""}`}
@@ -244,13 +290,14 @@ function AccountBalance({
         <div>
           <h3>{row.name}</h3>
           <p>
-            {row.exchange_name || row.exchange_code} ·{" "}
-            {row.market === "spot" ? t(lang, "spot") : row.market === "futures" ? t(lang, "futures") : row.market || t(lang, "unknown")}
+            {row.exchange || t(lang, "unknown")} · {marketLabel(row.market, lang)}
           </p>
         </div>
-        <Badge tone={row.demo ? "warn" : "bad"}>{row.badge || (row.demo ? t(lang, "demo") : t(lang, "real"))}</Badge>
+        <Badge tone={row.badge === "DEMO" ? "warn" : "bad"}>
+          {row.badge ? (row.badge === "DEMO" ? t(lang, "demo") : t(lang, "real")) : t(lang, "unknown")}
+        </Badge>
       </div>
-      {retained && (!unavailable || Boolean(row.assets?.length)) && <Badge tone="warn">{t(lang, "staleRow")}</Badge>}
+      {row.stale ? <Badge tone="warn">{t(lang, "accountStaleBadge")}</Badge> : null}
       {unavailable ? (
         <p className="account-unavailable">
           <b>{t(lang, "balanceUnavailable")}</b>
@@ -258,34 +305,55 @@ function AccountBalance({
             {t(lang, "reason")}: {humanReason(row.error || row.reason || row.status, lang) || t(lang, "unknown")}
           </span>
         </p>
-      ) : (
-        <dl className="account-figures">
-          <div>
-            <dt>{t(lang, "total")}</dt>
-            <dd>{money(row.total)}</dd>
-          </div>
-          <div>
-            <dt>{t(lang, "free")}</dt>
-            <dd>{money(row.free)}</dd>
-          </div>
-          <div>
-            <dt>{t(lang, "inUse")}</dt>
-            <dd>{money(row.used)}</dd>
-          </div>
-        </dl>
-      )}
-      {row.assets?.length ? (
+      ) : null}
+      {row.rejected.length ? (
+        <p className="card-help">
+          {t(lang, "rejectedValue")} · {row.rejected.join(", ")}
+        </p>
+      ) : null}
+      <h4 className="p4b-heading">{t(lang, "capitalTitle")}</h4>
+      <dl className="p4b-capital">
+        {cell(t(lang, "total"), row.total, money(row.total))}
+        {cell(t(lang, "free"), row.free, money(row.free))}
+        {cell(t(lang, "inUse"), row.used, money(row.used))}
+        {cell(
+          t(lang, "sleeve"),
+          budget.sleeveEligible,
+          usdt(budget.sleeveEligible),
+          budget.sleeveEligible.reason === "not_selected_account" ? t(lang, "notSelectedAccount") : sleeveReason || undefined,
+        )}
+        {cell(t(lang, "sleeveConfigured"), budget.sleeveConfigured, usdt(budget.sleeveConfigured))}
+        {cell(t(lang, "accountShare"), budget.sleevePct, shown(budget.sleevePct, lang, (value) => fmtPct01(value, lang)))}
+        {cell(t(lang, "budgetUsed"), budget.budgetUsed, usdt(budget.budgetUsed), absent)}
+        {cell(t(lang, "budgetLeft"), budget.budgetRemaining, usdt(budget.budgetRemaining), absent)}
+        {cell(t(lang, "openWarpBots"), budget.openBots, shown(budget.openBots, lang, String), t(lang, "derivedBots"))}
+        {cell(t(lang, "maxBots"), budget.maxBots, shown(budget.maxBots, lang, String), absent)}
+      </dl>
+      {row.assets.length ? (
         <div className="account-assets">
           <h4>{t(lang, "assetsHeld")}</h4>
           <ul>
             {row.assets.map((asset) => (
-              <li key={asset.asset}>
+              <li key={asset.asset} className="p4b-asset">
                 <span>
-                  <b>{asset.asset}</b> {fmtQty(asset.total, lang) ?? t(lang, "unknown")}
+                  <b>{asset.asset}</b> {shown(asset.total, lang, (value) => fmtQty(value, lang))}
                 </span>
-                <span className={asset.usd == null ? "na" : undefined}>
-                  {asset.usd == null ? t(lang, "noUsd") : `≈ ${fmtMoney(asset.usd, lang)} USD`}
+                <span className={asset.usd.value === null ? "na" : undefined}>
+                  {asset.usd.value === null ? t(lang, "noUsd") : `≈ ${fmtMoney(asset.usd.value, lang)} USD`}
                 </span>
+                <small className="p4b-asset-note">
+                  {asset.usd.value !== null
+                    ? asset.usd.source === "computed"
+                      ? t(lang, "derivedUsd")
+                      : t(lang, sourceKey(asset.usd.source)!)
+                    : humanReason(asset.usdReason, lang) || t(lang, "unknown")}
+                  {asset.markAgeSeconds !== null
+                    ? ` · ${t(lang, "markAge")} ${asset.markAgeSeconds}s`
+                    : asset.usd.source === "computed" || asset.usd.value === null
+                      ? ` · ${t(lang, "markAgeMissing")}`
+                      : ""}
+                </small>
+                {asset.markStale ? <Badge tone="warn">{t(lang, "markStaleBadge")}</Badge> : null}
               </li>
             ))}
           </ul>
@@ -307,38 +375,118 @@ function AccountBalance({
           <b>{t(lang, "notSelectable")}</b>
           {unavailable && humanReason(row.reason, lang) === humanReason(row.error || row.reason || row.status, lang)
             ? null
-            : ` · ${reasonLabel(row.reason, lang)}`}
+            : ` · ${reasonLabel(row.reason || "", lang)}`}
         </p>
       )}
     </Card>
   );
 }
 
-const KIND: Record<AccountPosition["kind"], Key> = { dca: "kindDca", grid: "kindGrid", strategy: "kindStrategy" };
+const KIND: Record<NonNullable<PositionView["kind"]>, Key> = { dca: "kindDca", grid: "kindGrid", strategy: "kindStrategy" };
+const ERROR_LABEL: Record<BookError["kind"], Key> = {
+  incomplete_rows: "errIncomplete", read_cap: "errReadCap", strategies: "errStrategies",
+  list_failed: "errListFailed", read_failed: "errReadFailed", other: "errOther",
+};
 
-function sourceHint(source: string | null, lang: Lang): string | undefined {
-  if (source === "3commas") return t(lang, "from3c");
-  if (source === "binance") return t(lang, "fromBinance");
-  if (source === "computed") return t(lang, "fromComputed");
-  return undefined;
+function PositionCard({ lang, row }: { lang: Lang; row: PositionView }) {
+  const none = t(lang, "unknown");
+  const pnl = row.pnlPct.value !== null ? Number(row.pnlPct.value) : row.pnlUsd.value !== null ? Number(row.pnlUsd.value) : null;
+  const tone = pnl == null || pnl === 0 ? "" : pnl > 0 ? " up" : " down";
+  const quote = row.quoteAsset || "";
+  const tps = row.takeProfits.value?.map((price) => fmtPrice(price, lang)).filter(Boolean) ?? [];
+  const safety = row.safety.value;
+  const markHint = row.mark.value !== null
+    ? tag(row.mark, lang)
+    : t(lang, row.markState.reason === "mark_source_missing" ? "markSourceMissing" : "markNoSource");
+  return (
+    <li className="position-card">
+      <div className="position-head">
+        <div>
+          <h3>{row.pair || row.symbol || none}</h3>
+          <p>{row.botName || none}</p>
+          {row.accountName ? <p>{row.accountName}</p> : null}
+        </div>
+        <div className="position-badges">
+          {row.owner === "warp" ? <Badge tone="info">{t(lang, "ownerWarp")}</Badge> : null}
+          {row.owner === "external" ? <Badge tone="neutral">{t(lang, "readOnlyExternal")}</Badge> : null}
+          {row.owner === null ? <Badge tone="warn">{t(lang, "ownerMissing")}</Badge> : null}
+          {row.retained ? <Badge tone="warn">{t(lang, "staleRow")}</Badge> : null}
+          {row.incomplete ? <Badge tone="warn">{t(lang, "incompleteRows")}</Badge> : null}
+          {row.markState.stale ? <Badge tone="warn">{t(lang, "markStaleBadge")}</Badge> : null}
+          {row.side ? (
+            <Badge tone={row.side === "long" ? "good" : "bad"}>
+              {row.side === "long" ? t(lang, "sideLong") : t(lang, "sideShort")}
+            </Badge>
+          ) : null}
+        </div>
+      </div>
+      <p className={`position-pnl${tone}`}>
+        <span className="position-pnl-label">{t(lang, "unrealizedPnl")}</span>
+        <b>{row.pnlUsd.value !== null ? `${fmtSignedMoney(row.pnlUsd.value, lang)} USD` : none}</b>
+        <span>{shown(row.pnlPct, lang, (value) => fmtPct(value, lang))}</span>
+        {row.pnlUsd.value !== null || row.pnlPct.value !== null ? (
+          <small>
+            {[row.pnlUsd, row.pnlPct]
+              .filter((item) => item.value !== null)
+              .map((item) => t(lang, sourceKey(item.source)!))
+              .filter((label, index, all) => all.indexOf(label) === index)
+              .join(" + ")}
+          </small>
+        ) : null}
+      </p>
+      <KV
+        rows={[
+          [t(lang, "averageEntry"), shown(row.averagePrice, lang, (value) => fmtPrice(value, lang))],
+          [t(lang, "currentPrice"), shown(row.mark, lang, (value) => fmtPrice(value, lang)), markHint],
+          [
+            t(lang, "openSize"),
+            row.size.value !== null ? `${shown(row.size, lang, (value) => fmtQty(value, lang))} ${row.baseAsset || ""}`.trim() : none,
+          ],
+          [t(lang, "soldSize"), none, t(lang, "soldSizeGap")],
+          [
+            t(lang, "positionCost"),
+            row.cost.value !== null ? `${shown(row.cost, lang, (value) => fmtMoney(value, lang))} ${quote}`.trim() : none,
+          ],
+          [
+            t(lang, "safetyOrders"),
+            safety === null ? none : `${safety.used ?? none} / ${safety.max ?? none}`,
+          ],
+          [t(lang, "takeProfitShort"), tps.length ? tps.join(" · ") : none],
+          [t(lang, "stopPrice"), shown(row.stop, lang, (value) => fmtPrice(value, lang))],
+          [t(lang, "openedAt"), shown(row.openedAt, lang, (value) => fmtTime(value, lang, true))],
+          [t(lang, "botLabel"), (row.kind ? t(lang, KIND[row.kind]) : none) + (row.status ? ` · ${row.status}` : "")],
+        ]}
+      />
+      {row.incomplete ? <p className="card-help">{t(lang, "incompleteRowsHelp")}</p> : null}
+      {row.rejected.length ? (
+        <p className="card-help">
+          {t(lang, "rejectedValue")} · {row.rejected.map((name) => (name === "id" ? t(lang, "idMissing") : name)).join(", ")}
+        </p>
+      ) : null}
+      <p className="p4b-tag">{tag(row.averagePrice.value !== null ? row.averagePrice : row.size, lang) || t(lang, "unknown")}</p>
+    </li>
+  );
 }
 
 function OpenPositions({
   lang,
   rows,
   book,
+  loading,
   failed,
   complete,
   retry,
+  unassigned,
 }: {
   lang: Lang;
-  rows: AccountPosition[];
-  book: AccountPositionsPayload | null;
+  rows: PositionView[];
+  book: BookView;
+  loading: boolean;
   failed: boolean;
   complete: boolean;
   retry: () => void;
+  unassigned: boolean;
 }) {
-  const none = t(lang, "unknown");
   return (
     <Card>
       <CardHead
@@ -348,89 +496,63 @@ function OpenPositions({
         aside={complete ? <Badge tone="info">{rows.length}</Badge> : undefined}
       />
       {failed ? <Problem lang={lang} retry={retry} /> : null}
-      {!book && !failed ? <Loading lang={lang} /> : null}
-      {book?.stale ? <Note tone="bad">{t(lang, "strategiesStale")}</Note> : null}
-      {book?.errors?.length ? (
-        <Note tone="warn">
-          {t(lang, "partialRead")} {book.errors.join(" · ")}
-        </Note>
+      {loading && !failed ? <Loading lang={lang} /> : null}
+      {unassigned ? <p className="card-help">{t(lang, "capitalUnassigned")}</p> : null}
+      {book.brokerReasons.includes("feed_stale") ? <Note tone="bad">{t(lang, "strategiesStale")}</Note> : null}
+      {book.errors.length || book.malformedRows || book.duplicateRows ? (
+        <div className="p4b-errors" role="group" aria-label={t(lang, "bookErrors")}>
+          <p>
+            <b>{t(lang, "partialRead")}</b>
+          </p>
+          <ul>
+            {book.errors.map((error) => (
+              <li key={error.raw}>
+                <Badge tone="warn">{t(lang, ERROR_LABEL[error.kind])}</Badge> <code>{error.raw}</code>
+              </li>
+            ))}
+            {book.malformedRows ? <li>{book.malformedRows} {t(lang, "malformedRows")}</li> : null}
+            {book.duplicateRows ? <li>{book.duplicateRows} {t(lang, "duplicateRows")}</li> : null}
+          </ul>
+        </div>
       ) : null}
-      {book && !rows.length ? (
-        <p className="empty-line">{complete ? t(lang, "noOpenPositions") : humanReason(book.error, lang) || t(lang, "unavailable")}</p>
+      {!loading && !rows.length ? (
+        <p className="empty-line">
+          {complete ? t(lang, "noOpenPositions") : humanReason(book.error, lang) || t(lang, "unavailable")}
+        </p>
       ) : null}
       {rows.length ? (
         <ul className="position-list">
-          {rows.map((row, index) => {
-            const pnl = row.pnl_pct != null ? Number(row.pnl_pct) : row.pnl_usd != null ? Number(row.pnl_usd) : null;
-            const tone = pnl == null || pnl === 0 ? "" : pnl > 0 ? " up" : " down";
-            const usd = fmtSignedMoney(row.pnl_usd, lang);
-            const pct = fmtPct(row.pnl_pct, lang);
-            const quote = row.quote_asset || "";
-            const size = fmtQty(row.size, lang);
-            const cost = fmtMoney(row.cost, lang);
-            const opened = fmtTime(row.opened_at, lang, true);
-            const tps = row.take_profits.map((p) => fmtPrice(p, lang)).filter(Boolean);
-            return (
-              <li key={row.id || index} className="position-card">
-                <div className="position-head">
-                  <div>
-                    <h3>{row.pair || row.symbol || none}</h3>
-                    <p>{row.bot_name || none}</p>
-                  </div>
-                  <div className="position-badges">
-                    <Badge tone={row.owner === "warp" ? "info" : "neutral"}>
-                      {row.owner === "warp" ? t(lang, "ownerWarp") : t(lang, "ownerExternal")}
-                    </Badge>
-                    {row.stale ? <Badge tone="warn">{t(lang, "staleRow")}</Badge> : null}
-                    {row.side ? (
-                      <Badge tone={row.side === "long" ? "good" : "bad"}>
-                        {row.side === "long" ? t(lang, "sideLong") : t(lang, "sideShort")}
-                      </Badge>
-                    ) : null}
-                  </div>
-                </div>
-                <p className={`position-pnl${tone}`}>
-                  <span className="position-pnl-label">{t(lang, "unrealizedPnl")}</span>
-                  <b>{usd != null ? `${usd} USD` : none}</b>
-                  <span>{pct ?? none}</span>
-                  {sourceHint(row.pnl_usd_source || row.pnl_pct_source, lang) ? (
-                    <small>{sourceHint(row.pnl_usd_source || row.pnl_pct_source, lang)}</small>
-                  ) : null}
-                </p>
-                <KV
-                  rows={[
-                    [t(lang, "averageEntry"), fmtPrice(row.average_price, lang) ?? none],
-                    [
-                      t(lang, "currentPrice"),
-                      fmtPrice(row.current_price, lang) ?? none,
-                      sourceHint(row.current_price_source, lang),
-                    ],
-                    [
-                      t(lang, "positionSize"),
-                      size != null
-                        ? `${size} ${row.base_asset || ""}${cost != null ? ` · ${cost} ${quote}` : ""}`.trim()
-                        : none,
-                    ],
-                    [
-                      t(lang, "safetyOrders"),
-                      row.safety_used != null && row.safety_max != null
-                        ? `${row.safety_used} / ${row.safety_max}`
-                        : row.safety_used != null
-                          ? String(row.safety_used)
-                          : none,
-                    ],
-                    [t(lang, "takeProfitShort"), tps.length ? tps.join(" · ") : none],
-                    [t(lang, "stopPrice"), fmtPrice(row.stop_price, lang) ?? none],
-                    [t(lang, "openedAt"), opened ?? none],
-                    [t(lang, "botLabel"), t(lang, KIND[row.kind]) + (row.status ? ` · ${row.status}` : "")],
-                  ]}
-                />
-              </li>
-            );
-          })}
+          {rows.map((row) => (
+            <PositionCard key={row.key} lang={lang} row={row} />
+          ))}
         </ul>
       ) : null}
       <p className="card-help">{t(lang, "readOnlyNote")}</p>
+    </Card>
+  );
+}
+
+function BotsReporting({ lang, rows }: { lang: Lang; rows: PositionView[] }) {
+  const groups = botGroups(rows);
+  return (
+    <Card>
+      <CardHead icon={Bot} title={t(lang, "botsReporting")} help={t(lang, "ownedOnly")} />
+      <ul className="p4b-bots">
+        {groups.map((group) => (
+          <li key={group.key}>
+            <span className="p4b-bot-name">{group.name || t(lang, "unknown")}</span>
+            <span>
+              {group.kind ? t(lang, KIND[group.kind]) : t(lang, "unknown")} · {group.rows} {t(lang, "rowsReported")}
+            </span>
+            <span className="p4b-bot-badges">
+              {group.owner === "warp" ? <Badge tone="info">{t(lang, "ownerWarp")}</Badge> : null}
+              {group.owner === "external" ? <Badge tone="neutral">{t(lang, "readOnlyExternal")}</Badge> : null}
+              {group.owner === null ? <Badge tone="warn">{t(lang, "ownerMissing")}</Badge> : null}
+              {group.incomplete ? <Badge tone="warn">{t(lang, "incompleteRows")}</Badge> : null}
+            </span>
+          </li>
+        ))}
+      </ul>
     </Card>
   );
 }
@@ -635,33 +757,37 @@ export function WarpBotsPanel({ lang, status }: { lang: Lang; status: Status | n
               ],
             ]}
           />
-          <div className="action-grid">
-            {(["pause", "resume", "close", "delete"] as const).map((action) => (
-              <Button
-                key={action}
-                variant={action === "delete" || action === "close" ? "danger" : "outline"}
-                disabled={busy || !allowed(bot, action)}
-                size="sm"
-                type="button"
-                onClick={() => {
-                  setPending({ id: bot.warp_id, action });
-                  setWord("");
-                }}
-              >
-                {t(
-                  lang,
-                  action === "pause"
-                    ? "pauseBot"
-                    : action === "resume"
-                      ? "resumeBot"
-                      : action === "close"
-                        ? "closeBot"
-                        : "deleteBot",
-                )}
-              </Button>
-            ))}
-          </div>
-          {pending?.id === bot.warp_id ? (
+          {status?.mode === "paper" ? (
+            <div className="action-grid">
+              {(["pause", "resume", "close", "delete"] as const).map((action) => (
+                <Button
+                  key={action}
+                  variant={action === "delete" || action === "close" ? "danger" : "outline"}
+                  disabled={busy || !allowed(bot, action)}
+                  size="sm"
+                  type="button"
+                  onClick={() => {
+                    setPending({ id: bot.warp_id, action });
+                    setWord("");
+                  }}
+                >
+                  {t(
+                    lang,
+                    action === "pause"
+                      ? "pauseBot"
+                      : action === "resume"
+                        ? "resumeBot"
+                        : action === "close"
+                          ? "closeBot"
+                          : "deleteBot",
+                  )}
+                </Button>
+              ))}
+            </div>
+          ) : (
+            <p className="card-help">{t(lang, "actionsPaperOnly")}</p>
+          )}
+          {status?.mode === "paper" && pending?.id === bot.warp_id ? (
             <div className="confirm-box">
               <p className="confirm-text">
                 {t(
