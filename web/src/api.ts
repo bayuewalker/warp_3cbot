@@ -205,15 +205,37 @@ export type WarpBot = {
   created_at: string;
 };
 
+/** Real /api/warp-bots budget on main: configuration only. used, remaining, open_bots and max_bots are never published. */
 export type BudgetView = {
-  sleeve_usdt?: string;
-  sleeve_pct?: string;
-  used?: string;
-  remaining?: string;
-  open_bots?: number;
-  max_bots?: number;
-  absolute?: string;
-  fraction?: string;
+  sleeve_usdt?: string | null;
+  sleeve_pct?: string | null;
+  allocation_ceiling?: string | null;
+  reserve_floor?: string | null;
+  per_deal_ceiling?: string | null;
+  max_deals?: number | null;
+  deal_stop_risk?: string | null;
+  aggregate_stop_risk?: string | null;
+  daily_loss_halt?: string | null;
+  drawdown_halt?: string | null;
+  min_score?: number | null;
+  review_days?: number | null;
+  used?: string | null;
+  remaining?: string | null;
+  open_bots?: number | null;
+  max_bots?: number | null;
+  absolute?: string | null;
+  fraction?: string | null;
+};
+
+export type AccountsPayload = {
+  accounts: BrokerAccount[];
+  selected: { code?: string } | null;
+  as_of?: string | null;
+  error?: string | null;
+  sleeve?: { eligible: string | null; sleeve: string | null; reason: string | null; basis?: string };
+  readonly?: boolean;
+  places_orders?: boolean;
+  cadence_seconds?: number;
 };
 
 export type HorizonStat = {

@@ -1,5 +1,5 @@
 /** Human-readable formatting for values that come from the API. Null never becomes 0. */
-import { t, type Lang } from "./i18n";
+import { t, type Lang } from "./i18n.ts";
 
 function toNumber(value: string | number | null | undefined): number | null {
   if (value == null || value === "") return null;
