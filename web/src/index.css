@@ -2342,3 +2342,247 @@ tbody tr:hover {
   .position-card .position-head > div:first-child { flex: 0 0 auto; }
   .position-card .position-badges { justify-content: flex-start; }
 }
+
+/* ── P4C: activity timeline, risk & health, incident strip ── */
+.form-note,
+.card-help,
+.panel-note,
+.problem p {
+  overflow-wrap: anywhere;
+}
+.setting-note {
+  padding: 8px 12px;
+  border-left: 2px solid var(--primary);
+  background: rgba(0, 168, 255, 0.05);
+  color: var(--text2);
+}
+.badge {
+  max-width: 100%;
+}
+.card-head-aside .badge,
+.rk-row b .badge {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.act-sources {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.act-sources li {
+  display: grid;
+  align-content: start;
+  justify-items: start;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.02);
+}
+.act-sources small {
+  color: var(--muted);
+  font: 500 12px/1.5 var(--mono);
+  overflow-wrap: anywhere;
+}
+.act-chip {
+  display: inline-block;
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 1px solid var(--line3);
+  border-radius: 4px;
+  color: #d4dae1;
+  font: 600 12px/1.5 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+.act-chip[data-source="events"] { color: var(--primary-2); border-color: rgba(0, 168, 255, 0.45); }
+.act-chip[data-source="alerts"] { color: var(--warning); border-color: rgba(255, 181, 71, 0.45); }
+.act-chip[data-source="journal"] { color: var(--success-2); border-color: rgba(0, 212, 170, 0.45); }
+.act-chip[data-source="signals"] { color: var(--agent-accent); border-color: rgba(191, 168, 252, 0.45); }
+.act-chip[data-source="breakers"] { color: var(--danger-2); border-color: rgba(255, 107, 107, 0.45); }
+.act-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+  gap: 12px;
+}
+.act-filters select {
+  text-overflow: ellipsis;
+}
+.act-clear {
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--line2);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--primary-2);
+  font: 600 13px var(--mono);
+}
+.act-group {
+  font: 600 15px/1.4 var(--display);
+}
+.act-list {
+  display: grid;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.act-item {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.act-item:last-child {
+  border-bottom: 0;
+}
+.act-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
+}
+.act-kind {
+  min-width: 0;
+  font: 600 14px/1.4 var(--mono);
+  overflow-wrap: anywhere;
+}
+.act-subject {
+  padding: 1px 6px;
+  border: 1px solid var(--line2);
+  border-radius: 4px;
+  font: 500 12px var(--mono);
+  overflow-wrap: anywhere;
+}
+.act-time {
+  margin: 0;
+  color: var(--muted);
+  font: 500 13px var(--mono);
+}
+.act-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+  gap: 6px 14px;
+  margin: 0;
+}
+.act-facts > div {
+  min-width: 0;
+}
+.act-facts dt {
+  color: var(--muted);
+  font: 500 12px/1.4 var(--mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.act-facts dd {
+  margin: 0;
+  color: var(--text2);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.act-flag {
+  margin: 0;
+  color: var(--warning);
+  font-size: 13px;
+}
+.incident-strip {
+  margin: 0 0 12px;
+  padding: 8px 12px 10px;
+  border: 1px solid rgba(255, 107, 107, 0.45);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 107, 107, 0.06);
+}
+.incident-strip h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--danger-2);
+  font: 600 12px/1.4 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.incident-strip ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.incident-strip li {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+.incident-strip a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 44px;
+  padding: 4px 10px;
+  border: 1px solid var(--line2);
+  border-radius: 4px;
+  color: #fff;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.incident-strip a span {
+  min-width: 0;
+}
+.incident-strip a small {
+  display: block;
+  color: var(--muted);
+  font: 500 12px var(--mono);
+}
+.rk-row small {
+  display: block;
+  color: var(--muted);
+  font: 500 12px var(--mono);
+}
+.rk-row b {
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.rk-reads,
+.rk-incidents {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+}
+.rk-reads li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+.rk-incidents li {
+  padding: 6px 10px;
+  border-left: 2px solid var(--danger);
+  color: var(--danger-2);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.risk-awaiting {
+  color: var(--warning);
+}
+.event-open {
+  min-height: 44px;
+}
+.risk-page .surface > .badge,
+.incident-strip > .badge {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.risk-page .surface > .badge {
+  margin-top: 8px;
+}

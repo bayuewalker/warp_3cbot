@@ -49,6 +49,18 @@ function reasonLabel(reason: string, lang: Lang): string {
   return humanReason(reason, lang) || t(lang, "accountHelp");
 }
 
+const SAVE_ERRORS: Record<string, Key> = {
+  invalid_rules: "errInvalidRules",
+  invalid_budget: "errInvalidBudget",
+  journal_unavailable: "errJournal",
+};
+
+/** Readable reason for a refused save. Unknown failures keep the generic message. */
+function saveFailure(err: unknown, lang: Lang): string {
+  const key = err instanceof Error ? SAVE_ERRORS[err.message] : undefined;
+  return t(lang, key ?? "error");
+}
+
 function useTick(ms = 1000) {
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -565,6 +577,7 @@ export function BudgetForm({ lang, code }: { lang: Lang; code: string }) {
   const budget = useLoad<{ budget: BudgetView | null }>("/api/warp-bots", true);
   const view = budget.data?.budget;
   const [note, setNote] = useState("");
+  const [failed, setFailed] = useState(false);
   // Live frames arrive every few seconds; reset the draft only when the saved values change.
   useEffect(() => {
     setAbsolute(view?.absolute ?? "");
@@ -574,6 +587,7 @@ export function BudgetForm({ lang, code }: { lang: Lang; code: string }) {
   async function save(event: FormEvent) {
     event.preventDefault();
     setNote("");
+    setFailed(false);
     try {
       await api("/api/accounts/budget", {
         method: "POST",
@@ -585,14 +599,16 @@ export function BudgetForm({ lang, code }: { lang: Lang; code: string }) {
         }),
       });
       setNote(t(lang, "saved"));
-    } catch {
-      setNote(t(lang, "error"));
+    } catch (err) {
+      setFailed(true);
+      setNote(saveFailure(err, lang));
     }
   }
 
   return (
     <Card>
       <CardHead icon={PiggyBank} title={t(lang, "budget")} help={t(lang, "budgetHelp")} />
+      <p className="panel-note setting-note">{t(lang, "settingNotOrder")}</p>
       <p className="panel-note">
         <ReceivedAge at={budget.received} lang={lang} />
       </p>
@@ -636,7 +652,7 @@ export function BudgetForm({ lang, code }: { lang: Lang; code: string }) {
           {t(lang, "saveBudget")}
         </Button>
       </form>
-      {note ? <Note>{note}</Note> : null}
+      {note ? <Note tone={failed ? "bad" : "neutral"}>{note}</Note> : null}
     </Card>
   );
 }
@@ -910,6 +926,7 @@ export function RulesPage({ lang }: { lang: Lang }) {
     true,
   );
   const [note, setNote] = useState("");
+  const [failed, setFailed] = useState(false);
   useEffect(() => {
     setValues(rules.data?.values ?? null);
   }, [rules.data]);
@@ -918,6 +935,7 @@ export function RulesPage({ lang }: { lang: Lang }) {
     event.preventDefault();
     if (!values) return;
     setNote("");
+    setFailed(false);
     try {
       const saved = await api<{ values: Record<string, string | number> }>("/api/rules", {
         method: "POST",
@@ -925,8 +943,9 @@ export function RulesPage({ lang }: { lang: Lang }) {
       });
       setValues(saved.values);
       setNote(t(lang, "saved"));
-    } catch {
-      setNote(t(lang, "error"));
+    } catch (err) {
+      setFailed(true);
+      setNote(saveFailure(err, lang));
     }
   }
 
@@ -963,6 +982,7 @@ export function RulesPage({ lang }: { lang: Lang }) {
       </Card>
       <Card>
         <CardHead icon={Scale} title={t(lang, "rules")} help={t(lang, "rulesHelp")} />
+        <p className="panel-note setting-note">{t(lang, "settingNotOrder")}</p>
         {rules.error || rules.data?.error ? (
           <Problem lang={lang} retry={rules.reload} />
         ) : values ? (
@@ -989,7 +1009,7 @@ export function RulesPage({ lang }: { lang: Lang }) {
         ) : (
           <Loading lang={lang} />
         )}
-        {note ? <Note>{note}</Note> : null}
+        {note ? <Note tone={failed ? "bad" : "neutral"}>{note}</Note> : null}
       </Card>
     </div>
   );

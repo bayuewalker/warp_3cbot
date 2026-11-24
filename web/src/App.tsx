@@ -1,4 +1,6 @@
 import { DiscoveryPanel, Opportunities, ResearchPanel } from "./tradingdesk/opportunities";
+import { takeRequestedTab, type PreferencesTab } from "./tradingdesk/activity-model";
+import { IncidentStrip } from "./tradingdesk/IncidentStrip";
 import type { ReadInput } from "./tradingdesk/types";
 import { useCurrentRead } from "./account-read";
 import {
@@ -13,7 +15,7 @@ import {
   RefreshCw,
   SlidersHorizontal,
 } from "lucide-react";
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, Suspense, lazy, useEffect, useRef, useState } from "react";
 import {
   api,
   AuthError,
@@ -229,6 +231,7 @@ function TradingDeskLayout({
               </button>
             </div>
           </div>
+          {page === "overview" && <IncidentStrip lang={lang} status={status} />}
           {page === "overview" && <Overview lang={lang} status={status} />}
           {page === "desk" && <DeskPage lang={lang} status={status} />}
           {page === "signals" && (
@@ -239,7 +242,7 @@ function TradingDeskLayout({
           )}
           {page === "assets" && <AssetDesk lang={lang} status={row} />}
           {page === "screener" && <ScreenerPage lang={lang} status={status} />}
-          {page === "preferences" && <Preferences lang={lang} status={row} />}
+          {page === "preferences" && <Preferences lang={lang} status={row} read={status} />}
         </main>
       </div>
       <TradingDeskNav lang={lang} page={page} placement="bottom" />
@@ -287,14 +290,17 @@ function AssetDesk({ lang, status }: { lang: Lang; status: Status | null }) {
     </>
   );
 }
-function Preferences({ lang, status }: { lang: Lang; status: Status | null }) {
-  const [tab, setTab] = useState<"venues" | "rules" | "configuration">("venues");
+const ActivityPanel = lazy(() => import("./tradingdesk/Activity").then((m) => ({ default: m.ActivityPanel })));
+const RiskHealthPanel = lazy(() => import("./tradingdesk/Activity").then((m) => ({ default: m.RiskHealthPanel })));
+
+function Preferences({ lang, status, read }: { lang: Lang; status: Status | null; read: ReturnType<typeof useLoad<Status>> }) {
+  const [tab, setTab] = useState<PreferencesTab>(() => takeRequestedTab() ?? "venues");
   const [selected, setSelected] = useState("");
   return (
     <>
       <Sections
         lang={lang}
-        items={["venues", "rules", "configuration"] as const}
+        items={["venues", "rules", "configuration", "activity", "risk"] as const}
         value={tab}
         change={setTab}
       />
@@ -305,6 +311,10 @@ function Preferences({ lang, status }: { lang: Lang; status: Status | null }) {
         </div>
       ) : tab === "rules" ? (
         <RulesPage lang={lang} />
+      ) : tab === "activity" || tab === "risk" ? (
+        <Suspense fallback={<Loading lang={lang} />}>
+          {tab === "activity" ? <ActivityPanel lang={lang} status={read} /> : <RiskHealthPanel lang={lang} status={read} />}
+        </Suspense>
       ) : (
         <div className="monitor-col">
           <Card>
