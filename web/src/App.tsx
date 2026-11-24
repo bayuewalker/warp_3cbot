@@ -1,6 +1,6 @@
 import { DiscoveryPanel, Opportunities, ResearchPanel } from "./tradingdesk/opportunities";
 import { takeRequestedTab, type PreferencesTab } from "./tradingdesk/activity-model";
-import { ActivityPanel, IncidentStrip, RiskHealthPanel } from "./tradingdesk/Activity";
+import { IncidentStrip } from "./tradingdesk/IncidentStrip";
 import type { ReadInput } from "./tradingdesk/types";
 import { useCurrentRead } from "./account-read";
 import {
@@ -15,7 +15,7 @@ import {
   RefreshCw,
   SlidersHorizontal,
 } from "lucide-react";
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, Suspense, lazy, useEffect, useRef, useState } from "react";
 import {
   api,
   AuthError,
@@ -290,6 +290,9 @@ function AssetDesk({ lang, status }: { lang: Lang; status: Status | null }) {
     </>
   );
 }
+const ActivityPanel = lazy(() => import("./tradingdesk/Activity").then((m) => ({ default: m.ActivityPanel })));
+const RiskHealthPanel = lazy(() => import("./tradingdesk/Activity").then((m) => ({ default: m.RiskHealthPanel })));
+
 function Preferences({ lang, status, read }: { lang: Lang; status: Status | null; read: ReturnType<typeof useLoad<Status>> }) {
   const [tab, setTab] = useState<PreferencesTab>(() => takeRequestedTab() ?? "venues");
   const [selected, setSelected] = useState("");
@@ -308,10 +311,10 @@ function Preferences({ lang, status, read }: { lang: Lang; status: Status | null
         </div>
       ) : tab === "rules" ? (
         <RulesPage lang={lang} />
-      ) : tab === "activity" ? (
-        <ActivityPanel lang={lang} status={read} />
-      ) : tab === "risk" ? (
-        <RiskHealthPanel lang={lang} status={read} />
+      ) : tab === "activity" || tab === "risk" ? (
+        <Suspense fallback={<Loading lang={lang} />}>
+          {tab === "activity" ? <ActivityPanel lang={lang} status={read} /> : <RiskHealthPanel lang={lang} status={read} />}
+        </Suspense>
       ) : (
         <div className="monitor-col">
           <Card>

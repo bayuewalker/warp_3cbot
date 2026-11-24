@@ -1,47 +1,21 @@
-import { ChevronRight, Radio, ShieldAlert, ShieldCheck } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Radio, ShieldAlert, ShieldCheck } from "lucide-react";
+import { useState } from "react";
 import type { Status } from "../api";
 import { fmtMoney, fmtTime } from "../format";
 import { t, type Key, type Lang } from "../i18n";
-import { liveConnected, liveDownSince, liveLastFrameAt, onLive } from "../live";
-import { Providers, RiskControls, stateLabel } from "../monitor";
+import { Providers, RiskControls } from "../monitor";
 import { useLoad } from "../snapshot";
 import { Badge, Card, CardHead, Field, Note, inputClass } from "../ui";
 import {
-  ACTIVITY_SOURCES, NO_FILTER, NO_OUTCOME, activityModel, applyFilters, currentResumeAck, facets, requestPreferencesTab,
-  resumeGate, riskHealth, type ActivityItem, type ActivitySource, type Filters, type Incident, type RiskHealth,
-  type StreamView,
+  ACTIVITY_SOURCES, NO_FILTER, NO_OUTCOME, activityModel, applyFilters, currentResumeAck, facets, resumeGate, riskHealth,
+  type ActivityItem, type ActivitySource, type Filters,
 } from "./activity-model";
 import { readLabel } from "./Evidence";
+import { incidentDetail, incidentKeys, readOf, useNow, useStreamView, words } from "./IncidentStrip";
 import type { ReadInput, ReadState } from "./types";
 
 type StatusRead = ReturnType<typeof useLoad<Status>>;
 type Tone = "good" | "warn" | "bad" | "neutral" | "info";
-
-function readOf(load: { data: unknown; received: Date | null; issue: ReadInput["issue"] }): ReadInput {
-  return { data: load.data, received: load.received, issue: load.issue };
-}
-
-function useNow(ms: number) {
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), ms);
-    return () => window.clearInterval(timer);
-  }, [ms]);
-  return now;
-}
-
-/** Connection facts the stream already tracks. A drop is counted from the first moment it is seen. */
-export function useStreamView(): StreamView {
-  const read = (): StreamView => ({ connected: liveConnected(), lastFrameAt: liveLastFrameAt(), downSince: liveDownSince() });
-  const [view, setView] = useState<StreamView>(read);
-  useEffect(() => onLive(() => setView(previous => {
-    const { connected, lastFrameAt, downSince } = read();
-    return previous.connected === connected && previous.lastFrameAt === lastFrameAt && previous.downSince === downSince
-      ? previous : { connected, lastFrameAt, downSince };
-  })), []);
-  return view;
-}
 
 const sourceKeys: Record<ActivitySource, Key> = {
   events: "actSourceEvents", alerts: "actSourceAlerts", journal: "actSourceJournal",
@@ -49,7 +23,6 @@ const sourceKeys: Record<ActivitySource, Key> = {
 };
 const refKeys = { alert_id: "actRefAlert", client_id: "actRefClient", strategy_id: "actRefStrategy" } as const;
 const severities = { info: ["actSevInfo", "info"], warn: ["actSevWarn", "warn"], bad: ["actSevBad", "bad"] } as const;
-const words = (value: string) => value.replaceAll("_", " ");
 
 function stateTone(state: ReadState, healthy: boolean): Tone {
   if (state === "confirmed" || state === "confirmed_empty") return healthy ? "good" : "neutral";
@@ -161,44 +134,6 @@ export function ActivityPanel({ lang, status }: { lang: Lang; status: StatusRead
   );
 }
 
-const incidentKeys: Record<Incident["id"], Key> = {
-  halt: "incHalt", risk: "incRisk", provider: "incProvider", stream: "incStream",
-  statusFailed: "incStatusFailed", statusStale: "incStatusStale",
-};
-
-function incidentDetail(lang: Lang, incident: Incident, health: RiskHealth) {
-  if (incident.id === "risk") return incident.detail ? words(incident.detail) : null;
-  if (incident.id !== "provider") return null;
-  const provider = health.providers.find(row => incident.detail?.startsWith(row.name + " · "));
-  return provider ? `${provider.name} · ${stateLabel(lang, provider.state ?? undefined)}` : incident.detail;
-}
-
-/** Shown only while a real incident exists. Every entry opens the Risk & health tab. */
-export function IncidentStrip({ lang, status }: { lang: Lang; status: StatusRead }) {
-  const stream = useStreamView();
-  const now = useNow(1000);
-  const health = riskHealth({ status: readOf(status) }, stream, now);
-  if (!health.incidents.length) return null;
-  return (
-    <section className="incident-strip" aria-label={t(lang, "incTitle")}>
-      <h2><ShieldAlert size={16} aria-hidden="true" />{t(lang, "incTitle")} · {health.incidents.length}</h2>
-      <ul>
-        {health.incidents.map((incident, index) => {
-          const detail = incidentDetail(lang, incident, health);
-          return (
-            <li key={`${incident.id}-${index}`}>
-              <a href="#preferences" data-incident={incident.id} onClick={() => requestPreferencesTab("risk")}>
-                <span>{t(lang, incidentKeys[incident.id])}{detail ? <small>{detail}</small> : null}</span>
-                <ChevronRight size={16} aria-hidden="true" />
-              </a>
-            </li>
-          );
-        })}
-      </ul>
-    </section>
-  );
-}
-
 function ageText(ms: number | null) {
   if (ms === null) return "";
   const seconds = Math.floor(ms / 1000);
@@ -249,6 +184,7 @@ export function RiskHealthPanel({ lang, status }: { lang: Lang; status: StatusRe
       <Card>
         <CardHead icon={h.level === "clear" ? ShieldCheck : ShieldAlert} title={t(lang, "risk")} help={t(lang, "rkOverallHelp")}
           aside={<Badge tone={level[1]}>{t(lang, level[0])}</Badge>} />
+        {h.observeGate && <Badge tone="neutral">{t(lang, "obsGate")}</Badge>}
         {h.level === "awaiting" && <p role="status" className="panel-note risk-awaiting">{t(lang, "actAwaitingFreshHelp")}</p>}
         {h.incidents.length > 0 && (
           <ul className="rk-incidents" aria-label={t(lang, "incTitle")}>

@@ -2577,3 +2577,12 @@ tbody tr:hover {
 .event-open {
   min-height: 44px;
 }
+.risk-page .surface > .badge,
+.incident-strip > .badge {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.risk-page .surface > .badge {
+  margin-top: 8px;
+}

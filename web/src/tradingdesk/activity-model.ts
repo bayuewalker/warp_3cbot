@@ -306,7 +306,11 @@ export type RiskHealth = {
   };
   stream: { state: "connected" | "fallback" | "disconnected"; lastFrameAt: number | null };
   resume: ResumeGate;
+  /** OBSERVE mode blocks entries by design. Neutral, never an incident and never "clear". */
+  observeGate: boolean;
 };
+
+const OBSERVE_REASONS = ["observe", "observe_without_account"];
 
 function bool(value: unknown) {
   return typeof value === "boolean" ? value : null;
@@ -359,12 +363,12 @@ export function riskHealth(reads: RiskReads, stream: StreamView, now: number, re
   const incidents: Incident[] = [];
   const halted = statusHalt === true || breakerHalt === true;
   if (halted) incidents.push({ id: "halt", detail: null });
-  if (!halted && (statusPermitted === false || breakerPermitted === false || riskPermitted === false)) {
-    incidents.push({
-      id: "risk",
-      detail: statusPermitted === false ? text(worker.reason) : breakerPermitted === false
-        ? text(breakerBody.reason) : text(riskBody.reason),
-    });
+  const blocked = [[statusPermitted, worker.reason], [breakerPermitted, breakerBody.reason], [riskPermitted, riskBody.reason]]
+    .filter(([permitted]) => permitted === false).map(([, reason]) => text(reason));
+  const observeGate = !halted && text(worker.mode) === "observe" && blocked.length > 0 &&
+    blocked.every(reason => reason !== null && OBSERVE_REASONS.includes(reason));
+  if (!halted && blocked.length > 0 && !observeGate) {
+    incidents.push({ id: "risk", detail: blocked[0] });
   }
   for (const provider of providers) {
     if (provider.incident) incidents.push({ id: "provider", detail: `${provider.name} · ${provider.state}` });
@@ -395,6 +399,6 @@ export function riskHealth(reads: RiskReads, stream: StreamView, now: number, re
       state: stream.connected ? "connected" : status.data != null && status.issue === null ? "fallback" : "disconnected",
       lastFrameAt: stream.lastFrameAt,
     },
-    resume,
+    resume, observeGate,
   };
 }

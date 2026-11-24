@@ -313,6 +313,46 @@ test("halt, risk gate and provider states raise incidents from their own fields"
   assert.equal(unconfigured.incidents.length, 0);
 });
 
+test("OBSERVE mode blocking entries by design is a neutral gate, not an incident, and never clear", () => {
+  const base = status.data as object;
+  for (const reason of ["observe", "observe_without_account"]) {
+    const observe = riskHealth({
+      status: read({ ...base, mode: "observe", risk_permitted: false, reason }),
+      breakers: read({ halt: false, risk_permitted: false, reason }),
+      risk: read({ risk_permitted: false, execution_permitted: false, reason, equity: null, equity_reliable: false }),
+    }, connected, now);
+    assert.equal(observe.observeGate, true, reason);
+    assert.deepEqual(observe.incidents, [], reason);
+    assert.notEqual(observe.level, "clear", reason);
+    assert.equal(observe.level, "unverified", reason);
+  }
+  const mixed = riskHealth({
+    status: read({ ...base, mode: "observe", risk_permitted: false, reason: "observe_without_account" }),
+    breakers: read({ halt: false, risk_permitted: false, reason: "daily_loss" }),
+  }, connected, now);
+  assert.equal(mixed.observeGate, false);
+  assert.deepEqual(mixed.incidents, [{ id: "risk", detail: "observe_without_account" }]);
+  const halted = riskHealth({ status: read({ ...base, mode: "observe", halt: true, risk_permitted: false, reason: "observe" }) }, connected, now);
+  assert.deepEqual(halted.incidents.map(item => item.id), ["halt"]);
+  assert.equal(halted.observeGate, false);
+  const unreasoned = riskHealth({ status: read({ ...base, mode: "observe", risk_permitted: false, reason: null }) }, connected, now);
+  assert.equal(unreasoned.observeGate, false);
+  assert.deepEqual(unreasoned.incidents, [{ id: "risk", detail: null }]);
+});
+
+test("risk_permitted false in paper mode, or with an observe reason outside observe, stays an incident", () => {
+  const base = status.data as object;
+  for (const reason of ["observe", "observe_without_account", "budget"]) {
+    const paper = riskHealth({ status: read({ ...base, mode: "paper", risk_permitted: false, reason }) }, connected, now);
+    assert.equal(paper.observeGate, false, reason);
+    assert.deepEqual(paper.incidents, [{ id: "risk", detail: reason }], reason);
+    assert.equal(paper.level, "incident", reason);
+  }
+  const unknownMode = riskHealth({ status: read({ ...base, mode: null, risk_permitted: false, reason: "observe" }) }, connected, now);
+  assert.equal(unknownMode.observeGate, false);
+  assert.equal(unknownMode.incidents.length, 1);
+});
+
 test("opening a tab from the incident strip is consumed exactly once", () => {
   assert.equal(takeRequestedTab(), null);
   requestPreferencesTab("risk");
