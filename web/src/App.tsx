@@ -1,4 +1,6 @@
 import { DiscoveryPanel, Opportunities, ResearchPanel } from "./tradingdesk/opportunities";
+import { takeRequestedTab, type PreferencesTab } from "./tradingdesk/activity-model";
+import { ActivityPanel, IncidentStrip, RiskHealthPanel } from "./tradingdesk/Activity";
 import type { ReadInput } from "./tradingdesk/types";
 import { useCurrentRead } from "./account-read";
 import {
@@ -229,6 +231,7 @@ function TradingDeskLayout({
               </button>
             </div>
           </div>
+          {page === "overview" && <IncidentStrip lang={lang} status={status} />}
           {page === "overview" && <Overview lang={lang} status={status} />}
           {page === "desk" && <DeskPage lang={lang} status={status} />}
           {page === "signals" && (
@@ -239,7 +242,7 @@ function TradingDeskLayout({
           )}
           {page === "assets" && <AssetDesk lang={lang} status={row} />}
           {page === "screener" && <ScreenerPage lang={lang} status={status} />}
-          {page === "preferences" && <Preferences lang={lang} status={row} />}
+          {page === "preferences" && <Preferences lang={lang} status={row} read={status} />}
         </main>
       </div>
       <TradingDeskNav lang={lang} page={page} placement="bottom" />
@@ -287,14 +290,14 @@ function AssetDesk({ lang, status }: { lang: Lang; status: Status | null }) {
     </>
   );
 }
-function Preferences({ lang, status }: { lang: Lang; status: Status | null }) {
-  const [tab, setTab] = useState<"venues" | "rules" | "configuration">("venues");
+function Preferences({ lang, status, read }: { lang: Lang; status: Status | null; read: ReturnType<typeof useLoad<Status>> }) {
+  const [tab, setTab] = useState<PreferencesTab>(() => takeRequestedTab() ?? "venues");
   const [selected, setSelected] = useState("");
   return (
     <>
       <Sections
         lang={lang}
-        items={["venues", "rules", "configuration"] as const}
+        items={["venues", "rules", "configuration", "activity", "risk"] as const}
         value={tab}
         change={setTab}
       />
@@ -305,6 +308,10 @@ function Preferences({ lang, status }: { lang: Lang; status: Status | null }) {
         </div>
       ) : tab === "rules" ? (
         <RulesPage lang={lang} />
+      ) : tab === "activity" ? (
+        <ActivityPanel lang={lang} status={read} />
+      ) : tab === "risk" ? (
+        <RiskHealthPanel lang={lang} status={read} />
       ) : (
         <div className="monitor-col">
           <Card>

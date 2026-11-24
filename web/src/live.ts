@@ -7,6 +7,8 @@ const listeners = new Set<(paths?: readonly string[]) => void>();
 let source: EventSource | null = null;
 let attempt = 0;
 let connected = false;
+let lastFrameAt: number | null = null;
+let downSince: number | null = Date.now();
 let timer: number | undefined;
 let started = false;
 let stopped = false;
@@ -36,6 +38,16 @@ export function liveConnected() {
   return connected;
 }
 
+/** Receipt time of the latest valid stream frame, heartbeats included. */
+export function liveLastFrameAt() {
+  return lastFrameAt;
+}
+
+/** When the stream was first seen down; null while connected. Survives the views that read it. */
+export function liveDownSince() {
+  return connected ? null : downSince;
+}
+
 export function ensureLive() {
   if (started) return;
   stopped = false;
@@ -47,6 +59,8 @@ export function stopLive() {
   stopped = true;
   started = false;
   connected = false;
+  downSince ??= Date.now();
+  lastFrameAt = null;
   attempt = 0;
   if (timer !== undefined) {
     window.clearTimeout(timer);
@@ -74,8 +88,10 @@ function connect() {
       if (!record(body)) return;
       const updated = apply(body);
       if (!updated) return;
+      lastFrameAt = Date.now();
       if (event === "hello" || event === "heartbeat") {
         connected = true;
+        downSince = null;
         attempt = 0;
       }
       notify(updated);
@@ -114,6 +130,7 @@ function connect() {
   stream.onerror = () => {
     if (source !== stream || stopped) return;
     connected = false;
+    downSince ??= Date.now();
     source?.close();
     source = null;
     notify();

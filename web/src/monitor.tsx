@@ -1,4 +1,5 @@
 import { currentPublication } from "./tradingdesk/room";
+import { currentResumeAck, forgetResumeAck, recordResumeAck, requestPreferencesTab, resumeGate } from "./tradingdesk/activity-model";
 import { instant, sourceInstant } from "./tradingdesk/frames";
 import { TradingRoom } from "./tradingdesk/TradingRoom";
 import { overviewTelemetry } from "./tradingdesk/adapters";
@@ -40,18 +41,21 @@ export function stateLabel(lang: Lang, state?: string) {
   };
   return state ? (labels[state] ? t(lang, labels[state]) : state.replaceAll("_", " ")) : "—";
 }
-export function Providers({ lang, data, heading = true }: { lang: Lang; data?: Status | null; heading?: boolean }) {
+export function Providers({ lang, data, heading = true, current = true }: { lang: Lang; data?: Status | null; heading?: boolean; current?: boolean }) {
   return (
     <div className="providers">
       {heading ? <h3>{t(lang, "providers")}</h3> : null}
       {data?.providers && Object.keys(data.providers).length ? (
-        Object.entries(data.providers).map(([key, provider]) => (
-          <div className="provider" key={key}>
-            <strong>{key}</strong>
-            <Badge tone={provider.state === "ok" ? "good" : "warn"}>{stateLabel(lang, provider.state)}</Badge>
-            <small>{[provider.model, provider.detail, provider.until].filter(Boolean).join(" · ")}</small>
-          </div>
-        ))
+        Object.entries(data.providers).map(([key, provider]) => {
+          const until = provider.until ? fmtTime(provider.until, lang, true) : null;
+          return (
+            <div className="provider" key={key}>
+              <strong>{key}</strong>
+              <Badge tone={provider.state === "ok" && current ? "good" : provider.state === "ok" ? "neutral" : "warn"}>{stateLabel(lang, provider.state)}</Badge>
+              <small>{[provider.model, provider.detail, until ? `${t(lang, "rkUntil")} ${until}` : null].filter(Boolean).join(" · ")}</small>
+            </div>
+          );
+        })
       ) : (
         <p>{t(lang, "noProvider")}</p>
       )}
@@ -59,11 +63,19 @@ export function Providers({ lang, data, heading = true }: { lang: Lang; data?: S
   );
 }
 
-function RiskControls({ lang, row, reload }: { lang: Lang; row: Status; reload: () => void }) {
+export function RiskControls({ lang, row, reload }: { lang: Lang; row: Status; reload: () => void }) {
   const [action, setAction] = useState<"halt" | "resume" | null>(null);
   const [word, setWord] = useState("");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<Key | null>(null);
+  const [, acknowledged] = useState(0);
+  useEffect(() => {
+    if (note === "haltAck") forgetResumeAck();
+    else if (note === "resumeAck") recordResumeAck(Date.now(), row.published_at ?? null);
+    else return;
+    acknowledged((n) => n + 1);
+  }, [note]);
+  const awaiting = resumeGate(currentResumeAck(), row.published_at, Date.now()) === "awaiting";
   async function send() {
     if (!action || busy || word.trim().toUpperCase() !== action.toUpperCase()) return;
     setBusy(true);
@@ -87,7 +99,9 @@ function RiskControls({ lang, row, reload }: { lang: Lang; row: Status; reload: 
       <div className="ledger">
         <span>{t(lang, "riskGate")}</span>
         <b>
-          {row.halt
+          {awaiting
+            ? t(lang, "actAwaitingFresh")
+            : row.halt
             ? "HALT"
             : row.gating === "awaiting_worker"
               ? t(lang, "awaitingWorker")
@@ -96,8 +110,9 @@ function RiskControls({ lang, row, reload }: { lang: Lang; row: Status; reload: 
       </div>
       <div className="ledger">
         <span>{t(lang, "execution")}</span>
-        <b>{t(lang, row.halt || !row.execution_permitted ? "off" : "on")}</b>
+        <b>{awaiting ? t(lang, "actAwaitingFresh") : t(lang, row.halt || !row.execution_permitted ? "off" : "on")}</b>
       </div>
+      {awaiting && <p role="status" className="panel-note risk-awaiting">{t(lang, "actAwaitingFreshHelp")}</p>}
       <p className="panel-note">{t(lang, "haltHelp")}</p>
       <div className="action-row">
         {(["halt", "resume"] as const).map((a) => (
@@ -549,19 +564,27 @@ function EventLog({ lang, loaded, now }: { lang: Lang; loaded: ReturnType<typeof
         help={<Age at={loaded.data?.as_of} limit={60} lang={lang} reason={loaded.issue ? t(lang, "refreshError") : null} />}
       />
       {events.length ? (
-        <ul className="event-log">
-          {events.slice(-8).map((row, index) => (
-            <li key={`${row.ts}-${index}`}>
-              <time dateTime={row.ts}>{fmtTime(sourceInstant(row.ts, now), lang) ?? t(lang, "noTimestamp")}</time>
-              <span>{row.event ? row.event.replaceAll("_", " ") : t(lang, "unavailable")}</span>
-            </li>
-          ))}
-        </ul>
+        <>
+          <ul className="event-log">
+            {events.slice(-8).map((row, index) => (
+              <li key={`${row.ts}-${index}`}>
+                <time dateTime={row.ts}>{fmtTime(sourceInstant(row.ts, now), lang) ?? t(lang, "noTimestamp")}</time>
+                <span>{row.event ? row.event.replaceAll("_", " ") : t(lang, "unavailable")}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="panel-note event-note">
+            {t(lang, "actLatest")} {Math.min(8, events.length)} {t(lang, "actOf")} {events.length} {t(lang, "actReported")} · {t(lang, "actEventsNote")}
+          </p>
+        </>
       ) : (
         <p className="panel-note">
           {t(lang, "unavailable")} · {t(lang, "noSnapshot")}
         </p>
       )}
+      <a className="desk-link event-open" href="#preferences" onClick={() => requestPreferencesTab("activity")}>
+        {t(lang, "actOpen")} <ChevronRight size={16} />
+      </a>
     </Card>
   );
 }
