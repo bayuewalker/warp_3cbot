@@ -191,7 +191,7 @@ def layout(browser, base, password, output):
                     expect(link).to_have_attribute("aria-current", "page")
                 page.evaluate("document.fonts.ready")
                 tabs = page.locator(".sections button")
-                for tab in range(3 if route in ("assets", "preferences") else 1):
+                for tab in range({"assets": 3, "preferences": 5}.get(route, 1)):
                     if route in ("assets", "preferences"):
                         tabs.nth(tab).click()
                         expect(tabs.nth(tab)).to_have_attribute("aria-pressed", "true")
