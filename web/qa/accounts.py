@@ -61,6 +61,8 @@ def verify(browser, base, password):
     real_row = row("real-1", account_code="R1", account_name="Real Beta", bot_name="Real DCA", bot_code="R9")
     loose = row("loose-1", account_code=None, account_name=None, bot_name="Orphan", bot_code="O1")
 
+    incomplete = [f"grid G{n}: incomplete position rows" for n in range(1, 6)]
+
     def book(rows, **extra):
         tally = {}
         for item in rows:
@@ -166,11 +168,15 @@ def verify(browser, base, password):
     expect(page.get_by_role("button", name=re.compile(r"^(Pause|Resume|Close|Delete)$"))).to_have_count(0)
 
     # An incomplete grid bot is partial with unreported fields, its error is listed, and counts are withheld.
-    open_venues(**{"/api/account-positions": book([external, *grid], errors=["grid G1: incomplete position rows"])})
+    # Production shape: stale=false, current as_of and five incomplete-row errors. Partial, not stale.
+    open_venues(**{"/api/account-positions": book([external, *grid], errors=incomplete)})
     errors_box = page.locator(".p4b-errors")
     expect(errors_box).to_be_visible()
     expect(errors_box).to_contain_text("Incomplete position rows")
-    expect(errors_box.locator("code")).to_have_text("grid G1: incomplete position rows")
+    expect(errors_box.locator("code")).to_have_text(incomplete)
+    expect(flags.locator(".badge", has_text="Broker book partial")).to_be_visible()
+    expect(flags).not_to_contain_text("Broker book stale")
+    expect(flags).not_to_contain_text("Account stale")
     expect(picker).to_contain_text("Open positions · Unavailable")
     expect(page.get_by_text("No open positions on this account.")).to_have_count(0)
     grid_cards = cards.filter(has_text="Grid One")
@@ -187,11 +193,13 @@ def verify(browser, base, password):
     open_venues(**{"/api/account-positions": book([external], stale=True, error="strategies_stale",
                                                       errors=["strategies: HTTP 429"])})
     expect(flags).to_contain_text("Broker book stale")
+    expect(flags).to_contain_text("Broker book partial")
     expect(flags).not_to_contain_text("Account stale")
     expect(cards).to_have_count(1)
     open_venues(**{"/api/account-positions": book([external]), "/api/accounts": {**accounts, "error": "HTTP 429"}})
     expect(flags).to_contain_text("Account stale")
     expect(flags).not_to_contain_text("Broker book stale")
+    expect(flags).not_to_contain_text("Broker book partial")
     expect(unassigned).to_be_visible()
     expect(cards).to_have_count(1)
 
@@ -218,8 +226,7 @@ def verify(browser, base, password):
     expect(page.get_by_text("Bot actions are available only in paper mode")).to_be_visible()
 
     # Responsive evidence in both languages. The rich fixture shows every provenance label at once.
-    open_venues(**{"/api/account-positions": book([external, warp, *grid, real_row, loose],
-                                                  errors=["grid G1: incomplete position rows"]),
+    open_venues(**{"/api/account-positions": book([external, warp, *grid, real_row, loose], errors=incomplete),
                    "/api/accounts": accounts})
     output = os.getenv("WARP_QA_SCREENSHOTS")
     for lang, width in (("en", 320), ("en", 390), ("en", 1280), ("id", 320), ("id", 390), ("id", 1280)):
@@ -231,6 +238,9 @@ def verify(browser, base, password):
         expect(page.locator(".p4b-capital .p4b-cell", has_text="Max WARP bots" if en else "Maks bot WARP").locator("dd")
                ).to_have_text(NOT_REPORTED[lang])
         expect(page.locator(".p4b-errors")).to_contain_text("grid G1: incomplete position rows")
+        expect(page.locator(".p4b-errors code")).to_have_count(5)
+        expect(flags.locator(".badge", has_text="Broker book partial" if en else "Buku broker parsial")).to_be_visible()
+        expect(flags).not_to_contain_text("Broker book stale" if en else "Buku broker basi")
         expect(cards.filter(has_text="Grid One").first).to_contain_text("Incomplete rows" if en else "Baris tidak lengkap")
         expect(cards.filter(has_text="External DCA")).to_contain_text("Read-only · external" if en else "Hanya baca · eksternal")
         expect(cards.filter(has_text="WARP-demo").locator(".position-pnl")).to_contain_text(

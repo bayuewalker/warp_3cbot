@@ -81,6 +81,7 @@ test("a stale strategy feed raises the broker-stale condition and keeps every ro
     stale: true, error: "strategies_stale", errors: ["strategies: HTTP 429"],
   })), now);
   assert.equal(book.brokerStale, true);
+  assert.equal(book.brokerPartial, true);
   assert.ok(book.brokerReasons.includes("feed_stale"));
   assert.equal(book.positions.length, 2);
   assert.equal(book.positions[0].retained, true);
@@ -366,4 +367,37 @@ test("a future source clock beyond the P1 skew is not accepted as a source time"
   assert.ok(future.brokerReasons.includes("no_source_time"));
   const skew = bookView(read(payload([row()], { as_of: "2026-11-24T10:00:05Z" })), now);
   assert.equal(skew.brokerStale, false);
+});
+
+test("a fresh book with five incomplete grid errors is partial and not stale (F25-1)", () => {
+  const errors = ["G1", "G2", "G3", "G4", "G5"].map((code) => `grid ${code}: incomplete position rows`);
+  const book = bookView(read(payload([gridRow(), gridRow({ id: "g2", bot_code: "G2" })], { errors, bots_checked: 38 })), now);
+  assert.equal(book.brokerPartial, true);
+  assert.equal(book.brokerStale, false);
+  assert.deepEqual(book.brokerReasons, ["partial_read"]);
+  assert.equal(book.errors.length, 5);
+  assert.equal(book.complete, false);
+  assert.equal(book.positions.length, 2);
+  assert.equal(t("en", "brokerPartialBadge"), "Broker book partial");
+  assert.equal(t("id", "brokerPartialBadge"), "Buku broker parsial");
+  // Rows from a current book are not labelled stale because the book is partial.
+  assert.notEqual(book.positions[0].averagePrice.state, "stale");
+  assert.notEqual(book.positions[0].state, "stale");
+});
+
+test("stale and partial are independent: each alone, and both together", () => {
+  const partialOnly = bookView(read(payload([row()], { errors: ["position_read_cap"] })), now);
+  assert.deepEqual([partialOnly.brokerStale, partialOnly.brokerPartial], [false, true]);
+  const bookError = bookView(read(payload([row()], { error: "HTTP 500" })), now);
+  assert.deepEqual([bookError.brokerStale, bookError.brokerPartial], [false, true]);
+  const staleOnly = bookView(read(payload([row()], { as_of: old })), now);
+  assert.deepEqual([staleOnly.brokerStale, staleOnly.brokerPartial], [true, false]);
+  const failed = bookView(read(payload([row()]), "request_failed"), now);
+  assert.deepEqual([failed.brokerStale, failed.brokerPartial], [true, false]);
+  const feed = bookView(read(payload([row()], { stale: true })), now);
+  assert.deepEqual([feed.brokerStale, feed.brokerPartial], [true, false]);
+  const both = bookView(read(payload([row()], { stale: true, errors: ["strategies: HTTP 429"] })), now);
+  assert.deepEqual([both.brokerStale, both.brokerPartial], [true, true]);
+  const clean = bookView(read(payload([row()])), now);
+  assert.deepEqual([clean.brokerStale, clean.brokerPartial, clean.complete], [false, false, true]);
 });

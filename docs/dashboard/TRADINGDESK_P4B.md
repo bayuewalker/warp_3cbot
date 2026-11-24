@@ -23,11 +23,12 @@ The view models live in `web/src/tradingdesk/accounts-model.ts`. They use the P1
 | Owner, kind, side | row fields | 3Commas plus the journal ownership match | A missing owner is never assumed to be WARP. External rows show "Read-only · external". |
 | Counts in the picker | `by_account` and the rows | Producer tally | Exact only for a complete, in-date book and a current account list. If `by_account` disagrees with its own rows the count is Not reported. |
 
-## Three separate stale conditions
+## Stale, partial and mark conditions
 
 | Badge | Raised when | Retained data |
 | --- | --- | --- |
-| **Broker book stale** | `payload.stale`, `error`, any entry in `errors`, a missing or unusable `as_of`, `as_of` older than 2.5 × `cadence_seconds`, or a failed refresh with retained rows. | All rows stay listed. Retained SmartTrade rows keep "Last good read". |
+| **Broker book stale** | `payload.stale`, a missing or unusable `as_of`, `as_of` older than 2.5 × `cadence_seconds`, or a failed refresh with retained rows. A book that is current but incomplete is not stale. | All rows stay listed. Retained SmartTrade rows keep "Last good read". |
+| **Broker book partial** | Any entry in `errors` (including `grid <code>: incomplete position rows`), a missing `errors` array, or a payload `error`, on a book that may be perfectly current. Independent of stale: a book can be either, both or neither. | All rows stay listed. Counts are withheld while the book is partial. |
 | **Account stale** | The accounts read `error`, an `as_of` older than 3 × `cadence_seconds`, a missing or unusable `as_of`, a failed refresh, or a profile with its own `error`. | Balances stay as retained values with the stale state. Positions are never hidden. |
 | **Mark stale** | `quote_age_seconds` above 30 s on a holding, or a position with no mark source. | Value reads Not reported. PnL source is never Computed. |
 
@@ -35,7 +36,7 @@ Positions keep the main-branch attribution rule. If the accounts read is not cur
 
 ## Incomplete grid rows (production observation)
 
-Production on `46c86eb` reported 24 positions, `stale=false`, `bots_checked=38` and five errors of the form `grid <code>: incomplete position rows`. `src/warp3c/book.py` has not changed since P0A, so this is how it already behaves. A throwaway fixture run against `collect()` (uncommitted, fake broker) showed:
+Production on `46c86eb` reported 24 positions, `stale=false` with a current `as_of`, `bots_checked=38` and five errors of the form `grid <code>: incomplete position rows`. `src/warp3c/book.py` has not changed since P0A, so this is how it already behaves. A throwaway fixture run against `collect()` (uncommitted, fake broker) showed:
 
 | Case | Rows produced | Error | Fields |
 | --- | --- | --- | --- |
@@ -51,7 +52,7 @@ P4B handles the case in the UI so that nothing is fabricated or double counted:
 - Each `incomplete position rows` error is parsed, and the rows of that bot (same kind and `bot_code`) render as **Incomplete rows** and partial. Their fields are shown as reported, with Not reported where null.
 - The per-error list is always visible under "Some reads failed", each entry classified (incomplete rows, read cap, SmartTrade, list failed, read failed) with the producer's text unchanged.
 - The same broker id appearing twice is collapsed once and noted. Rows without an id are kept, flagged partial and counted as "rows reported", never as positions.
-- Counts in the picker are withheld (Unavailable) whenever the book is incomplete. The bots list says "N rows reported".
+- A book like that shows **Broker book partial** and never **Broker book stale** (audit finding F25-1). Counts in the picker are withheld (Unavailable) whenever the book is incomplete. The bots list says "N rows reported".
 
 ## Bots
 
@@ -78,10 +79,10 @@ P4B handles the case in the UI so that nothing is fabricated or double counted:
 | --- | --- |
 | `uvx ruff check .` | `uvx` is not installed on this VM. `ruff 0.17.6` (`ruff check .`) reported all checks passed. |
 | `PYTHONPATH=src python -m unittest discover -s tests` | 148 tests passed, unchanged. |
-| `cd web && npm ci && npx tsc --noEmit && npx vite build && npm test` | Types and build clean. 63 tests passed (36 before, 27 new in `accounts.test.ts`). |
+| `cd web && npm ci && npx tsc --noEmit && npx vite build && npm test` | Types and build clean. 65 JS tests passed (36 before, 29 in `accounts.test.ts`). |
 | `web/qa` `account_reads.py`, `telemetry.py`, `shell.py`, `room.py`, `opportunities.py`, `control_room.py`, `accounts.py` | All seven passed. No existing QA file was edited. |
 | `python web/qa/account_reads.py --layout DIR` | 140 layouts, 0 horizontal overflow, 0 page errors. |
-| `web/qa/accounts.py` | Route-fulfilled fixtures only. Checked DEMO/REAL badges, account switching, Unassigned with `/api/accounts` 500, incomplete grid rows, three stale conditions, OBSERVE action hiding, external bot without controls, no non-GET requests, EN and ID at 320, 390 and 1280 px with no overflow. |
+| `web/qa/accounts.py` | Route-fulfilled fixtures only. Checked DEMO/REAL badges, account switching, Unassigned with `/api/accounts` 500, incomplete grid rows (stale=false, current `as_of`, five errors: partial badge shown, stale badge absent, EN and ID), the stale, partial, account and mark conditions, OBSERVE action hiding, external bot without controls, no non-GET requests, EN and ID at 320, 390 and 1280 px with no overflow. |
 
 Bundle versus `46c86eb` (Vite production build):
 
@@ -90,4 +91,4 @@ Bundle versus `46c86eb` (Vite production build):
 | JS | 317.66 kB, gzip 99.93 kB | 335.75 kB, gzip 105.45 kB | +18.09 kB, gzip +5.52 kB |
 | CSS | 57.02 kB, gzip 13.02 kB | 59.35 kB, gzip 13.35 kB | +2.33 kB, gzip +0.33 kB |
 
-Set `PYTHONPATH=src` and `CHROMIUM_PATH` for local browser checks. Run `web/qa/accounts.py` with `WARP_QA_SCREENSHOTS` set to capture `P4B-320-EN`, `P4B-390-EN`, `P4B-1280-EN` and `P4B-320-ID` under `docs/dashboard/screenshots/p4b/`. Each is a full-page capture of a labelled QA fixture, not production telemetry.
+Set `PYTHONPATH=src` and `CHROMIUM_PATH` for local browser checks. Run `web/qa/accounts.py` with `WARP_QA_SCREENSHOTS` set to capture `P4B-320-EN`, `P4B-390-EN`, `P4B-1280-EN` and `P4B-320-ID`. The script writes PNG; the committed files under `docs/dashboard/screenshots/p4b/` are the same captures converted to WebP with `ffmpeg -c:v libwebp -quality 78`. Each is a full-page capture of a labelled QA fixture, not production telemetry.

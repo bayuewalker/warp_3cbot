@@ -124,6 +124,7 @@ export function provenance(item: Fact<unknown>, lang: Lang): string {
 
 export type BrokerReason =
   "feed_stale" | "book_error" | "partial_read" | "no_source_time" | "old_as_of" | "refresh_failed";
+const STALE_REASONS: BrokerReason[] = ["feed_stale", "no_source_time", "old_as_of", "refresh_failed"];
 export type AccountReason = "accounts_error" | "no_source_time" | "old_as_of" | "refresh_failed";
 
 export type BookError = {
@@ -193,7 +194,10 @@ export type BookView = {
   errors: BookError[];
   error: string | null;
   awaiting: boolean;
+  /** The feed is old or its refresh failed: feed_stale, no_source_time, old_as_of or refresh_failed. */
   brokerStale: boolean;
+  /** The feed is current but incomplete: partial_read or book_error. Independent of brokerStale. */
+  brokerPartial: boolean;
   brokerReasons: BrokerReason[];
   complete: boolean;
 };
@@ -314,9 +318,9 @@ export function bookView(read: ReadInput, now: number): BookView {
     else if (now - time > ttl * 1000) reasons.push("old_as_of");
     if (read.issue && read.issue !== "unauthorized" && read.issue !== "awaiting_first_snapshot") reasons.push("refresh_failed");
   }
-  const brokerStale = reasons.length > 0;
-  const retainedRows = reasons.some((reason) => reason !== "partial_read");
-  const context: Context = { read, now, at: asOf, ttl, stale: retainedRows, incomplete };
+  const brokerStale = reasons.some((reason) => STALE_REASONS.includes(reason));
+  const brokerPartial = reasons.some((reason) => reason === "partial_read" || reason === "book_error");
+  const context: Context = { read, now, at: asOf, ttl, stale: brokerStale, incomplete };
 
   const positions: PositionView[] = [];
   const seen = new Set<string>();
@@ -352,8 +356,8 @@ export function bookView(read: ReadInput, now: number): BookView {
     }, now),
     positions: known ? positions : [],
     known, malformedRows, duplicateRows, asOf, cadenceSeconds, byAccount, errors: classified, error, awaiting,
-    brokerStale, brokerReasons: reasons,
-    complete: known && malformedRows === 0 && duplicateRows === 0 && errors !== null && !brokerStale,
+    brokerStale, brokerPartial, brokerReasons: reasons,
+    complete: known && malformedRows === 0 && duplicateRows === 0 && errors !== null && !brokerStale && !brokerPartial,
   };
 }
 

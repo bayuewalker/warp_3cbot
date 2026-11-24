@@ -153,9 +153,10 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
             />
           </p>
         </div>
-        {positions.brokerStale || accounts.stale || markStale ? (
+        {positions.brokerStale || positions.brokerPartial || accounts.stale || markStale ? (
           <ul className="p4b-flags" aria-label={t(lang, "readState")}>
             {positions.brokerStale ? <li><Badge tone="warn">{t(lang, "brokerStaleBadge")}</Badge></li> : null}
+            {positions.brokerPartial ? <li><Badge tone="warn">{t(lang, "brokerPartialBadge")}</Badge></li> : null}
             {accounts.stale ? <li><Badge tone="warn">{t(lang, "accountStaleBadge")}</Badge></li> : null}
             {markStale ? <li><Badge tone="warn">{t(lang, "markStaleBadge")}</Badge></li> : null}
           </ul>
