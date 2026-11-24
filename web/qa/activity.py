@@ -43,6 +43,15 @@ def healthy_routes() -> dict:
     }
 
 
+def observe_routes(reason: str) -> dict:
+    return {
+        "status": {**healthy_status(), "risk_permitted": False, "reason": reason},
+        "breakers": {"halt": False, "risk_permitted": False, "reason": reason},
+        "risk": {"reason": reason, "risk_permitted": False, "execution_permitted": False,
+                 "equity": None, "equity_reliable": False},
+    }
+
+
 def timeline_routes() -> dict:
     return {
         **healthy_routes(),
@@ -219,6 +228,52 @@ def verify(browser, base, password):
     expect(page.locator(".rk-incidents")).to_contain_text("AI provider needs attention")
     put(healthy_routes())
     expect(page.locator(".risk-page .card-head .badge").first).to_have_text("No incident reported")
+
+    # OBSERVE blocks entries by design: neutral chip, no incident, never "clear"
+    chip = page.get_by_text("Observe mode · entries blocked by design")
+    for reason in ("observe_without_account", "observe"):
+        put(observe_routes(reason))
+        page.goto(base + "/dashboard#overview")
+        expect(page.locator(".incident-strip")).to_have_count(0)
+        open_tab(page, "Risk & health")
+        expect(chip).to_be_visible()
+        expect(page.locator(".rk-incidents")).to_have_count(0)
+        expect(page.locator(".risk-page .card-head .badge").first).to_have_text("Not verified")
+        expect(page.get_by_text("No incident reported")).to_have_count(0)
+        if reason == "observe_without_account" and getenv("WARP_QA_SCREENSHOTS"):
+            page.screenshot(path=str(Path(getenv("WARP_QA_SCREENSHOTS")) / "p4c-risk-observe-390-en.png"))
+    for width in (320, 390):
+        page.set_viewport_size({"width": width, "height": 844})
+        assert overflow(page) <= 0, width
+        box = chip.bounding_box()
+        assert box and box["x"] >= 0 and box["x"] + box["width"] <= width, (width, box)
+    page.set_viewport_size({"width": 320, "height": 844})
+    page.locator(".language-button").click()
+    expect(page.get_by_text("Mode observe · entri diblokir sesuai desain")).to_be_visible()
+    assert overflow(page) <= 0
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.locator(".language-button").click()
+    expect(page.locator("html")).to_have_attribute("lang", "en")
+    put({**observe_routes("observe_without_account"), "status": {**observe_routes("observe_without_account")["status"], "providers": {
+        "nvidia": {"state": "cooldown", "model": "qa-model", "until": stamp(120)}}}})
+    page.goto(base + "/dashboard#overview")
+    expect(page.locator(".incident-strip [data-incident=provider]")).to_be_visible()
+    expect(page.locator(".incident-strip [data-incident=risk]")).to_have_count(0)
+    expect(page.locator(".incident-strip").get_by_text("Observe mode · entries blocked by design")).to_be_visible()
+    if getenv("WARP_QA_SCREENSHOTS"):
+        page.screenshot(path=str(Path(getenv("WARP_QA_SCREENSHOTS")) / "p4c-incident-observe-390-en.png"))
+    page.set_viewport_size({"width": 320, "height": 844})
+    assert overflow(page) <= 0
+    assert not small_targets(page, ".incident-strip a")
+    page.set_viewport_size({"width": 390, "height": 844})
+    paper = observe_routes("observe")
+    put({**paper, "status": {**paper["status"], "mode": "paper"}})
+    expect(page.locator(".incident-strip [data-incident=risk]")).to_be_visible()
+    expect(page.locator(".incident-strip").get_by_text("Observe mode · entries blocked by design")).to_have_count(0)
+    open_tab(page, "Risk & health")
+    expect(chip).to_have_count(0)
+    expect(page.locator(".risk-page .card-head .badge").first).to_have_text("Incident")
+    put(healthy_routes())
 
     # Incident strip appears and disappears with the real state, and every entry opens the risk tab
     page.goto(base + "/dashboard#overview")

@@ -58,6 +58,10 @@ Counts in the filter options and the "Showing X / Y" line are labelled **in load
 
 The overall badge is **No incident reported** only when all of these hold: worker snapshot current, stream connected, HALT false in both sources, risk permitted true in both, `/api/breakers` and `/api/risk` confirmed, every provider `ok` or `unconfigured`, and no RESUME awaiting a snapshot. Otherwise it is **Incident**, **Awaiting fresh snapshot** or **Not verified**. It is a status read, not an execution permit.
 
+### OBSERVE mode gate
+
+In OBSERVE mode the worker always reports `risk_permitted=false` with reason `observe` or `observe_without_account`. That is the intended state, not an incident. `riskHealth` adds no risk incident when `status.mode` is `observe` and every `risk_permitted=false` read (`/api/status`, `/api/breakers`, `/api/risk`) carries one of those two reasons. It sets `observeGate` instead, and the UI shows a neutral chip: EN "Observe mode · entries blocked by design", ID "Mode observe · entri diblokir sesuai desain". The overall level is never "clear" in that state (it reads "Not verified", or "Awaiting fresh snapshot" after a RESUME). A HALT, any other reason, a missing reason, a non-observe mode (including paper) or an unreadable mode stays an incident. The chip appears in the Risk & health overview card, and inside the strip when the strip is already visible for another incident. On its own it never opens the strip.
+
 ### Incident strip
 
 `IncidentStrip` mounts above Overview and uses only the status read already loaded plus the stream state, so it adds no request. It lists an entry for each of: HALT active, risk gate blocking entries, an AI provider in cooldown or error, stream disconnected for more than 5 s (`STREAM_GRACE_MS`), `/api/status` read failed, `/api/status` snapshot stale. Each entry links to Settings & risk, Risk & health. With no incident the strip renders nothing.
@@ -96,15 +100,17 @@ A HALT acknowledgement discards any pending RESUME ack. The ack is held in modul
 
 | | JS | gzip |
 | --- | --- | --- |
-| main (P4B) | 336.07 kB | 105.51 kB |
-| P4C | 358.62 kB | 112.50 kB |
-| growth | +22.55 kB | +6.99 kB |
+| main (P4B), `index-*.js` | 336.07 kB | 105.51 kB |
+| P4C first-load `index-*.js` | 352.93 kB | 111.21 kB |
+| first-load growth | +16.86 kB | +5.70 kB |
+| P4C `Activity-*.js` (lazy chunk) | 7.92 kB | 2.98 kB |
+| total JS growth, all chunks | +24.78 kB | +8.68 kB |
 
-The gzip growth is inside the 7 kB target. The raw growth is about 2.5 kB over the 20 kB target. The EN and ID strings (about 60 keys each) are most of it.
+The Activity timeline and the Risk & health panels are `React.lazy` chunks, fetched only when one of those two Settings tabs opens. The incident strip, the models and the resume gate stay in the first-load bundle, because Overview and `RiskControls` use them. First-load growth is inside the 20 kB and 7 kB gzip targets. Total shipped JS is not: it is +24.78 kB raw and +8.68 kB gzip. I found no way to get the total under 20 kB without removing EN/ID strings or data rows.
 
 ## Screenshots
 
-`docs/dashboard/screenshots/p4c/`: `p4c-activity-320-en`, `p4c-activity-390-en`, `p4c-activity-320-id`, `p4c-activity-1280-en` and `p4c-incident-390-en` (Overview with the HALT incident). They were captured from the real local worker with injected snapshots by `web/qa/activity.py` (`WARP_QA_SCREENSHOTS=<dir>`). Full-page captures include the fixed bottom navigation once, mid-page.
+`docs/dashboard/screenshots/p4c/`: `p4c-activity-320-en`, `p4c-activity-390-en`, `p4c-activity-320-id`, `p4c-activity-1280-en`, `p4c-incident-390-en` (Overview with the HALT incident), `p4c-incident-observe-390-en` (strip with the observe chip and a provider cooldown) and `p4c-risk-observe-390-en` (Risk & health in OBSERVE mode). They were captured from the real local worker with injected snapshots by `web/qa/activity.py` (`WARP_QA_SCREENSHOTS=<dir>`). Full-page captures include the fixed bottom navigation once, mid-page.
 
 ## Verification
 
