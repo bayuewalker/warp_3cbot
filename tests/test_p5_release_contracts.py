@@ -643,8 +643,8 @@ class KnownGapTests(AuthedCase):
                                               {"warp_id": "abcd1234", "action": "pause", "confirm": "PAUSE"})
             finally:
                 journal.close()
-        self.assertGreaterEqual(status, 400)
         self.assertEqual(broker.writes, [], "an OBSERVE-mode request reached a broker write")
+        self.assertGreaterEqual(status, 400)
 
     @unittest.expectedFailure
     def test_logout_revokes_the_session_token_server_side(self):
@@ -660,6 +660,59 @@ class KnownGapTests(AuthedCase):
             dispatch("POST", "/api/logout", headers, b"")
             after = json.loads(dispatch("GET", "/api/session", headers, b"")[2])
             self.assertFalse(after["authenticated"])
+
+
+# ───────────────────────────── Part D: release documents ─────────────────────────────
+
+DOCS = ROOT / "docs/dashboard"
+P5_DOCS = ["ROLLBACK.md", "RELEASE_CANDIDATE_REPORT.md", "TRADINGDESK_P5.md", "TRADINGDESK_2_QA.md", "DESIGN_SYSTEM.md"]
+BASE_SHA = "91d3c38f7581d6bf3954d01c0f9f895b5d0e8c75"
+
+
+class ReleaseDocumentTests(unittest.TestCase):
+    def read(self, name):
+        return (DOCS / name).read_text()
+
+    def test_rollback_has_no_command_that_removes_a_volume_machine_or_app(self):
+        text = self.read("ROLLBACK.md")
+        self.assertNotRegex(text, r"(?i)\b(fly|flyctl)\s+(volumes?|vol)\s+(destroy|delete|remove|rm|extend|fork)\b")
+        self.assertNotRegex(text, r"(?i)\b(fly|flyctl)\s+(machines?|apps?)\s+(destroy|delete|remove|rm|kill)\b")
+        self.assertNotRegex(text, r"(?i)\b(fly|flyctl)\s+scale\s+count\b")
+        self.assertIn("vol_42k13q9n9g9jo294", text)
+        self.assertIn("vs_40kv0xollvAtz5lVmV5", text)
+
+    def test_documents_keep_the_live_acknowledgement_value_out_and_no_external_chat_links(self):
+        for path in sorted(DOCS.rglob("*.md")) + sorted((ROOT / "web/qa").glob("*.py")) + sorted(ROOT.glob("scripts/qa/*")):
+            text = path.read_text()
+            self.assertNotIn("chatgpt.com", text, path.name)
+            self.assertNotRegex(text, r"WARP_LIVE_EXECUTION_ACK\s*[=:]\s*[\"']?\w", path.name)
+
+    def test_the_report_names_the_base_the_blocker_and_the_approval_boundary(self):
+        text = self.read("RELEASE_CANDIDATE_REPORT.md")
+        self.assertIn(BASE_SHA, text)
+        self.assertIn("Owner approval required: release candidate approval is separate from merge/deploy.", text)
+        self.assertIn("/api/warp-bots/action", text)
+        self.assertRegex(text, r"(?s)P0.*blocker for any PAPER or LIVE")
+        for ident in ("AC-01", "AC-14", "NON-GO"):
+            self.assertIn(ident, text)
+        for gap in ("F24-4", "F24-5", "P4B P2", "F26-3", "F26-4", "+24.78 kB"):
+            self.assertIn(gap, text, gap)
+
+    def test_relative_links_and_evidence_files_resolve(self):
+        link = re.compile(r"\]\(([^)#\s]+)(?:#[^)]*)?\)")
+        for name in P5_DOCS:
+            for target in link.findall(self.read(name)):
+                if target.startswith(("http://", "https://", "mailto:")):
+                    continue
+                self.assertTrue((DOCS / target).resolve().exists(), f"{name} links to missing {target}")
+
+    def test_p5_screenshots_are_webp_only(self):
+        files = sorted((DOCS / "screenshots/p5").iterdir())
+        self.assertTrue(files)
+        for path in files:
+            self.assertEqual(path.suffix, ".webp", path.name)
+            self.assertEqual(path.read_bytes()[:4], b"RIFF", path.name)
+            self.assertEqual(path.read_bytes()[8:12], b"WEBP", path.name)
 
 
 if __name__ == "__main__":
