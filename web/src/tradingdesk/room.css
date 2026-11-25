@@ -153,6 +153,23 @@
 .office-seat:is([data-seat=SCAN], [data-seat=ANALYST], [data-seat=AEGIS]) span {
   position: absolute; left: 50%; bottom: 109.1%; transform: translateX(-50%); white-space: nowrap;
 }
+/* Front row: the art leaves a band of about 2.9% of the scene between the back-row chair casters (bottom at
+   ~38.6%) and the front monitor bezels (top at ~41.5%). The seat box spans 46%-68%, so 121.4% of its 22% height
+   puts the label bottom at ~41.3%, resting on the bezel. The label has no vertical border or padding and its
+   height is its line-height (clamped to the band, 10px minimum font) so it stays inside that band from 360px
+   up. Its centre is nudged from the seat centre to the monitor centre. The seat box is not moved or resized. */
+.control-room-scene { container-type: inline-size; }
+.office-seat:is([data-seat=EXECUTOR], [data-seat=PORTFOLIO], [data-seat=WATCHER]) span {
+  --label-shift: 0%;
+  position: absolute; left: calc(50% + var(--label-shift)); bottom: 121.4%; transform: translateX(-50%);
+  white-space: nowrap; box-sizing: content-box;
+  border-block-width: 0; padding: 0 clamp(3px, .9cqw, 5px);
+  box-shadow: 0 2px 6px #050914bb, inset 0 1px #788798, inset 0 -1px #788798;
+  font-size: clamp(10px, 2.3cqw, 12px); line-height: clamp(10px, 2.7cqw, 14px);
+}
+.office-seat[data-seat=EXECUTOR] span { --label-shift: 16%; }
+.office-seat[data-seat=PORTFOLIO] span { --label-shift: 16%; }
+.office-seat[data-seat=WATCHER] span { --label-shift: 20%; }
 .office-seat:is(:hover, :focus-visible) span { color: #10151c; background: var(--station, #73e9c7); }
 .office-seat:focus-visible { outline: 2px solid white; outline-offset: 2px; }
 .office-instruments { min-width: 0; display: grid; gap: 14px; padding: clamp(9px, 1.4vw, 20px); }
