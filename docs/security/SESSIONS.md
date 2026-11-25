@@ -1,0 +1,8 @@
+# Dashboard sessions
+
+- **TTL.** A session cookie (`warp_session`) is a signed token that expires 24 hours after login (`auth.MAX_AGE = 86400`). The cookie `Max-Age` matches.
+- **Logout revokes server-side.** `POST /api/logout` verifies the presented token (format, HMAC, not expired), records its SHA-256 in the revocation store, then clears the cookie. Only that one token is revoked. Forged, malformed, expired or missing tokens are ignored, add nothing to the store, and the response is still `200 {"ok": true}`.
+- **Storage.** `sessions_revoked.json` in the directory of `WARP_DB_PATH` (default `/data/sessions_revoked.json`, on the data volume next to `warp.db`). It holds `{"version": 1, "revoked": {sha256(token): expiry}}`, never a token or nonce. Writes use a temp file, `fsync` and `os.replace`, so a reader never sees a partial file. Revocation therefore survives a restart.
+- **Pruning and bound.** Entries whose token expiry has passed are dropped on every write. The store holds at most 4096 entries; past that the entries expiring soonest are dropped first.
+- **Fail closed.** If the store exists but cannot be read or parsed, `session_valid` returns `False` for every cookie session. A corrupt store is never overwritten, so earlier revocations are not lost. The operator Bearer token (`WARP_OPERATOR_TOKEN`) does not use the store and keeps working. A missing file is an empty store. If a revocation cannot be written, the token is still refused by this process until it restarts.
+- **Not covered.** Rotating `WARP_SESSION_SECRET` still invalidates every session at once. There is no "log out everywhere" call.

@@ -89,6 +89,9 @@ def dispatch(method: str, path: str, headers, body: bytes) -> tuple[int, list[tu
     if method == "POST" and clean == "/api/login":
         return _login(body)
     if method == "POST" and clean == "/api/logout":
+        from .auth import parse_cookies, revoke_session
+
+        revoke_session(parse_cookies(headers.get("Cookie")).get("warp_session"))
         return _json(200, {"ok": True}, extra=[("Set-Cookie", cookie_header("", clear=True))])
     if clean in ROUTES or clean in _ACTIONS:
         if not authorized(headers.get("Authorization"), headers.get("Cookie")):
@@ -131,7 +134,8 @@ def _health(path: str) -> tuple[int, list[tuple[str, str]], bytes]:
         code = 200 if HEALTH.get("dependencies_healthy") and HEALTH.get("last_cycle_ok") else 503
     else:
         code = 200
-    return _json(code, HEALTH)
+    public = {key: value for key, value in dict(HEALTH).items() if key not in {"mode", "halt_path"}}
+    return _json(code, public)
 
 
 def _page() -> tuple[int, list[tuple[str, str]], bytes]:

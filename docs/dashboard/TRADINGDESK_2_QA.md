@@ -103,8 +103,8 @@ Updated in P5 against base `91d3c38` (P4C). The sections above are the P0A packe
 | Twelve POST routes, no PUT, PATCH or DELETE | `ReadOnlyBoundaryTests` | PASS |
 | Broker write inventory pinned (11 call sites) | `ReadOnlyBoundaryTests`, `scripts/qa/diff_review.py` | PASS |
 | Browser write sites pinned (11), no `fetch()` outside `api.ts` | `ReadOnlyBoundaryTests` | PASS |
-| `POST /api/warp-bots/action` refused outside paper mode | `KnownGapTests::test_P0_...` (expected failure) | **KNOWN GAP, P0, blocks PAPER and LIVE** |
-| Logout revokes the session token | `KnownGapTests::test_logout_revokes_...` (expected failure) | KNOWN GAP F-P5-5 |
+| `POST /api/warp-bots/action` refused outside paper mode | `tests/test_bot_action_gate.py` | Fixed in PR #29 (6181bc8), SENTINEL PASS, Fly v24 |
+| Logout revokes the session token | `KnownGapTests::test_logout_revokes_...`, `tests/test_session_revocation.py` | Fixed in this PR (F-P5-5), pending SENTINEL |
 | No secret in a published payload, the bundle or screenshots | `NoSecretInPayloadsTests`, `scripts/qa/secret_scan.py` | PASS |
 | Room animation CPU, long tasks, SSE burst frame churn | `p5_perf.py` | PASS (60 fps, 0 long tasks in the burst) |
 | Listener counts after 10 and 50 route switches | `p5_perf.py` | PASS (identical to baseline) |
