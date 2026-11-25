@@ -104,7 +104,7 @@ Evidence available, by area, for the owner to map to the ACs. Links are to this 
 
 ## Release blocker for PAPER or LIVE: P0
 
-**Status: fixed in the `fix/warp-bot-action-server-gate` PR, pending SENTINEL.** The server now applies the paper-mode and demo-spot gate before any broker call; see [BOT_ACTION_GATE.md](../security/BOT_ACTION_GATE.md). The text below describes the finding as reported against `cbd9e71`.
+**Status: fixed in PR #29 (6181bc8), SENTINEL PASS, Fly v24.** The server now applies the paper-mode and demo-spot gate before any broker call; see [BOT_ACTION_GATE.md](../security/BOT_ACTION_GATE.md). The text below describes the finding as reported against `cbd9e71`.
 
 **P0. `POST /api/warp-bots/action` has no server-side mode or account gate.** `src/warp3c/httpapi.py:118-119` routes it to `_bot_action` (`httpapi.py:382`). Only the UI limits it to paper mode on a demo spot account. A signed-in caller can reach the broker write path for a journaled WARP bot while the worker is in OBSERVE.
 
@@ -123,8 +123,8 @@ None of these were fixed. Each is a product or deployment fact.
 | F-P5-2 | Low | At 1024 px with 200% text, Settings and risk > Activity overflows (EN 1 px, ID 80 px). | Activity panel badge and notes | same |
 | F-P5-3 | Medium (deployment) | The worker sends no compression. First load is 527,768 bytes. On 4x CPU with Slow 3G, FCP is 8.2 s and the first position list is 8.9 s. | `src/warp3c/httpapi.py` `_asset` (about line 140 to 152) sends bytes as stored | `python3 web/qa/p5_perf.py` (`first_load_transfer.compressed: false`). Gzip would take the index chunk from 353 kB to about 111 kB. |
 | F-P5-4 | Low | `.webp` has no entry in `_TYPES`, so `control-room.webp` is served as `application/octet-stream`. Chrome still renders it. | `src/warp3c/httpapi.py:50-57` | `curl -sI` against a local worker for the webp asset |
-| F-P5-5 | Medium | Logout clears the cookie in the browser only. The session is a signed, stateless token valid for 12 h, so a copied cookie stays valid after logout until it expires or `WARP_SESSION_SECRET` changes. | `src/warp3c/httpapi.py:91-92`, `src/warp3c/auth.py:43-50` | Expected failure `KnownGapTests.test_logout_revokes_the_session_token_server_side` |
-| F-P5-6 | Low | `/health`, `/live` and `/ready` are unauthenticated and return the worker's health map, which includes the mode, permission flags and the HALT file path (`/data/HALT`). No credential or token is in it (the contract test asserts that for every authenticated route and the secret scan covers the bundle). | `src/warp3c/httpapi.py:75`, `src/warp3c/__main__.py:222-225` | `curl` a local worker |
+| F-P5-5 | Medium | **Fixed in this PR, pending SENTINEL.** Logout used to clear the cookie in the browser only, so a copied cookie stayed valid until it expired. Logout now revokes the presented token server-side and sessions last 24 h; see [SESSIONS.md](../security/SESSIONS.md). | `src/warp3c/auth.py`, `src/warp3c/httpapi.py` logout branch | `KnownGapTests.test_logout_revokes_the_session_token_server_side` (no longer an expected failure), `tests/test_session_revocation.py` |
+| F-P5-6 | Low | **Fixed in this PR, pending SENTINEL.** The public `/health`, `/live` and `/ready` payloads no longer include `mode` or `halt_path`. Every other key and every status code is unchanged. The authenticated `/api/status` still reports the mode. | `src/warp3c/httpapi.py` `_health` | `tests/test_session_revocation.py::PublicHealthTests` |
 | F-P5-7 | Low (test only) | Time-of-day failure of an existing test in the first five minutes of the UTC day. See above. | `tests/test_failures.py:149` | frozen-clock run above Status: still open. Pinning `now` alone is not enough: `GlobalRisk.assess` also reads the wall clock and rejects the account snapshot as stale, so the fix is more than a test-clock pin and was left out of the P0 gate PR. |
 
 ## Open follow-ups carried from earlier phases (not fixed here)

@@ -646,13 +646,14 @@ class KnownGapTests(AuthedCase):
         self.assertEqual(status, 403)
         self.assertEqual(_body["error"], "paper_mode_required")
 
-    @unittest.expectedFailure
     def test_logout_revokes_the_session_token_server_side(self):
-        """The session cookie is a signed, stateless token. POST /api/logout only asks the browser to drop it,
-        so a copied token stays valid until it expires (12 hours) or WARP_SESSION_SECRET changes."""
+        """The session cookie is a signed token valid for 24 hours. POST /api/logout now revokes the presented
+        token server-side, so a copied token stops working at once instead of living until it expires."""
         from warp3c.auth import issue_session
 
-        with patch.dict(os.environ, {"WARP_SESSION_SECRET": secrets.token_urlsafe(32)}):
+        with tempfile.TemporaryDirectory() as data_dir, patch.dict(os.environ, {
+                "WARP_SESSION_SECRET": secrets.token_urlsafe(32),
+                "WARP_DB_PATH": os.path.join(data_dir, "warp.db")}):
             token = issue_session()
             headers = {"Cookie": f"warp_session={token}"}
             self.assertEqual(dispatch("GET", "/api/session", headers, b"")[0], 200)

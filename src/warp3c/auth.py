@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import secrets
 import threading
 import time
+from pathlib import Path
 
 COOKIE = "warp_session"
-MAX_AGE = 12 * 60 * 60
+MAX_AGE = 24 * 60 * 60
+REVOKED_FILE = "sessions_revoked.json"
+MAX_REVOKED = 4096
 
 
 def _password() -> str:
@@ -50,20 +54,132 @@ def issue_session() -> str:
     return f"{body}.{signature}"
 
 
-def session_valid(token: str | None) -> bool:
+def _verified_expiry(token: str | None) -> int | None:
+    """Expiry of a token whose format and HMAC are valid and which has not expired, else None."""
     secret = _secret()
-    if not secret or not token or token.count(".") != 2:
-        return False
+    if not secret or not token or not isinstance(token, str) or token.count(".") != 2:
+        return None
     expires, nonce, signature = token.split(".", 2)
     if not expires.isdigit() or not nonce:
-        return False
+        return None
     if int(expires) < int(time.time()):
-        return False
+        return None
     body = f"{expires}.{nonce}"
     expected = hmac.new(secret, body.encode(), hashlib.sha256).hexdigest()
     if len(signature) != len(expected):
+        return None
+    if not hmac.compare_digest(signature, expected):
+        return None
+    return int(expires)
+
+
+def _token_key(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def revocation_path() -> Path:
+    return Path(os.getenv("WARP_DB_PATH", "/data/warp.db")).parent / REVOKED_FILE
+
+
+class _StoreError(Exception):
+    pass
+
+
+_MEMORY: dict[str, int] = {}
+_CACHE: dict = {"stamp": None, "entries": {}}
+
+
+def _reset_state() -> None:
+    """Drop in-process revocation state. Used to simulate a restart: the file is the source of truth."""
+    with _LOCK:
+        _MEMORY.clear()
+        _CACHE["stamp"] = None
+        _CACHE["entries"] = {}
+
+
+def _load(path: Path) -> dict[str, int]:
+    """Read the revocation file. A missing file is an empty store. Anything unreadable raises _StoreError."""
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        return {}
+    except OSError as error:
+        raise _StoreError("revocation store unreadable") from error
+    stamp = (str(path), info.st_ino, info.st_mtime_ns, info.st_size)
+    if _CACHE["stamp"] == stamp:
+        return _CACHE["entries"]
+    try:
+        data = json.loads(path.read_text())
+        revoked = data["revoked"]
+        if data.get("version") != 1 or not isinstance(revoked, dict):
+            raise ValueError("shape")
+        entries: dict[str, int] = {}
+        for key, expiry in revoked.items():
+            if not isinstance(key, str) or len(key) != 64 or type(expiry) is not int:
+                raise ValueError("entry")
+            entries[key] = expiry
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+        raise _StoreError("revocation store corrupt") from error
+    _CACHE["stamp"] = stamp
+    _CACHE["entries"] = entries
+    return entries
+
+
+def _write(path: Path, entries: dict[str, int]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    payload = json.dumps({"version": 1, "revoked": entries}, sort_keys=True)
+    try:
+        with open(temp, "w") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    except OSError:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def revoke_session(token: str | None) -> bool:
+    """Revoke exactly the presented token. Forged, malformed or expired tokens are ignored, so the
+    store only grows from tokens this server signed. Returns True when the token is now revoked on disk."""
+    expiry = _verified_expiry(token)
+    if expiry is None:
         return False
-    return hmac.compare_digest(signature, expected)
+    key = _token_key(token)
+    now = int(time.time())
+    with _LOCK:
+        _MEMORY[key] = expiry
+        for stale in [k for k, v in _MEMORY.items() if v < now]:
+            del _MEMORY[stale]
+        path = revocation_path()
+        try:
+            entries = {k: v for k, v in _load(path).items() if v >= now}
+            entries[key] = expiry
+            while len(entries) > MAX_REVOKED:
+                del entries[min(entries, key=entries.get)]
+            _write(path, entries)
+        except (_StoreError, OSError):
+            return False
+        _CACHE["stamp"] = None
+    return True
+
+
+def session_valid(token: str | None) -> bool:
+    if _verified_expiry(token) is None:
+        return False
+    key = _token_key(token)
+    with _LOCK:
+        if key in _MEMORY:
+            return False
+        try:
+            entries = _load(revocation_path())
+        except _StoreError:
+            return False
+    return key not in entries
 
 
 def parse_cookies(header: str | None) -> dict[str, str]:
