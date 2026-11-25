@@ -612,7 +612,6 @@ class KnownGapTests(AuthedCase):
             "commitment": "15", "created_at": stamp, "updated_at": stamp,
         })
 
-    @unittest.expectedFailure
     def test_P0_warp_bot_action_is_refused_by_the_server_outside_paper_mode(self):
         """P0. POST /api/warp-bots/action has no server-side mode or account gate (httpapi.py _bot_action).
 
@@ -644,7 +643,8 @@ class KnownGapTests(AuthedCase):
             finally:
                 journal.close()
         self.assertEqual(broker.writes, [], "an OBSERVE-mode request reached a broker write")
-        self.assertGreaterEqual(status, 400)
+        self.assertEqual(status, 403)
+        self.assertEqual(_body["error"], "paper_mode_required")
 
     @unittest.expectedFailure
     def test_logout_revokes_the_session_token_server_side(self):

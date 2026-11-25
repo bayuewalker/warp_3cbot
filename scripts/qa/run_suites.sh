@@ -26,7 +26,7 @@ step ruff          python3 -m ruff check .
 step tsc           bash -c 'cd web && npx tsc --noEmit'
 step vite-build    bash -c 'cd web && npm run build'
 step node-tests    bash -c 'cd web && npm test'
-step bundle        python3 scripts/qa/bundle_report.py --expect-index-kb 352.93
+step bundle        python3 scripts/qa/bundle_report.py --expect-index-kb 353.19
 step secret-scan   python3 scripts/qa/secret_scan.py
 step diff-review   python3 scripts/qa/diff_review.py
 

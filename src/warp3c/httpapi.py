@@ -393,6 +393,9 @@ def _bot_action(body: bytes) -> tuple[int, list[tuple[str, str]], bytes]:
     expected = {"pause": "PAUSE", "resume": "RESUME", "close": "CLOSE", "delete": "DELETE"}.get(action)
     if action not in ACTIONS or payload.get("confirm") != expected:
         return _json(400, {"error": "confirmation_required", "places_orders": False})
+    refused = _bot_action_gate(cfg, journal, engine, warp_id)
+    if refused is not None:
+        return refused
     if action == "resume" and PathHalt(cfg):
         return _json(409, {"error": "halt", "places_orders": False})
     try:
@@ -403,6 +406,49 @@ def _bot_action(body: bytes) -> tuple[int, list[tuple[str, str]], bytes]:
         return _json(502, {"error": "broker_error", "places_orders": False})
     publish(cfg, journal, engine)
     return _json(200, {"ok": True, "places_orders": False, **result})
+
+
+def _bot_action_gate(cfg, journal, engine, warp_id: str):
+    """Server-side mirror of the desk rule. Returns a refusal response, or None when the request may proceed.
+
+    Runs before any broker bot read or write. The only broker call it can cause is the read-only account refresh.
+    """
+    from .accounts import is_complete_account
+    from .ownership import require_owned
+
+    def refuse(status: int, error: str, **extra):
+        return _json(status, {"error": error, **extra, "places_orders": False})
+
+    if cfg.mode != "paper":
+        return refuse(403, "paper_mode_required", mode=cfg.mode)
+    row = journal.warp_bot(warp_id)
+    try:
+        require_owned(row, None)
+    except NotOwned as exc:
+        return refuse(403, exc.reason)
+    before = getattr(engine, "accounts_at", "")
+    _refresh_accounts()
+    if getattr(engine, "accounts_error", None) or getattr(engine, "accounts_at", "") == before:
+        return refuse(403, "account_unavailable")
+    match = [a for a in getattr(engine, "last_accounts", []) if getattr(a, "code", None) == row["account_code"]]
+    if len(match) != 1:
+        return refuse(403, "account_not_found")
+    account = match[0]
+    if not is_complete_account(account):
+        return refuse(403, "account_unavailable")
+    if account.demo is not True:
+        return refuse(403, "demo_account_required")
+    if account.market != "spot":
+        return refuse(403, "spot_only")
+    if account.status != "active":
+        return refuse(403, "inactive")
+    if row["product"] not in {"dca_bot", "grid_bot"}:
+        return refuse(403, "unsupported_product")
+    if not row.get("external_code"):
+        return refuse(403, "not_owned")
+    if row["status"] == "deleted":
+        return refuse(409, "already_deleted")
+    return None
 
 
 def PathHalt(cfg) -> bool:
