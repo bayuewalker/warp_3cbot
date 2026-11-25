@@ -13,8 +13,8 @@ Every figure below is what this lane ran and observed on one VM. It is unverifie
 | Item | Value |
 | --- | --- |
 | Product base (P4C, PR #26) | `91d3c38f7581d6bf3954d01c0f9f895b5d0e8c75` |
-| Tested code commit | `6ce9012` (base plus four commits of tests and read-only scripts). Browser suites, unit tests, build and scripts were run on this commit. |
-| Documents commit | The commit above it adds only `docs/dashboard/**` and one document guard test. `unittest`, `ruff` and the secret scan were re-run on it. The head SHA is in the PR description. |
+| Tested SHA | `a60d319a10e908877152a63c836770268362c680`. Every command in the table below was run on this commit (the final full run, with all 8 existing and 5 new browser suites). An earlier full run on `6ce9012`, which differs only in the documents, the document guard tests and one reordered assertion, gave the same results. |
+| Head SHA | The head is one commit above the tested SHA and differs from it only in this document (the tested-SHA line). The head SHA is in the PR description. |
 | Product source | Unchanged. `git diff origin/main --stat -- src web/src fly.toml Dockerfile .github` is empty. A build from the base and a build from this branch contain the same files, and screenshots of the two are pixel-identical. |
 | Environment | Linux VM, Python 3.12, Node 22.23, Chrome 157 via Playwright (`CHROMIUM_PATH=/usr/bin/google-chrome`), ruff 0.17.6. GitHub Actions is billing-locked, so a red CI is not a code signal. |
 | Date of runs | Nov 25, 2026 (UTC). |
