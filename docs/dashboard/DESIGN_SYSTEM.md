@@ -61,3 +61,61 @@ The historical captures below show the same authenticated local observe-mode sta
 | 390 × 844 | [Mobile before](screenshots/before-390.png) | [Mobile after](screenshots/after-390.png) |
 | 768 × 1024 | [Tablet before](screenshots/before-768.png) | [Tablet after](screenshots/after-768.png) |
 | 1440 × 960 | [Desktop before](screenshots/before-1440.png) | [Desktop after](screenshots/after-1440.png) |
+
+## Tokens as shipped through P4C (P5 audit)
+
+Tokens live in the `:root` block of `web/src/index.css`. Contrast ratios below are computed from those hex values by `web/p5-contrast.test.ts` (WCAG 2.x relative luminance), so a palette edit fails the test instead of drifting. Every text and accent token meets AA (4.5:1) on every surface.
+
+| Token | Value | `--bg` | `--bg2` | `--bg3` | `--bg4` | `--command-surface` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `--text` | `#FFFFFF` | 19.8 | 19.0 | 17.8 | 16.5 | 18.6 |
+| `--text2` | `#DFE4EA` | 15.4 | 14.9 | 13.9 | 12.9 | 14.5 |
+| `--muted` | `#A8B1BD` | 9.1 | 8.8 | 8.2 | 7.6 | 8.6 |
+| `--muted2` (labels) | `#8A95A3` | 6.5 | 6.3 | 5.9 | 5.4 | 6.1 |
+| `--primary` | `#00A8FF` | 7.6 | 7.3 | 6.8 | 6.3 | 7.1 |
+| `--primary-2` (focus ring) | `#29C0FF` | 9.5 | 9.1 | 8.5 | 7.9 | 8.9 |
+| `--success` | `#00D4AA` | 10.3 | 10.0 | 9.3 | 8.7 | 9.7 |
+| `--success-2` | `#2EE8C0` | 12.6 | 12.2 | 11.4 | 10.6 | 11.9 |
+| `--warning` | `#FFB547` | 11.2 | 10.8 | 10.1 | 9.4 | 10.6 |
+| `--danger` | `#FF6B6B` | 7.1 | 6.9 | 6.4 | 6.0 | 6.7 |
+| `--danger-2` | `#FF8F8F` | 9.0 | 8.7 | 8.1 | 7.5 | 8.5 |
+| `--agent-accent` (room role labels) | `#BFA8FC` | 9.6 | 9.3 | 8.7 | 8.0 | 9.0 |
+
+Surfaces: `--bg` `#0A0A0F`, `--bg2` `#0E1014`, `--bg3` `#14181F`, `--bg4` `#1A1F28`, `--command-surface` `#10131A`. Lines (`--line` `#1D232C`, `--line2` `#2A323E`, `--line3` `#3A4452`) are decoration and never carry text. Other tokens: `--touch` 44 px, `--radius` 10 px, `--radius-sm` 6 px, `--display`, `--body` and `--mono` font stacks. The comment beside `--muted` in the stylesheet says 8.3:1 on `--bg3`. The measured value is 8.2:1, which is rounding and does not change the verdict.
+
+Focus is one rule for the whole app: `:focus-visible { outline: 2px solid var(--primary-2); outline-offset: 2px; }`. The accessibility audit found a visible indicator on all 1,931 keyboard stops it visited.
+
+## Components as shipped through P4C
+
+| Component | File | Notes |
+| --- | --- | --- |
+| `Card`, `CardHead`, `Badge`, `Button`, `Field`, `Choice`, `Note`, `KV`, `Empty`, `Loading`, `Problem` | `web/src/ui.tsx` | Shared primitives. Pages add no private colours. |
+| Command shell: command bar, status strip (HALT, Execution, Worker age, Stream), persistent rail above 900 px, five-link bottom nav at 900 px and below | `web/src/tradingdesk/Shell.tsx` | Six rail items, five bottom items. The status strip shows HALT as "off" when clear, Execution as "Blocked" in OBSERVE and as "Execution permitted" only for PAPER or LIVE with a current snapshot, HALT clear and `execution_permitted` true. A frame the shell cannot read shows "Not reported". |
+| Stream badge | `Shell.tsx`, `web/src/live.ts` | "Live" only after a valid hello. "Reconnecting" otherwise. Reconnect backs off `min(30 s, 1 s x 2^attempt)`. |
+| Incident strip | `web/src/tradingdesk/IncidentStrip.tsx` | `data-incident` is one of `stream`, `statusStale`, `statusFailed`, `halt`, `risk`, `provider`. Links to the Risk tab. Hidden when there is no incident. |
+| Trading room | `web/src/tradingdesk/TradingRoom.tsx`, `room.css` | Six stations. Motion is gated by `data-ambient` and `data-recent` and by `prefers-reduced-motion`. Animations touch only `opacity`, `transform` and `rotate`. A station opens a keyboard-operable drawer that returns focus to its trigger. |
+| Evidence drawer ("telemetry") | `web/src/tradingdesk/Evidence.tsx` | One row per source, with its state (Confirmed, Confirmed empty, Awaiting worker, Invalid snapshot, stale, partial, loading, unauthorized) and time. |
+| Opportunities | `opportunities.tsx`, `opportunity-model.ts` | Cards read `PROPOSED / NOT SUBMITTED`. No execution control exists on a proposal. |
+| Accounts and positions | `accounts-model.ts` and `web/src/desk.tsx` | Separate stale, partial and mark badges. "Not reported" for nulls. Counts withheld on an incomplete book. External bots carry an External badge and have no controls. |
+| Activity timeline, Risk and health | `Activity.tsx`, `activity-model.ts` | `React.lazy` chunk (7.92 kB). Events, alerts, journal, signals and breakers in bounded windows. The journal is untimed because its `created_at` has no zone. Risk badge texts: "No incident reported", "Incident", "Not verified", "Awaiting fresh snapshot". |
+| OBSERVE chip | `activity-model.ts` `observeGate` | "Observe mode · entries blocked by design". Neutral, not an incident, and the health level is never "clear" while it applies. |
+
+## Breakpoints
+
+Styles switch at 1100, 900 (rail becomes the bottom nav), 650 (tables become cards, KPIs go to two columns), 520, 480, 380 and 359 px, and at 901 px and above for the persistent rail. P5 added Pixel-class 412 px, Galaxy-class 360 px, desktop 1280 and 2560 px, 200% browser zoom and 400% reflow to the audit. All 344 layouts have no horizontal overflow. See [TRADINGDESK_P5.md](TRADINGDESK_P5.md#responsive-and-accessibility).
+
+## Known design findings (P5, not fixed)
+
+- **F-P5-1.** At 200% text size in Indonesian at 390 px the status strip is 6 px too wide, its labels overlap and bottom-nav labels break mid-word. See [the capture](screenshots/p5/p5-text-200pct-390-overview-en.webp).
+- **F-P5-2.** At 200% text size and 1024 px, the Activity tab overflows its container (EN 1 px, ID 80 px).
+- Touch targets, accessible names and text contrast had no findings in the audit.
+
+## P5 evidence captures
+
+Same fixtures, reduced motion and masked clock on both sides. Product source is unchanged in P5, so the main build and this branch render identical pixels.
+
+| Viewport | Main `91d3c38` | P5 |
+| --- | --- | --- |
+| 390 x 844 | [before](screenshots/p5/before-main-vs-p5-390.webp) | [after](screenshots/p5/after-main-vs-p5-390.webp) |
+| 1440 x 960 | [before](screenshots/p5/before-main-vs-p5-1440.webp) | [after](screenshots/p5/after-main-vs-p5-1440.webp) |
+
