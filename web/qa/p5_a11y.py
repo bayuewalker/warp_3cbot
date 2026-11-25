@@ -111,7 +111,7 @@ CONTRAST = """
       const picture = cs.backgroundImage;
       if (picture.includes('url(')) { image = true; break; }
       if (picture.includes('gradient')) {
-        const stops = [...picture.matchAll(/rgba?\([^)]+\)/g)].map(m => parse(m[0])).filter(Boolean);
+        const stops = [...picture.matchAll(/rgba?\\([^)]+\\)/g)].map(m => parse(m[0])).filter(Boolean);
         if (stops.length) layers.push({ stops });
       }
       if (bg && bg.a > 0) layers.push({ stops: [bg] });

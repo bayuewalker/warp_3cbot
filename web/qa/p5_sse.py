@@ -248,7 +248,6 @@ def case_route_errors(browser, base, password):
     page.locator("details.telemetry summary").click()
     inspector = page.locator("details.telemetry")
     portfolio = inspector.locator("dt", has_text="PORTFOLIO").locator("+ dd")
-    executor = inspector.locator("dt", has_text="EXECUTOR").locator("+ dd")
     now = stamp()
     BUS.publish("accounts", {"accounts": [], "as_of": now})
     BUS.publish("positions", {"positions": [], "as_of": now, "errors": []})
@@ -262,10 +261,17 @@ def case_route_errors(browser, base, password):
     # A book error keeps the rows but cannot read as confirmed.
     BUS.publish("positions", {"positions": [], "as_of": now, "errors": ["HTTP 503"], "error": "HTTP 503"})
     expect(portfolio).not_to_contain_text("Confirmed")
+    # Positive control: the strip does render an allow when a PAPER worker publishes one (browser fixture only).
+    execution = page.locator(".status-strip dt", has_text="Execution").locator("+ dd")
+    put({"status": healthy_status(mode="paper", reason="paper", execution_permitted=True)})
+    expect(execution).to_have_text("Execution permitted")
+    # An OBSERVE worker that claims a permit is still shown as blocked.
+    put({"status": healthy_status(execution_permitted=True)})
+    expect(execution).to_have_text("Blocked")
     # A status frame with the wrong shape is invalid. Nothing on screen turns into an allow.
     put({"status": {"mode": 5, "published_at": stamp()}})
-    expect(executor).not_to_contain_text("Permitted")
-    expect(page.locator(".status-strip dt", has_text="Execution").locator("+ dd")).not_to_have_text("Permitted")
+    expect(execution).to_have_text("Not reported")
+    expect(page.get_by_text(re.compile(r"execution permitted", re.I))).to_have_count(0)
     put(healthy_routes())
     page.close()
     recorder.assert_clean()
