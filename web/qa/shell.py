@@ -9,6 +9,32 @@ from playwright.sync_api import expect
 from warp3c.operator import RUNTIME, publish
 
 
+def overview_room_is_first_screens(page, width, height):
+    """The room scene and its station list sit on Overview, inside the first two viewports."""
+    page.evaluate("window.scrollTo(0, 0)")
+    page.evaluate("document.fonts.ready")
+    expect(page.locator(".overview .trading-room")).to_have_count(1)
+    expect(page.locator(".overview .trading-room .station")).to_have_count(6)
+    expect(page.locator(".desk-workspace")).to_have_count(0)
+    nav_top = page.locator(".bottom-nav").bounding_box()["y"]
+    scene = page.locator(".overview .control-room-scene").bounding_box()
+    # The scene is on the first screen: its whole height clears the bottom nav before any scroll.
+    assert scene["y"] >= 0 and scene["y"] + scene["height"] <= nav_top, (width, scene, nav_top)
+    stations = page.locator(".overview .trading-room dl").bounding_box()
+    assert stations["y"] + stations["height"] <= 2 * height, (width, stations)
+    assert stations["y"] < 2 * height - 60, (width, stations)
+    metrics = page.locator(".overview .metrics").bounding_box()
+    assert metrics["y"] + metrics["height"] <= 2 * height, (width, metrics)
+    expect(page.locator(".bottom-nav a")).to_have_count(5)
+    expect(page.locator(".bottom-nav a[href='#desk']")).to_have_count(0)
+    # The dedicated page still renders, with its own room, and Overview comes back.
+    page.get_by_role("link", name="Open Trading Desk").click()
+    expect(page.locator(".desk-workspace .control-desk .trading-room .station")).to_have_count(6)
+    expect(page.locator(".bottom-nav a")).to_have_count(5)
+    page.locator('.bottom-nav a[href="#overview"]').click()
+    expect(page.locator(".overview .trading-room")).to_have_count(1)
+
+
 def verify(browser, base, password):
     context = browser.new_context(reduced_motion="reduce", timezone_id="Asia/Jakarta")
     page = context.new_page()
@@ -20,7 +46,7 @@ def verify(browser, base, password):
     expect(page.locator("html")).to_have_attribute("lang", "en")
     expect(page.locator(".command-identity .badge")).to_contain_text("OBSERVE")
     expect(page.locator(".status-strip").get_by_text("Blocked", exact=True)).to_be_visible()
-    expect(page.locator(".room-summary")).to_have_count(0)
+    expect(page.locator(".room-summary")).to_have_count(1)
     expect(page.locator(".live-badge")).to_have_text("Live")
     for width in (320, 360, 390, 768, 900, 901, 1024, 1440, 1920):
         height = 844 if width < 600 else 960
@@ -45,8 +71,7 @@ def verify(browser, base, password):
             assert box and box["width"] >= 44 and box["height"] >= 44, (width, box)
             assert box["x"] >= 0 and box["x"] + box["width"] <= width + 0.1, (width, box)
         if width in (320, 390):
-            box = page.locator(".metrics").bounding_box()
-            assert box["y"] + box["height"] < height - 60, (width, box)
+            overview_room_is_first_screens(page, width, height)
         if width in (320, 390, 1440) and os.getenv("WARP_QA_SCREENSHOTS"):
             output = Path(os.environ["WARP_QA_SCREENSHOTS"])
             output.mkdir(parents=True, exist_ok=True)
