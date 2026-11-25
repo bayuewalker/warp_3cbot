@@ -97,7 +97,7 @@ def verify(browser, base, password):
     expect(wall.locator(".market-trace polyline")).to_have_count(0)
 
     page.locator('nav:visible a[href="#overview"]').click()
-    expect(room).to_have_count(0)
+    expect(page.locator(".overview .trading-room")).to_have_count(1)
     page.get_by_role("link", name="Open Trading Desk").click()
     expect(page.locator("h1")).to_be_focused()
     expect(room.locator(".station")).to_have_count(6)

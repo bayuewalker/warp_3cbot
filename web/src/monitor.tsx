@@ -430,14 +430,18 @@ function DeskMetrics({ lang, model }: { lang: Lang; model: ReturnType<typeof ove
 
 export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
   const { now, model, events } = useDeskTelemetry(status);
-  if (status.issue === "awaiting_first_snapshot") return <p role="status">{t(lang, "awaitingWorker")}</p>;
-  if (status.error) return <Problem lang={lang} retry={status.reload} />;
-  if (!status.data) return <Loading lang={lang} />;
+  const room = <div className="control-desk overview-room">
+    <TradingRoom lang={lang} agents={model.agents} status={status.data} events={events.data?.events} now={now} />
+    <a className="desk-link overview-room-link" href="#desk">{t(lang, "roomEntry")} <ChevronRight size={16} /></a>
+  </div>;
+  if (status.issue === "awaiting_first_snapshot") return <>{room}<p role="status">{t(lang, "awaitingWorker")}</p></>;
+  if (status.error) return <>{room}<Problem lang={lang} retry={status.reload} /></>;
+  if (!status.data) return <>{room}<Loading lang={lang} /></>;
   const row = status.data;
   return (
     <div className="overview">
+      {room}
       <DeskMetrics lang={lang} model={model} />
-      <a className="desk-link overview-room-link" href="#desk">{t(lang, "roomEntry")} <ChevronRight size={16} /></a>
       <Evidence lang={lang} model={model} />
       <div className="monitor-grid">
         <div className="monitor-col">
