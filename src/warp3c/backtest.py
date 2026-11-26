@@ -32,6 +32,28 @@ def _fail(reason: str) -> BacktestResult:
     return BacktestResult(False, reason, 0, 0, 0, Decimal("0"))
 
 
+# The scan already fetches this many 15m candles. A larger opt-in window is
+# WARP_BACKTEST_CANDLES, and it is used only when that many candles are in hand.
+DEFAULT_BACKTEST_CANDLES = 120
+MAX_BACKTEST_CANDLES = 1000
+
+
+def candles_for_backtest(candles: list[dict] | None, limit: int):
+    """Return the series the backtest should see.
+
+    Limit 120 (the default) returns the series unchanged, including None.
+    A higher limit uses the most recent ``limit`` candles. A shorter series
+    fails closed as not_enough_candles.
+    """
+    if limit <= DEFAULT_BACKTEST_CANDLES:
+        return candles
+    if not candles or len(candles) < limit:
+        return None
+    if len(candles) == limit:
+        return candles
+    return list(candles[-limit:])
+
+
 def run_backtest(
     candles: list[dict] | None,
     stop_fraction: Decimal,

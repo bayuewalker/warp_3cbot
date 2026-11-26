@@ -77,6 +77,8 @@ def dispatch(method: str, path: str, headers, body: bytes) -> tuple[int, list[tu
     clean = path.split("?", 1)[0]
     if method == "GET" and clean in {"/health", "/live", "/ready"}:
         return _health(clean)
+    if method == "GET" and clean == "/favicon.ico":
+        return 204, [("Cache-Control", "public, max-age=86400")], b""
     if method == "GET" and clean in {"/", "/dashboard"}:
         return _page()
     if method == "GET" and clean.startswith("/assets/"):

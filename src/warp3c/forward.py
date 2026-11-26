@@ -13,6 +13,9 @@ from .market import MarketDataError
 
 HORIZONS = (("4h", 4), ("24h", 24), ("72h", 72))
 WAIT_BAND = Decimal("0.005")
+# Horizons whose price lookup failed in this process. The next cycle skips them
+# so a missing price does not consume the attempt cap again.
+_FAILED: set[tuple[int, int, str]] = set()
 
 
 def is_hit(verdict: str, move: Decimal) -> bool:
@@ -26,13 +29,19 @@ def is_hit(verdict: str, move: Decimal) -> bool:
 
 
 def evaluate_due(journal, price_at, now: datetime, *, limit: int = 20) -> int:
-    """Fill horizons that are already due. A missing price leaves the cell empty."""
+    """Fill horizons that are already due. ``limit`` counts price lookups, not only fills.
+
+    A missing price leaves the cell empty. A horizon that failed earlier in this
+    process is not requested again, so the backlog can move on to other rows.
+    """
     if price_at is None:
         return 0
     moment = now.astimezone(timezone.utc)
     filled = 0
+    attempts = 0
+    journal_key = str(getattr(journal, "path", id(journal)))
     for row in journal.verdict_rows():
-        if filled >= limit:
+        if attempts >= limit:
             break
         recorded = datetime.fromisoformat(row["recorded_at"])
         if recorded.tzinfo is None:
@@ -40,22 +49,39 @@ def evaluate_due(journal, price_at, now: datetime, *, limit: int = 20) -> int:
         decision = Decimal(row["price"])
         if decision <= 0:
             continue
+        due: list[tuple[str, datetime]] = []
         for label, hours in HORIZONS:
             if row.get(f"move_{label}") is not None:
                 continue
-            due = recorded + timedelta(hours=hours)
-            if moment < due:
+            at = recorded + timedelta(hours=hours)
+            if moment < at:
                 continue
-            if filled >= limit:
+            due.append((label, at))
+        pending = [
+            (label, at)
+            for label, at in due
+            if (journal_key, int(row["id"]), label) not in _FAILED
+        ]
+        if due and not pending:
+            continue
+        for label, at in pending:
+            if attempts >= limit:
                 break
+            attempts += 1
             try:
-                later = price_at(row["symbol"], due)
+                later = price_at(row["symbol"], at)
             except (MarketDataError, ValueError, ArithmeticError, TypeError, OSError):
                 later = None
             if later is None:
+                _FAILED.add((journal_key, int(row["id"]), label))
                 continue
-            later_price = Decimal(str(later))
+            try:
+                later_price = Decimal(str(later))
+            except (ValueError, ArithmeticError, TypeError):
+                _FAILED.add((journal_key, int(row["id"]), label))
+                continue
             if later_price <= 0:
+                _FAILED.add((journal_key, int(row["id"]), label))
                 continue
             move = (later_price - decision) / decision
             journal.set_verdict_horizon(row["id"], label, later_price, move)

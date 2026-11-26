@@ -8,7 +8,7 @@ import re
 import threading
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 import httpx
 
@@ -477,6 +477,11 @@ def _messages(prompt: str) -> list[dict]:
     ]
 
 
+def _places(value: Decimal, places: str) -> str:
+    """Evidence text only. The snapshot Decimals used for decisions are unchanged."""
+    return format(value.quantize(Decimal(places), rounding=ROUND_HALF_UP), "f")
+
+
 def _evidence_lines(symbols: list[str], evidence: dict) -> str:
     lines = []
     for symbol in symbols:
@@ -485,7 +490,8 @@ def _evidence_lines(symbols: list[str], evidence: dict) -> str:
             lines.append(f"{symbol}: no snapshot")
             continue
         lines.append(
-            f"{symbol}: regime={item.regime} rsi={item.rsi} momentum={item.momentum} "
+            f"{symbol}: regime={item.regime} rsi={_places(item.rsi, '0.1')} "
+            f"momentum={_places(item.momentum, '0.01')} "
             f"volatility={item.volatility} passed={item.passed} reason={item.reason}"
         )
     return "; ".join(lines)

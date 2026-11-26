@@ -10,6 +10,8 @@ from decimal import Decimal
 from .candles import Bar
 
 D = Decimal
+# One sample per minute. Fewer than this stays unhealthy with reason few_samples.
+MIN_SAMPLES = 10
 
 
 @dataclass(frozen=True)
@@ -33,7 +35,7 @@ class BasisBook:
             if not self._samples or self._samples[-1][0] != stamp:
                 self._samples.append((stamp, perp_close - spot))
         values = [sample[1] for sample in self._samples]
-        if len(values) < 10:
+        if len(values) < MIN_SAMPLES:
             return BasisState(None, False, len(values), None, "few_samples")
         ordered = sorted(values)
         mid = len(ordered) // 2

@@ -22,11 +22,19 @@ def _ready(last: datetime | None, now: datetime, seconds: int) -> bool:
     return (now - last).total_seconds() >= seconds
 
 
-def due_actions(clocks: Clocks, now: datetime, cfg: Settings) -> frozenset[str]:
+def due_actions(
+    clocks: Clocks,
+    now: datetime,
+    cfg: Settings,
+    *,
+    research_seconds: int | None = None,
+) -> frozenset[str]:
     actions: set[str] = set()
     if _ready(clocks.scan, now, cfg.scan_seconds):
         actions.add("scan")
-    if _ready(clocks.research, now, cfg.research_seconds):
+    # The configured cadence is the floor. Budget pacing may only slow research.
+    interval = cfg.research_seconds if research_seconds is None else max(cfg.research_seconds, research_seconds)
+    if _ready(clocks.research, now, interval):
         actions.add("research")
     if _ready(clocks.monitor, now, cfg.monitor_seconds):
         actions.add("monitor")

@@ -891,7 +891,6 @@ class Engine:
         self.status.dependencies_healthy = False
         self.status.execution_permitted = False
         self.status.risk_permitted = False
-        log_event("cycle_blocked", mode=self.cfg.mode, error=type(exc).__name__)
 
     def _heartbeat(self) -> None:
         self.journal.heartbeat(
