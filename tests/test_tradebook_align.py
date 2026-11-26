@@ -234,6 +234,26 @@ class TradebookAlignTests(unittest.TestCase):
             self.assertEqual(engine.cycle(), 0)
             self.assertEqual(engine.last_aegis[-1]["reasons"], ["wrong_account"])
 
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = paper(tmp)
+            journal = OrderJournal(cfg.db_path)
+            self.addCleanup(journal.close)
+            journal.set_setting(
+                "target_account",
+                json.dumps({"code": "p123", "exchange_code": "BYBIT", "market": "spot"}),
+            )
+
+            class Quiet(ExplodingBroker):
+                def get_account(self, code, exchange_code):
+                    return Account(code, True, Decimal("1000"), Decimal("0"), Decimal("1000"), exchange_code="BINANCE")
+
+                def create_strategy(self, payload):
+                    raise AssertionError("create_strategy")
+
+            engine = Engine(cfg, Quiet(), Research(), journal, Markets())
+            self.assertEqual(engine.cycle(), 0)
+            self.assertEqual(engine.last_aegis[-1]["reasons"], ["wrong_account"])
+
     def test_t17_missing_lot_size_and_stale_signal_wait(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = paper(tmp)
