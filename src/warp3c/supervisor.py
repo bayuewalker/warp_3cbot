@@ -261,6 +261,10 @@ def _calls_per_run(analyst) -> int:
 
 def _research_budget(engine) -> tuple[int, int] | None:
     """Remaining daily calls and the calls one healthy run spends. None when this is not the LLM path."""
+    # Vibe never spends the local budget. auto and llm do, and only when the analyst is configured.
+    analysis = getattr(getattr(engine, "cfg", None), "analysis", "auto")
+    if analysis not in {"llm", "auto"}:
+        return None
     analyst = getattr(engine, "analyst", None)
     budget = getattr(analyst, "budget", None)
     if analyst is None or budget is None:

@@ -227,6 +227,27 @@ class ResearchPaceTests(unittest.TestCase):
             analyst.close()
             journal.close()
 
+    def test_vibe_keeps_its_cadence_when_the_local_budget_is_spent(self):
+        noon = datetime(2026, 11, 26, 12, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp:
+            _cfg, journal, engine = self._engine(tmp, analysis="vibe")
+            analyst = self._analyst(journal)
+            engine.analyst = analyst
+            self._store_budget(journal, 48)
+            journal.note_research_started(noon - timedelta(hours=2))
+            calls = {"n": 0}
+            engine.collect_research = lambda: calls.__setitem__("n", calls["n"] + 1) or []
+            gate = ResearchGate()
+            try:
+                once(engine, gate, clocks_from_journal(journal), now=noon)
+                if gate._thread is not None:
+                    gate._thread.join(2)
+                self.assertEqual(calls["n"], 1)
+                self.assertNotEqual(engine.research_status["state"], "budget_wait")
+            finally:
+                analyst.close()
+                journal.close()
+
     def test_restart_inside_the_window_runs_research_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             _cfg, journal, engine = self._engine(tmp)
