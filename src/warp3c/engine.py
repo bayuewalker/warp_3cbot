@@ -79,13 +79,21 @@ def _broker_id_or_none(result: dict) -> str | None:
     return None
 
 
-def _deal_closed_detail(row: dict) -> str:
+def _deal_closed_detail(
+    row: dict,
+    *,
+    mark=None,
+    min_notional=None,
+    dust_usdt=Decimal("1"),
+) -> str:
     """Realized quote P&L and fee. No account code and no wallet balance."""
     status = str(row.get("status") or "")
     pnl = "unknown"
     fee = "unknown"
     try:
-        amount, paid = realized_pnl(row)
+        amount, paid = realized_pnl(
+            row, mark=mark, min_notional=min_notional, dust_usdt=dust_usdt
+        )
     except IntegrationError:
         pass
     else:
@@ -949,10 +957,14 @@ class Engine:
                 )
                 symbol = str(bot.get("symbol") or "")
                 client_id = str(bot.get("client_id") or "")
+                dust_symbol = str(row.get("pair") or bot.get("symbol") or "")
+                mark, notional = self._mark_for_dust(dust_symbol)
                 enqueue_incident(
                     self.journal,
                     f"deal_closed:{symbol}:{client_id}",
-                    _deal_closed_detail(row),
+                    _deal_closed_detail(
+                        row, mark=mark, min_notional=notional, dust_usdt=self.cfg.dust_usdt
+                    ),
                     now=datetime.now(timezone.utc),
                     channel=channel_configured(self.cfg),
                 )
