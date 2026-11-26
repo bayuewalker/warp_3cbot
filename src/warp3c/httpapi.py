@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .accounts import account_allowed
@@ -18,6 +19,7 @@ from .auth import (
 )
 from .bots import BotTemplate, preview_capital
 from .models import positive
+from .notify import channel_configured, enqueue_incident
 from .operator import (
     DASHBOARD_HTML,
     HEALTH,
@@ -45,6 +47,7 @@ _ACTIONS = {
     "/api/warp-bots/action",
     "/api/paper/roundtrip",
     "/api/rules",
+    "/api/alerts/test",
 }
 
 _TYPES = {
@@ -126,6 +129,8 @@ def dispatch(method: str, path: str, headers, body: bytes) -> tuple[int, list[tu
             return _save_rules(body)
         if method == "POST" and clean == "/api/paper/roundtrip":
             return _paper_roundtrip(body)
+        if method == "POST" and clean == "/api/alerts/test":
+            return _alert_test()
     return _json(404, {"error": "not_found"})
 
 
@@ -507,6 +512,22 @@ def _paper_roundtrip(body: bytes) -> tuple[int, list[tuple[str, str]], bytes]:
     publish(cfg, journal, engine)
     code = 200 if report["ok"] else 409
     return _json(code, report)
+
+
+def _alert_test() -> tuple[int, list[tuple[str, str]], bytes]:
+    """Enqueue one fixed test alert. The request body is not part of the text."""
+    journal, cfg = _journal()
+    if journal is None or cfg is None:
+        return _json(503, {"error": "journal_unavailable"})
+    detail = f"WARP alerts connected ({cfg.mode} mode) - test"
+    created = enqueue_incident(
+        journal,
+        "alert_test",
+        detail,
+        now=datetime.now(timezone.utc),
+        channel=channel_configured(cfg),
+    )
+    return _json(200, {"ok": True, "enqueued": bool(created), "event": "alert_test"})
 
 
 def _preview(body: bytes) -> tuple[int, list[tuple[str, str]], bytes]:

@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from .llm import LlmError
 from .market import MarketDataError
+from .notify import channel_configured, enqueue_incident
 from .schedule import Clocks, due_actions
 from .telemetry import log_event
 
@@ -150,6 +151,7 @@ class ResearchGate:
                 self._logged_id = id(error)
                 self._blocked_at = now
                 log_event("research_failed", **_failure_fields(error))
+                _queue_research_alert(engine, code, error, self._consecutive, now, cfg)
                 if code in _NO_RETRY:
                     self._state = "capped" if code == "llm_cap" else "failed"
                     self._next = _next_from_clock(clocks, cfg.research_seconds)
@@ -192,6 +194,22 @@ class ResearchGate:
             "next_attempt_at": None if self._next is None else self._next.isoformat(),
             "consecutive_failures": self._consecutive,
         }
+
+
+def _queue_research_alert(engine, code: str, error: BaseException, consecutive: int, now: datetime, cfg) -> None:
+    """First failure of a streak, and the daily cap whenever it is reached."""
+    journal = getattr(engine, "journal", None)
+    channel = channel_configured(cfg)
+    if consecutive == 1:
+        enqueue_incident(
+            journal,
+            f"research_failed:{code}",
+            f"{code} {type(error).__name__}"[:400],
+            now=now,
+            channel=channel,
+        )
+    if code == "llm_cap":
+        enqueue_incident(journal, "llm_cap", "llm daily cap reached", now=now, channel=channel)
 
 
 def _next_from_clock(clocks: Clocks, research_seconds: int) -> datetime | None:

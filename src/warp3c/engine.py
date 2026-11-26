@@ -36,6 +36,7 @@ from .levels import derive_levels
 from .llm import warn_budget_short
 from .market import MarketData, MarketDataError
 from .models import Signal, positive
+from .notify import channel_configured, enqueue_incident
 from .ownership import warp_name
 from .qualify import qualify
 from .risk import (
@@ -76,6 +77,21 @@ def _broker_id_or_none(result: dict) -> str | None:
         if isinstance(value, str) and value:
             return value
     return None
+
+
+def _deal_closed_detail(row: dict) -> str:
+    """Realized quote P&L and fee. No account code and no wallet balance."""
+    status = str(row.get("status") or "")
+    pnl = "unknown"
+    fee = "unknown"
+    try:
+        amount, paid = realized_pnl(row)
+    except IntegrationError:
+        pass
+    else:
+        pnl = format(amount, "f")
+        fee = format(paid, "f")
+    return f"realized {pnl} fee {fee} status {status}"[:400]
 
 
 def _broker_id(result: dict) -> str:
@@ -141,8 +157,12 @@ class Engine:
         self._trade_book: dict | None = None
         self._trade_book_error: str | None = None
         self._discovery_block: str | None = None
+        self._halt_present: bool | None = None
+        # The worker flush runs every loop. This is how that loop sees HALT edges.
+        self.journal.note_halt = self._note_halt
 
     def cycle(self) -> int:
+        self._note_halt()
         self.status = CycleStatus()
         try:
             now = datetime.now(timezone.utc)
@@ -160,6 +180,7 @@ class Engine:
 
     def monitor(self) -> int:
         """Reconcile and re-score risk. Pause does not skip this. It does not submit."""
+        self._note_halt()
         self.status = CycleStatus()
         try:
             now = datetime.now(timezone.utc)
@@ -174,6 +195,7 @@ class Engine:
 
     def execute_cached(self, signals: list[Signal], now: datetime | None = None) -> int:
         """Submit only after research has finished. Still goes through the risk engine."""
+        self._note_halt()
         moment = now or datetime.now(timezone.utc)
         try:
             account, positions = self._load_account()
@@ -374,10 +396,12 @@ class Engine:
         )
         self.status.reason = decision.reason
         if decision.reason in {"drawdown", "daily_loss"}:
-            self.journal.enqueue_alert(
+            enqueue_incident(
+                self.journal,
                 f"breaker:{decision.reason}",
                 f"{decision.reason} {decision.equity}",
                 now=now,
+                channel=channel_configured(self.cfg),
             )
         if self._discovery_block and decision.execution_permitted:
             self.status.reason = self._discovery_block
@@ -480,10 +504,12 @@ class Engine:
                     external_code=broker_id,
                     updated_at=datetime.now(timezone.utc).isoformat(),
                 )
-            self.journal.enqueue_alert(
+            enqueue_incident(
+                self.journal,
                 f"order:{plan.symbol}:{client_id}",
                 f"{self.cfg.mode} {template.kind} {plan.symbol} {broker_id}",
                 now=now,
+                channel=channel_configured(self.cfg),
             )
             notes.append((stamp, plan.symbol, "broker", "confirmed", broker_id))
             log_event("strategy_confirmed", symbol=plan.symbol, strategy_id=broker_id)
@@ -921,6 +947,30 @@ class Engine:
                     status="closed",
                     updated_at=datetime.now(timezone.utc).isoformat(),
                 )
+                symbol = str(bot.get("symbol") or "")
+                client_id = str(bot.get("client_id") or "")
+                enqueue_incident(
+                    self.journal,
+                    f"deal_closed:{symbol}:{client_id}",
+                    _deal_closed_detail(row),
+                    now=datetime.now(timezone.utc),
+                    channel=channel_configured(self.cfg),
+                )
+
+    def _note_halt(self) -> None:
+        """Compare the HALT file with the previous worker observation."""
+        paused = self._halted()
+        previous = self._halt_present
+        self._halt_present = paused
+        if previous == paused or (previous is None and not paused):
+            return
+        enqueue_incident(
+            self.journal,
+            "halt_on" if paused else "halt_off",
+            "HALT file is present" if paused else "HALT file was removed",
+            now=datetime.now(timezone.utc),
+            channel=channel_configured(self.cfg),
+        )
 
     def _halted(self) -> bool:
         return Path(self.cfg.db_path).parent.joinpath("HALT").exists()

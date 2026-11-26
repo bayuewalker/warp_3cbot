@@ -273,6 +273,13 @@ class OrderJournal:
         self.db.execute("DELETE FROM runtime WHERE key='alert'")
         self.db.execute("UPDATE alerts SET state='resolved' WHERE state='delivered'")
 
+    def latest_alert_state(self, event: str) -> str | None:
+        row = self.db.execute(
+            "SELECT state FROM alerts WHERE event=? ORDER BY id DESC LIMIT 1",
+            (event,),
+        ).fetchone()
+        return None if row is None else str(row[0])
+
     def enqueue_alert(self, event: str, detail: str, *, now: datetime | None = None) -> bool:
         """Queue one incident. A pending or unresolved delivery suppresses duplicates."""
         moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -306,6 +313,17 @@ class OrderJournal:
                 """,
                 (moment,),
             )
+        )
+
+    def mark_skipped_no_channel(self, alert_id: int, now: datetime) -> None:
+        """No sender is configured. Do not retry, and do not call this delivered."""
+        self.db.execute(
+            """
+            UPDATE alerts
+               SET state='skipped_no_channel', last_error='no_channel'
+             WHERE id=? AND state='pending'
+            """,
+            (alert_id,),
         )
 
     def mark_delivered(self, alert_id: int, now: datetime) -> None:
