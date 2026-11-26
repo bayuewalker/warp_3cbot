@@ -14,6 +14,7 @@ from .bots import PRESETS, BotTemplate, preview_capital
 from .forward import summary
 from .live import ACCOUNT_SECONDS
 from .screener import ScreenerFilters
+from .vibe import ResearchError
 
 SNAPSHOT: dict[str, dict] = {}
 RUNTIME: dict[str, object] = {"journal": None, "cfg": None, "engine": None}
@@ -164,13 +165,24 @@ def _provider_health(cfg, engine) -> dict:
             "openrouter": {**blank, "model": cfg.openrouter_model},
         }
     budget = getattr(getattr(analyst, "budget", None), "snapshot", None)
-    health["budget"] = budget() if budget is not None else {
-        "day": datetime.now(timezone.utc).date().isoformat(),
-        "calls_used": 0,
-        "calls_cap": cfg.llm_daily_calls,
-        "usd_used": "0",
-        "usd_cap": _text(cfg.llm_daily_usd),
-    }
+    if budget is None:
+        health["budget"] = {
+            "day": datetime.now(timezone.utc).date().isoformat(),
+            "calls_used": 0,
+            "calls_cap": cfg.llm_daily_calls,
+            "usd_used": "0",
+            "usd_cap": _text(cfg.llm_daily_usd),
+        }
+    else:
+        try:
+            health["budget"] = budget()
+        except ResearchError:
+            # Charging still raises. Status must not take the worker down with it.
+            health["budget"] = {
+                "state": "unreadable",
+                "calls_cap": cfg.llm_daily_calls,
+                "usd_cap": _text(cfg.llm_daily_usd),
+            }
     return health
 
 

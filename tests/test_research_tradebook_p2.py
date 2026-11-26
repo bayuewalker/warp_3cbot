@@ -192,6 +192,42 @@ class ResearchLogTests(unittest.TestCase):
                     self.assertNotIn("research", due_actions(clocks, now + timedelta(seconds=60), cfg))
                     self.assertIn("research", due_actions(clocks, now + timedelta(seconds=cfg.research_seconds), cfg))
 
+    def test_a_late_failure_is_settled_before_the_next_start(self):
+        now = datetime(2026, 11, 26, tzinfo=timezone.utc)
+        calls = {"n": 0}
+
+        def collect():
+            calls["n"] += 1
+            raise ResearchError("LLM providers failed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = paper(tmp)
+            cfg = Settings(
+                mode="paper", db_path=cfg.db_path, api_key="k", api_secret="s", profile_code="p123",
+                sleeve_pct=Decimal("1"), research_seconds=30, research_retry_seconds=30,
+            )
+            journal = OrderJournal(cfg.db_path)
+            self.addCleanup(journal.close)
+            engine = Engine(cfg, ExplodingBroker(), None, journal, Markets())
+            engine.collect_research = collect
+            gate = ResearchGate()
+            gate._error = ResearchError("LLM providers failed")
+            gate._finished_at = now
+            gate._generation = 1
+            clocks = Clocks(
+                scan=now, monitor=now, reconcile=now,
+                research=now - timedelta(seconds=30),
+            )
+            with self.assertLogs("warp3c", level="INFO") as logs:
+                clocks = once(engine, gate, clocks, now=now)
+            failed = [line for line in logs.output if "research_failed" in line]
+            self.assertEqual(len(failed), 1)
+            self.assertEqual(calls["n"], 0)
+            self.assertEqual(engine.research_status["consecutive_failures"], 1)
+            self.assertEqual(engine.research_status["state"], "backoff")
+            self.assertNotIn("research", due_actions(clocks, now, cfg))
+            self.assertIn("research", due_actions(clocks, now + timedelta(seconds=30), cfg))
+
 
 class ResearchBudgetTests(unittest.TestCase):
     def test_budget_persists_across_a_new_analyst(self):
@@ -232,6 +268,52 @@ class ResearchBudgetTests(unittest.TestCase):
         payload = json.loads(logs.output[0][logs.output[0].index("{"):])
         self.assertEqual(payload["calls_cap"], 48)
         self.assertEqual(payload["calls_needed"], "192")
+        self.assertEqual(payload["assumed_calls_per_run"], 2)
+        self.assertEqual(payload["fallback_calls_per_run"], 4)
+
+    def test_unreadable_budget_does_not_crash_publish_or_call_the_provider(self):
+        requests = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests["n"] += 1
+            return httpx.Response(500, json={"error": "no"})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = paper(tmp)
+            journal = OrderJournal(cfg.db_path)
+            self.addCleanup(journal.close)
+            journal.set_setting("llm_budget", "{")
+            analyst = LlmAnalyst(
+                openrouter_key="present",
+                timeout=5,
+                transport=httpx.MockTransport(handler),
+            )
+            self.addCleanup(analyst.close)
+            engine = Engine(cfg, ExplodingBroker(), None, journal, Markets(), analyst=analyst)
+            publish(cfg, journal, engine)
+            budget = SNAPSHOT["/api/status"]["providers"]["budget"]
+            self.assertEqual(budget["state"], "unreadable")
+            self.assertEqual(budget["calls_cap"], cfg.llm_daily_calls)
+            self.assertNotIn("calls_used", budget)
+            with self.assertRaisesRegex(ResearchError, "LLM budget unreadable"):
+                analyst.research(("BTCUSDT",), {"BTCUSDT": evidence("BTCUSDT")}, 30)
+            self.assertEqual(requests["n"], 0)
+            gate = ResearchGate()
+            now = datetime(2026, 11, 26, tzinfo=timezone.utc)
+            engine.universe = ("BTCUSDT",)
+            engine.evidence = {"BTCUSDT": evidence("BTCUSDT")}
+            engine.status.reason = "ok"
+            clocks = once(
+                engine, gate,
+                Clocks(scan=now, monitor=now, reconcile=now),
+                now=now,
+            )
+            if gate._thread is not None:
+                gate._thread.join(2)
+            once(engine, gate, clocks, now=now)
+            self.assertEqual(requests["n"], 0)
+            self.assertEqual(engine.status.reason, "research_blocked:research_error")
+            self.assertEqual(engine.research_status["error_code"], "research_error")
 
 
 class ResearchSurfaceTests(unittest.TestCase):
@@ -470,6 +552,29 @@ class RealizedFeeTests(unittest.TestCase):
         higher["totalProfitLoss"] = "100000"
         self.assertEqual(realized_pnl(higher)[0], computed)
 
+    def test_official_schema_example_with_base_commission_books(self):
+        row = self._row()
+        row["totalEntryAmount"] = "404"
+        row["totalExitAmount"] = "404"
+        row["totalEntryCommission"] = "0.1616"
+        row["totalExitCommission"] = "0.1616"
+        row["totalProfitLoss"] = "-1256"
+        self.assertEqual(held_base_residual(row), Decimal("0"))
+        net, fee = realized_pnl(row, mark=Decimal("0.2744"), min_notional=Decimal("5"))
+        self.assertEqual(fee, Decimal("0.08869680"))
+        self.assertEqual(net, Decimal("-0.14349680"))
+        managed_strategies(
+            [row], "p123", demo=False, exchange_code="BINANCE", shared=True,
+            journaled=frozenset({row["clientId"]}),
+        )
+
+    def test_exit_above_entry_still_raises(self):
+        row = self._row()
+        row["totalEntryAmount"] = "404"
+        row["totalExitAmount"] = "405"
+        with self.assertRaisesRegex(IntegrationError, "Exit amount exceeds entry amount"):
+            held_base_residual(row)
+
 
 class DustTests(unittest.TestCase):
     def _row(self, *, entry="1", exit_amount="0.997", entry_fee="0"):
@@ -499,9 +604,15 @@ class DustTests(unittest.TestCase):
             realized_pnl(stale, min_notional=Decimal("5"))
         row = self._row(entry="1", exit_amount="0.999", entry_fee="0.001")
         self.assertEqual(held_base_residual(row), Decimal("0"))
-        net, fee = realized_pnl(row)
+        with self.assertNoLogs("warp3c", level="INFO"):
+            net, fee = realized_pnl(row)
         self.assertEqual(fee, Decimal("0"))
         self.assertEqual(net, Decimal("99.70") - Decimal("100"))
+        with self.assertRaisesRegex(IntegrationError, "still holds base"):
+            realized_pnl(
+                self._row(exit_amount="0.94"),
+                mark=Decimal("100"), min_notional=Decimal("10"), dust_usdt=Decimal("1"),
+            )
 
     def test_engine_books_dust_inside_the_sleeve_and_does_not_sell(self):
         with tempfile.TemporaryDirectory() as tmp:

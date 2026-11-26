@@ -267,7 +267,9 @@ def _optional_base_commission(strategy: dict, key: str) -> Decimal:
 def held_base_residual(strategy: dict) -> Decimal:
     """Base still held after the entry base commission.
 
-    residual = totalEntryAmount - totalEntryCommission - totalExitAmount.
+    residual = max(0, totalEntryAmount - totalEntryCommission - totalExitAmount).
+    A negative intermediate, with the exit amount still at or below the entry
+    amount, means the reported base commission was not taken from the base.
     totalEntryCommission is the base-asset commission. Field meaning:
     docs/risk/TRADEBOOK_MAPPING.md.
     """
@@ -276,13 +278,14 @@ def held_base_residual(strategy: dict) -> Decimal:
     try:
         entry = positive(strategy["totalEntryAmount"], "entry amount")
         exited = positive(strategy["totalExitAmount"], "exit amount")
+        commission = _optional_base_commission(strategy, "totalEntryCommission")
     except ValueError as exc:
         raise IntegrationError("Realized P&L unreadable; entries halted") from exc
     if exited > entry:
         raise IntegrationError("Exit amount exceeds entry amount")
-    residual = entry - _optional_base_commission(strategy, "totalEntryCommission") - exited
+    residual = entry - commission - exited
     if residual < 0:
-        raise IntegrationError("Realized P&L unreadable; entries halted")
+        return Decimal("0")
     return residual
 
 

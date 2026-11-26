@@ -203,6 +203,10 @@ def _next_from_clock(clocks: Clocks, research_seconds: int) -> datetime | None:
 def once(engine, gate: ResearchGate, clocks: Clocks, *, now: datetime | None = None) -> Clocks:
     """Monitor even when research is still running. Orders wait for a finished result."""
     moment = now or datetime.now(timezone.utc)
+    # A run that outlasts the research interval is already due. Settle it before
+    # start() clears the error, then decide whether the backoff still says due.
+    if not gate.busy():
+        clocks = gate.settle(engine, clocks, moment, engine.cfg)
     actions = due_actions(clocks, moment, engine.cfg)
     if "monitor" in actions or "reconcile" in actions:
         engine.monitor()
@@ -224,6 +228,9 @@ def once(engine, gate: ResearchGate, clocks: Clocks, *, now: datetime | None = N
         gate.start(engine.collect_research)
         clocks = replace(clocks, research=moment)
     if not gate.busy():
+        # Monitor may have replaced the reason. Settle again so the overlay
+        # returns, and so a run that finished inside this call is recorded.
+        # The generation was already handled, so this does not log a second time.
         clocks = gate.settle(engine, clocks, moment, engine.cfg)
     if engine._halted():
         return clocks

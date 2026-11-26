@@ -179,6 +179,8 @@ def warn_budget_short(research_seconds: int, daily_calls: int) -> None:
     warn_budget_short.fired = True
     if research_seconds <= 0:
         return
+    # A healthy run charges screen + final (2). Fallback can charge both providers (4).
+    # The warning uses 2. It does not raise the cap.
     needed = (Decimal(86400) / Decimal(research_seconds)) * Decimal(2)
     if needed > Decimal(daily_calls):
         log_event(
@@ -187,6 +189,8 @@ def warn_budget_short(research_seconds: int, daily_calls: int) -> None:
             research_seconds=research_seconds,
             calls_cap=daily_calls,
             calls_needed=format(needed, "f"),
+            assumed_calls_per_run=2,
+            fallback_calls_per_run=4,
         )
 
 
