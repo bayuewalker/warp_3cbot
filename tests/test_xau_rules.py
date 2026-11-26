@@ -24,6 +24,9 @@ from warp3c.xau.config import XauConfigError, XauSettings
 from warp3c.xau.engines.ema import _exhausted, ema_entry, ema_stop, evaluate_ema
 from warp3c.xau.engines.scalp import evaluate_scalp
 from warp3c.xau.engines.smc import (
+    _l1,
+    _liquidity_levels,
+    _sweep_of,
     build_setup,
     clean_session_sweep,
     evaluate_smc,
@@ -38,7 +41,7 @@ from warp3c.xau.news import NewsBook, parse_ff
 from warp3c.xau.outcome import Position, dump_tags, on_bar, position_from_row
 from warp3c.xau.profiles import ProfileError, example_lot, load_profile
 from warp3c.xau.riskbook import RiskBook
-from warp3c.xau.runner import _due_bars, start_xau
+from warp3c.xau.runner import XauRunner, _due_bars, _h1_veto, start_xau
 from warp3c.xau.stats import expectancy
 from warp3c.xau.status import HUB, snapshot
 from warp3c.xau.store import XauStore, new_id
@@ -1085,6 +1088,282 @@ class StatusBlockTests(unittest.TestCase):
                 publish(cfg, journal, engine)
             self.assertEqual(SNAPSHOT["/api/status"]["xau"], {"enabled": False, "state": "unavailable"})
             self.assertEqual(set(SNAPSHOT["/api/status"]), keys)
+
+
+def _px(moment, o, h, low, c, timeframe="15m"):
+    return _bar(moment, o, h, low, c, timeframe)
+
+
+def _h1_poi():
+    """Unmitigated bullish H1 FVG at 108–116 and an unswept swing high at 150."""
+    origin = datetime(2026, 11, 25, tzinfo=UTC)
+    spec = [
+        ("100", "108", "99", "107"),
+        ("107", "110", "106", "109"),
+        ("116.20", "150", "116", "140"),
+        ("140", "142", "109", "135"),
+        ("135", "138", "120", "132"),
+    ]
+    return tuple(
+        _px(origin + timedelta(hours=index), o, h, low, c, "1h")
+        for index, (o, h, low, c) in enumerate(spec)
+    )
+
+
+def _killzone_m15(rows):
+    """Nine Asia bars from 00:00 UTC, then four bars from the London open (07:00 UTC)."""
+    origin = datetime(2026, 11, 25, tzinfo=UTC)
+    london = datetime(2026, 11, 25, 7, tzinfo=UTC)
+    stamps = [origin + timedelta(minutes=15 * index) for index in range(9)]
+    stamps += [london + timedelta(minutes=15 * index) for index in range(4)]
+    return tuple(_px(stamp, *row) for stamp, row in zip(stamps, rows, strict=True))
+
+
+def _limit_rows(target="140"):
+    # Asia low is 100. The 110 swing is the CHoCH swing and is only broken by $0.05.
+    # The far high is the first unswept target. The sweep reclaims on the next candle.
+    return [
+        ("102", "103", "100.00", "102"),
+        ("102", "104", "100.50", "103"),
+        ("103", target, "100.50", "104"),
+        ("104", "106", "100.50", "103"),
+        ("103", "105", "100.50", "104"),
+        ("104", "106", "100.50", "103"),
+        ("103", "110", "100.50", "104"),
+        ("104", "107", "100.50", "103"),
+        ("103", "106", "100.50", "104"),
+        ("104", "109", "99.80", "99.90"),
+        ("100.20", "108", "99.95", "107"),
+        ("107", "109.80", "106.80", "109.50"),
+        ("110.00", "110.05", "110.00", "110.05"),
+    ]
+
+
+def _market_rows(target="140", close="112", high="112.40"):
+    # Displacement FVG sits below the POI, so the only legal entry is the market close.
+    return [
+        ("102", "103", "102.20", "102.40"),
+        ("102", "104", "102.50", "103"),
+        ("103", target, "102.50", "104"),
+        ("104", "106", "102.50", "103"),
+        ("103", "105", "102.50", "104"),
+        ("104", "106", "102.50", "103"),
+        ("103", "110", "102.50", "104"),
+        ("104", "107", "102.50", "103"),
+        ("103", "106", "102.50", "104"),
+        ("104", "111", "102.00", "102.05"),
+        ("102.30", "104", "102.10", "103.80"),
+        ("103.80", "108.50", "103.50", "108"),
+        ("106.20", high, "106", close),
+    ]
+
+
+def _scan(m15, window="London KZ"):
+    return evaluate_smc(
+        m15=tuple(m15), h1=_h1_poi(), h4=(), direction="long", atr_h1=D("10"),
+        spread=D("0.30"), fresh_reversal=False, aligned=True, bias_text="bullish",
+        window=window, valid_until=None, risk_pct=D("0.40"), in_kz=True,
+    )
+
+
+def _flat(timeframe):
+    origin = datetime(2026, 11, 20, tzinfo=UTC)
+    step = timedelta(days=1) if timeframe == "1d" else timedelta(hours=4)
+    return tuple(_bar(origin + step * index, "100", "101", "99", "100", timeframe) for index in range(4))
+
+
+def _timed(spec, timeframe, step):
+    origin = datetime(2026, 11, 25, 8, tzinfo=UTC)
+    return tuple(
+        _bar(origin + step * index, *row, timeframe) for index, row in enumerate(spec)
+    )
+
+
+class P2FollowupTests(unittest.TestCase):
+    def test_s1_10_s1_7_d9_limit_at_the_fvg_skips_the_choch_swing(self):
+        setup = _scan(_killzone_m15(_limit_rows()))
+        self.assertIsNotNone(setup)
+        self.assertEqual(setup.model, "S1")
+        self.assertEqual(setup.entry_type, "limit")
+        self.assertEqual(setup.entry, D("109.00"))
+        self.assertTrue(setup.chase_ok)
+        self.assertTrue(setup.tags["clean_sweep"])
+        # The CHoCH only cleared 110 by $0.05, so that swing is still inside 2R of 109.
+        # Keeping it as L1 would skip the setup. The unswept 140 high is the target.
+        self.assertGreater(setup.tp1, setup.entry)
+
+    def test_s1_10_nearer_unswept_target_is_still_inside_2r(self):
+        # 115 is unswept and is not the CHoCH swing. It is still inside 2R, so no signal.
+        self.assertIsNone(_scan(_killzone_m15(_limit_rows(target="115"))))
+
+    def test_s1_7_market_only_when_no_limit_and_still_2r_checked(self):
+        market = _scan(_killzone_m15(_market_rows()))
+        self.assertIsNotNone(market)
+        self.assertEqual(market.entry_type, "market")
+        self.assertEqual(market.entry, D("112.00"))
+        self.assertTrue(market.chase_ok)
+        self.assertIsNone(_scan(_killzone_m15(_market_rows(target="120"))))
+        outside = _scan(_killzone_m15(_market_rows(close="120", high="120.50")))
+        self.assertIsNone(outside)
+
+    def test_s1_10_l1_skips_swept_swings_and_the_choch_level(self):
+        origin = datetime(2026, 11, 25, 8, tzinfo=UTC)
+        highs = [
+            "100", "101", "140", "102", "103", "104", "120", "105", "106",
+            "120.20", "120.20", "107", "108", "110", "108", "109", "110.05",
+        ]
+        bars = tuple(
+            _px(origin + timedelta(minutes=15 * index), "100", high, "99", "110.05" if index == 16 else "100")
+            for index, high in enumerate(highs)
+        )
+        series = [(point, bars) for point in swings(bars, 2)]
+        self.assertEqual(_l1(D("109"), "long", series, None), D("110"))
+        self.assertEqual(_l1(D("109"), "long", series, None, broken=D("110")), D("140"))
+        self.assertEqual(_l1(D("109"), "long", series, D("130"), broken=D("110")), D("130"))
+        lows = [
+            "120", "119", "80", "118", "117", "116", "100", "115", "114",
+            "99.80", "99.80", "113", "112", "110", "112", "111", "109.95",
+        ]
+        short = tuple(
+            _px(origin + timedelta(minutes=15 * index), "110", "121", low, "109.95" if index == 16 else "110")
+            for index, low in enumerate(lows)
+        )
+        mirrored = [(point, short) for point in swings(short, 2)]
+        self.assertEqual(_l1(D("111"), "short", mirrored, None), D("110"))
+        self.assertEqual(_l1(D("111"), "short", mirrored, None, broken=D("110")), D("80"))
+
+    def test_e2_h1_veto_mirrors_m15_bias(self):
+        bearish_m15 = _timed(
+            [
+                ("98", "100", "95", "97"),
+                ("97", "101", "94", "96"),
+                ("96", "102", "90", "95"),
+                ("95", "101", "94", "94"),
+                ("94", "100", "95", "93"),
+                ("93", "95", "88", "89"),
+                ("89", "110", "87", "90"),
+                ("90", "100", "86", "91"),
+                ("91", "99", "85", "92"),
+                ("92", "98", "90", "95"),
+            ],
+            "15m",
+            timedelta(minutes=15),
+        )
+        bullish_m15 = _timed(
+            [
+                ("90", "95", "88", "94"),
+                ("94", "96", "89", "95"),
+                ("95", "110", "90", "100"),
+                ("100", "105", "94", "99"),
+                ("99", "104", "95", "98"),
+                ("98", "112", "96", "111"),
+                ("111", "112", "80", "100"),
+                ("100", "111", "84", "105"),
+                ("105", "111", "85", "106"),
+                ("106", "112", "90", "108"),
+            ],
+            "15m",
+            timedelta(minutes=15),
+        )
+        bullish_h1 = _timed(
+            [
+                ("10", "12", "9", "11"),
+                ("11", "13", "10", "12"),
+                ("12", "20", "11", "13"),
+                ("13", "15", "12", "14"),
+                ("14", "14", "11", "12"),
+                ("12", "22", "12", "21"),
+                ("21", "23", "20", "22"),
+                ("22", "24", "21", "23"),
+                ("23", "25", "22", "24"),
+            ],
+            "1h",
+            timedelta(hours=1),
+        )
+        bearish_h1 = _timed(
+            [
+                ("20", "21", "18", "19"),
+                ("19", "20", "16", "17"),
+                ("17", "18", "10", "16"),
+                ("16", "17", "14", "15"),
+                ("15", "16", "13", "14"),
+                ("14", "14", "8", "9"),
+                ("9", "12", "8", "11"),
+                ("11", "13", "9", "10"),
+                ("10", "12", "8", "9"),
+            ],
+            "1h",
+            timedelta(hours=1),
+        )
+        self.assertTrue(_h1_veto(bullish_h1, "bearish"))
+        self.assertFalse(_h1_veto(bullish_h1, "bullish"))
+        self.assertTrue(_h1_veto(bearish_h1, "bullish"))
+        self.assertFalse(_h1_veto(bearish_h1, "bearish"))
+
+        def choose(m15, h1):
+            return XauRunner._select(None, {"1d": _flat("1d"), "4h": _flat("4h"), "1h": h1, "15m": m15})[0]
+
+        self.assertEqual(choose(bearish_m15, bullish_h1), "NO_TRADE")
+        self.assertEqual(choose(bearish_m15, bearish_h1), "SCALP")
+        self.assertEqual(choose(bullish_m15, bearish_h1), "NO_TRADE")
+        self.assertEqual(choose(bullish_m15, bullish_h1), "SCALP")
+
+    def test_d8_d9_pool_is_asia_pdl_london_swings_and_two_candle_close(self):
+        start = datetime(2026, 11, 23, 12, tzinfo=UTC)
+        bars = [
+            _bar(start + timedelta(minutes=15 * index), "101", "102", "100.50", "101")
+            for index in range(200)
+        ]
+        bars[10] = _px(bars[10].open_time, "101", "102", "80", "101")
+        bars[60] = _px(bars[60].open_time, "101", "102", "90", "101")
+        bars[160] = _px(bars[160].open_time, "101", "102", "100.00", "101")
+        for index in range(172, 184):
+            bars[index] = _px(bars[index].open_time, "101", "102", "95", "101")
+        bars[186] = _px(bars[186].open_time, "101", "102", "97.00", "101")
+        bars[190] = _px(bars[190].open_time, "101", "102", "97.40", "101")
+        book = tuple(bars)
+        moment = book[198].open_time
+        london = _liquidity_levels(book, direction="long", sweep_at=198, moment=moment, window="London KZ")
+        ny = _liquidity_levels(book, direction="long", sweep_at=198, moment=moment, window="NY KZ")
+        self.assertIn(D("100.00"), london)
+        self.assertIn(D("90"), london)
+        self.assertIn(D("97.00"), london)
+        self.assertIn(D("97.40"), london)
+        self.assertIn(D("97.20"), london)
+        self.assertNotIn(D("80"), london)
+        self.assertNotIn(D("95"), london)
+        self.assertIn(D("95"), ny)
+        m5_origin = moment - timedelta(minutes=50)
+        m5 = tuple(
+            _bar(
+                m5_origin + timedelta(minutes=5 * index), "55", "56",
+                "50" if index in {2, 6} else "60", "55", "5m",
+            )
+            for index in range(10)
+        )
+        with_m5 = _liquidity_levels(
+            book, direction="long", sweep_at=198, moment=moment, window="London KZ", m5=m5,
+        )
+        self.assertIn(D("50"), with_m5)
+
+        asia = datetime(2026, 11, 25, 1, tzinfo=UTC)
+        sweep = datetime(2026, 11, 25, 7, tzinfo=UTC)
+        short = [
+            _px(asia, "102", "103", "100", "102"),
+            _px(asia + timedelta(minutes=15), "102", "103", "100.50", "102"),
+            _px(asia + timedelta(minutes=30), "102", "103", "100.50", "102"),
+            _px(sweep, "104", "105", "99.80", "99.90"),
+            _px(sweep + timedelta(minutes=15), "100", "106", "99.95", "101"),
+        ]
+        levels = _liquidity_levels(
+            tuple(short), direction="long", sweep_at=3, moment=sweep, window="London KZ",
+        )
+        self.assertEqual(levels, (D("100"),))
+        hit = _sweep_of(tuple(short), 3, levels, "ssl")
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit.level, D("100"))
+        held = short[:-1] + [_px(sweep + timedelta(minutes=15), "99.90", "100", "99.50", "99.70")]
+        self.assertIsNone(_sweep_of(tuple(held), 3, levels, "ssl"))
 
 
 if __name__ == "__main__":

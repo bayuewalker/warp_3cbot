@@ -266,10 +266,12 @@ class XauRunner:
         price = h1[-1].close if h1 else (m15[-1].close if m15 else None)
         target = dol(h4, "long" if d1_bias == "bullish" else "short") if h4 else None
         distance = abs(target - price) if target is not None and price is not None else None
-        m15_dir = m15_state(m15, atr_last(m15) if m15 else None) in {"bullish", "bearish"} if m15 else False
+        m15_bias = m15_state(m15, atr_last(m15) if m15 else None) if m15 else "chop"
+        m15_dir = m15_bias in {"bullish", "bearish"}
         fresh = _fresh(h4, d1_bias)
         poi = bool(h1) and atr_h1 is not None
-        veto = _h1_veto(h1, "bullish" if m15_dir else "")
+        # E2. Veto the H1 BOS that runs against this M15 bias.
+        veto = _h1_veto(h1, m15_bias if m15_dir else "")
         return select_engine(
             d1_bias=d1_bias, h4_bias=h4_bias, fresh_reversal=fresh, h1_poi=poi,
             dol_distance=distance, atr_h1=atr_h1, m15_directional=m15_dir, h1_veto=veto,
@@ -294,6 +296,7 @@ class XauRunner:
                 fresh_reversal=_fresh(bars.get("4h", ()), bias(bars.get("1d", ())) if bars.get("1d") else "range"),
                 aligned=_aligned(bars), bias_text=bias_text, window=window.name, valid_until=valid,
                 risk_pct=risk, in_kz=True, window_start=window.start_wib.astimezone(timezone.utc),
+                m5=bars.get("5m", ()),
             )
         elif engine == "EMA" and ema_entry_open(now):
             risk = D("0.50")
