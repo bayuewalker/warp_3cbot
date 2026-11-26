@@ -10,11 +10,14 @@ from ..clock import wib
 from ..gate import Setup
 from ..structure import (
     FVG,
+    Sweep,
+    Swing,
     asia_extreme,
     atr_last,
     dealing_range,
     displacement,
     dol,
+    find_sweeps,
     fvgs,
     in_discount,
     order_block,
@@ -181,14 +184,43 @@ def _pick_fvg(zones: list[FVG], direction: str, poi_low: D, poi_high: D, choch_c
     return min(pool, key=lambda zone: abs(zone.ce - choch_close))
 
 
-def _l1(entry: D, direction: str, swing_prices: list[D], eq: D | None) -> D | None:
-    """Nearest internal swing beyond entry, or H4 EQ when entry is on the far side of it."""
+def _taken(point: Swing, bars: tuple[Bar, ...]) -> bool:
+    """D9. Liquidity is taken once a later bar trades at least $0.10 through the swing."""
+    step = D("0.10")
+    for bar in bars[point.index + 1 :]:
+        if point.kind == "high" and bar.high >= point.price + step:
+            return True
+        if point.kind == "low" and bar.low <= point.price - step:
+            return True
+    return False
+
+
+def _l1(
+    entry: D,
+    direction: str,
+    series: list[tuple[Swing, tuple[Bar, ...]]],
+    eq: D | None,
+    broken: D | None = None,
+) -> D | None:
+    """S1.10. Nearest unswept M15/H1 swing beyond entry, else H4 EQ on the far side.
+
+    The swing the CHoCH just closed through is not internal liquidity, even when the
+    break was smaller than $0.10. Dropping it does not relax the 2R reward gate.
+    """
+    kind = "high" if direction == "long" else "low"
+    ahead: list[D] = []
+    for point, bars in series:
+        if point.kind != kind or _taken(point, bars):
+            continue
+        if broken is not None and point.price == broken:
+            continue
+        beyond = point.price > entry if direction == "long" else point.price < entry
+        if beyond:
+            ahead.append(point.price)
     if direction == "long":
-        ahead = [price for price in swing_prices if price > entry]
         if eq is not None and entry < eq:
             ahead.append(eq)
         return min(ahead) if ahead else None
-    ahead = [price for price in swing_prices if price < entry]
     if eq is not None and entry > eq:
         ahead.append(eq)
     return max(ahead) if ahead else None
@@ -220,6 +252,7 @@ def evaluate_smc(
     in_kz: bool,
     s1_developing: bool = False,
     window_start: datetime | None = None,
+    m5: tuple[Bar, ...] = (),
 ) -> Setup | None:
     """S1, else S2 when S1 is not developing. S3 is not produced."""
     if not in_kz or atr_h1 is None or atr_h1 <= 0:
@@ -235,6 +268,7 @@ def evaluate_smc(
         m15=m15, h1=h1, direction=direction, atr_h1=atr_h1, spread=spread, eq=eq,
         dol_price=external, fresh_reversal=fresh_reversal, bias_text=bias_text,
         window=window, valid_until=valid_until, risk_pct=risk_pct, window_start=window_start,
+        m5=m5,
     )
     if s1 is not None:
         return s1
@@ -276,6 +310,70 @@ def _pois(h1: tuple[Bar, ...], direction: str, eq: D | None, atr: D) -> list[tup
     return zones[:2]
 
 
+def _liquidity_levels(
+    m15: tuple[Bar, ...],
+    *,
+    direction: str,
+    sweep_at: int,
+    moment: datetime,
+    window: str,
+    m5: tuple[Bar, ...] = (),
+) -> tuple[D, ...]:
+    """D8. SSL for longs, BSL for shorts, using only levels known at sweep_at.
+
+    M15 swings are the last 96 bars. Equal lows/highs are two confirmed M5 or M15
+    swings within $0.50 over the last 48 bars. London KZ extreme is NY only.
+    """
+    kind = "low" if direction == "long" else "high"
+    points = swings(m15, 2)
+    levels = [
+        point.price
+        for point in points
+        if point.kind == kind and point.confirmed_index < sweep_at and point.index >= sweep_at - 96
+    ]
+    recent = [
+        point
+        for point in points
+        if point.kind == kind and point.confirmed_index < sweep_at and point.index >= sweep_at - 48
+    ]
+    if m5 and sweep_at < len(m15):
+        cutoff = m15[sweep_at].open_time
+        prior = tuple(bar for bar in m5 if bar.open_time < cutoff)
+        start = max(0, len(prior) - 48)
+        recent.extend(
+            point for point in swings(prior, 2) if point.kind == kind and point.index >= start
+        )
+    for left in range(len(recent)):
+        for right in range(left + 1, len(recent)):
+            if abs(recent[left].price - recent[right].price) <= D("0.50"):
+                levels.append((recent[left].price + recent[right].price) / 2)
+    for level in (asia_extreme(m15, moment, direction), _prior_day_extreme(m15, moment, direction)):
+        if level is not None:
+            levels.append(level)
+    if window.startswith("NY"):
+        london = _minute_extreme(m15, moment, direction, 14 * 60, 17 * 60)
+        if london is not None:
+            levels.append(london)
+    unique: list[D] = []
+    for level in levels:
+        if all(level != item for item in unique):
+            unique.append(level)
+    return tuple(unique)
+
+
+def _sweep_of(m15: tuple[Bar, ...], sweep_at: int, levels: tuple[D, ...], side: str) -> Sweep | None:
+    """D9. Nearest pool level swept by sweep_at, close-back within two candles."""
+    hits = []
+    for level in levels:
+        for sweep in find_sweeps(m15, level, side):
+            if sweep.index == sweep_at:
+                hits.append(sweep)
+                break
+    if not hits:
+        return None
+    return max(hits, key=lambda sweep: sweep.level) if side == "ssl" else min(hits, key=lambda sweep: sweep.level)
+
+
 def _s1(
     *,
     m15: tuple[Bar, ...],
@@ -291,6 +389,7 @@ def _s1(
     valid_until: datetime | None,
     risk_pct: D,
     window_start: datetime | None = None,
+    m5: tuple[Bar, ...] = (),
 ) -> Setup | None:
     if dol_price is None or len(m15) < 5:
         return None
@@ -306,15 +405,13 @@ def _s1(
         poi = next((zone for zone in pois if _overlap(bar, zone[0], zone[1])), None)
         if poi is None:
             continue
-        level_pool = [point.price for point in points if point.kind == ("low" if side == "ssl" else "high") and point.confirmed_index < sweep_at]
-        if not level_pool:
+        levels = _liquidity_levels(
+            m15, direction=direction, sweep_at=sweep_at, moment=bar.open_time, window=window, m5=m5,
+        )
+        swept = _sweep_of(m15, sweep_at, levels, side)
+        if swept is None:
             continue
-        level = max(level_pool) if side == "ssl" else min(level_pool)
-        pierced = bar.low <= level - D("0.10") if side == "ssl" else bar.high >= level + D("0.10")
-        reclaimed = bar.close > level if side == "ssl" else bar.close < level
-        if not pierced or not reclaimed:
-            continue
-        extreme = bar.low if side == "ssl" else bar.high
+        level, extreme = swept.level, swept.extreme
         disp = None
         for start in range(sweep_at, min(len(m15) - 1, sweep_at + 5)):
             disp = displacement(m15, start, "bullish" if direction == "long" else "bearish", atr_m15)
@@ -346,20 +443,19 @@ def _s1(
         close = m15[choch_at].close
         zones = [zone for zone in fvgs(m15, atr_m15) if disp[0] - 1 <= zone.index <= disp[1]]
         chosen = _pick_fvg(zones, direction, poi[0], poi[1], close)
-        market = _inside(close, poi[0], poi[1])
-        if market:
-            entry = q_toward(close, close)
-            entry_type = "market"
-        elif chosen is not None:
+        inside = _inside(close, poi[0], poi[1])
+        # S1.7. Limit at the displacement-FVG CE is the default. Market is only the
+        # close inside the POI, and build_setup still rejects it when L1 is inside 2R.
+        if chosen is not None:
             entry = q_toward(chosen.ce, close)
             entry_type = "limit"
+        elif inside:
+            entry = q_toward(close, close)
+            entry_type = "market"
         else:
             continue
-        swing_prices = [
-            point.price for point in list(points) + swings(h1, 2)
-            if point.kind == ("high" if direction == "long" else "low")
-        ]
-        l1 = _l1(entry, direction, swing_prices, eq)
+        series = [(point, m15) for point in points] + [(point, h1) for point in swings(h1, 2)]
+        l1 = _l1(entry, direction, series, eq, broken=trigger_level)
         clean = clean_session_sweep(level, direction, m15, m15[choch_at].open_time, window)
         ote = _ote(m15, disp, entry, direction)
         setup = build_setup(
@@ -373,7 +469,7 @@ def _s1(
             reason="S1 Judas sweep through a killzone POI",
             poi_ok=True, liquidity_ok=True, trigger_ok=True, displacement_ok=True,
             risk_pct=risk_pct,
-            inside_poi=market,
+            inside_poi=inside,
         )
         if setup is None:
             continue
@@ -517,10 +613,10 @@ def _s2(
         return None
     entry = q_toward(touched.ce, reaction.close)
     extreme = min(bar.low for bar in m15[-4:]) if direction == "long" else max(bar.high for bar in m15[-4:])
-    swing_prices = [point.price for point in swings(m15, 2) + swings(h1, 2) if point.kind == ("high" if direction == "long" else "low")]
+    series = [(point, m15) for point in swings(m15, 2)] + [(point, h1) for point in swings(h1, 2)]
     return build_setup(
         model="S2", direction=direction, entry_type="limit", entry=entry, extreme=extreme,
-        atr_h1=atr_h1, spread=spread, l1=_l1(entry, direction, swing_prices, eq),
+        atr_h1=atr_h1, spread=spread, l1=_l1(entry, direction, series, eq, broken=level),
         dol_price=dol_price, ote=False, clean_sweep=False, vacuum=_vacuum(h1, direction, entry, dol_price),
         fresh_reversal=fresh_reversal, bias=bias_text, window=window, valid_until=valid_until,
         reason="S2 pullback to an H1/H4 FVG after an H4 BOS",
