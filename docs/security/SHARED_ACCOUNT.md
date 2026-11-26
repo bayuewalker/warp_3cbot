@@ -15,10 +15,10 @@ Also review before going live:
 
 | Variable | Why it matters in shared mode |
 | --- | --- |
-| `WARP_MAX_DAILY_LOSS_FRACTION`, `WARP_MAX_DRAWDOWN_FRACTION` | These are the halts the engine enforces, now measured on sleeve equity. Set them to the loss limits you want (defaults 0.05 and 0.15). |
-| `WARP_TRADE_DAILY_LOSS`, `WARP_TRADE_DRAWDOWN` | In shared mode these are applied to sleeve equity (day-start and peak are persisted). The circuit also applies `WARP_MAX_DAILY_LOSS_FRACTION` and `WARP_MAX_DRAWDOWN_FRACTION`. The tighter of the two layers stops entries. |
-| `WARP_MAX_PER_PAIR_FRACTION`, `WARP_MAX_GROUP_FRACTION`, `WARP_MAX_COMMITTED_FRACTION` | These fractions are now applied to the sleeve (for example 50 USDT), not to the account. With the defaults a 50 USDT sleeve cannot reach `WARP_MIN_BASE_ORDER_USDT`, so no order is planned. That fails closed. Check a paper or observe run before expecting entries. |
-| `WARP_DENY_SYMBOLS` | List the pairs of coins you hold outside WARP (see residual risks). |
+| `WARP_MAX_DAILY_LOSS_FRACTION`, `WARP_MAX_DRAWDOWN_FRACTION` | Measured on sleeve equity in shared mode (defaults 0.05 and 0.15). The circuit uses the tighter of these and the tradebook limits below. |
+| `WARP_TRADE_DAILY_LOSS`, `WARP_TRADE_DRAWDOWN` | Tradebook defaults 0.03 and 0.08. In both modes `circuit_reason` uses `min(WARP_MAX_DAILY_LOSS_FRACTION, WARP_TRADE_DAILY_LOSS)` and `min(WARP_MAX_DRAWDOWN_FRACTION, WARP_TRADE_DRAWDOWN)`. The looser number never wins. In shared mode the same limits are also passed into `capital.approve` from the persisted day-start and peak. |
+| `WARP_MAX_PER_PAIR_FRACTION`, `WARP_MAX_GROUP_FRACTION`, `WARP_MAX_COMMITTED_FRACTION` | Applied to the sleeve, not the whole account. On a 50 USDT sleeve with `WARP_DCA_TOTAL_ORDERS=2`, `WARP_MAX_BASE_ORDER_USDT=15` and the default multiplier, two orders of 15 USDT plus the 0.1% fee are about 30.03 USDT. `0.61 × 50 = 30.5`, so those three fractions need to be `0.61` before a legacy base of 15 fits. The reserve stays `WARP_MIN_FREE_RESERVE_FRACTION=0.25` (12.5 USDT), so free USDT must still cover about 43. The defaults fail closed and this file does not change them. |
+| `WARP_DENY_SYMBOLS` | Must list pairs held outside WARP. For the shared Binance spot wallet that is `BTCUSDT,ETHUSDT,ZECUSDT,XAUTUSDT,NIGHTUSDT`. |
 | `WARP_LIVE_EXECUTION_ACK` | Unchanged. Live mode still needs it. |
 
 Surfaces: `GET /api/status` and `GET /api/config` (authenticated) carry `shared_account: true|false`. The public `/health` does not carry the flag or any balance.
