@@ -26,6 +26,7 @@ from warp3c.xau.engines.scalp import evaluate_scalp
 from warp3c.xau.engines.smc import (
     _l1,
     _liquidity_levels,
+    _sweep_at,
     _sweep_of,
     build_setup,
     clean_session_sweep,
@@ -1364,6 +1365,45 @@ class P2FollowupTests(unittest.TestCase):
         self.assertEqual(hit.level, D("100"))
         held = short[:-1] + [_px(sweep + timedelta(minutes=15), "99.90", "100", "99.50", "99.70")]
         self.assertIsNone(_sweep_of(tuple(held), 3, levels, "ssl"))
+
+    def test_d9_one_bar_sweep_matches_the_full_scan(self):
+        origin = datetime(2026, 11, 25, 8, tzinfo=UTC)
+        bars = []
+        for index in range(40):
+            low = "99.70" if index % 7 in {0, 1} else "100.40"
+            close = "99.80" if index % 7 == 0 else "100.60"
+            bars.append(_px(origin + timedelta(minutes=15 * index), "100.20", "101", low, close))
+        book = tuple(bars)
+        for level in (D("100"), D("99.50"), D("100.50")):
+            found = {sweep.index: sweep for sweep in find_sweeps(book, level, "ssl")}
+            for index in range(len(book)):
+                self.assertEqual(_sweep_at(book, index, level, "ssl"), found.get(index))
+        mirrored = tuple(
+            _px(bar.open_time, "100.20", str(D("200") - bar.low), str(D("200") - bar.high), str(D("200") - bar.close))
+            for bar in book
+        )
+        for level in (D("100"), D("99.50"), D("100.50")):
+            found = {sweep.index: sweep for sweep in find_sweeps(mirrored, level, "bsl")}
+            for index in range(len(mirrored)):
+                self.assertEqual(_sweep_at(mirrored, index, level, "bsl"), found.get(index))
+
+    def test_s1_sweep_search_stays_inside_the_trigger_window(self):
+        origin = datetime(2026, 11, 20, tzinfo=UTC)
+        bars = []
+        for index in range(500):
+            # Distinct swing lows inside $0.50, so the equal-level pool does not collapse to one price.
+            low = str(D("109.00") + D(index % 48) * D("0.01")) if index % 3 == 0 else "109.60"
+            bars.append(_bar(origin + timedelta(minutes=15 * index), "109.20", "112", low, "109.80"))
+        book = tuple(bars)
+        started = time.perf_counter()
+        found = evaluate_smc(
+            m15=book, h1=_h1_poi(), h4=(), direction="long", atr_h1=D("10"), spread=D("0.30"),
+            fresh_reversal=False, aligned=True, bias_text="bullish", window="London KZ",
+            valid_until=None, risk_pct=D("0.40"), in_kz=True, window_start=book[-5].open_time,
+        )
+        elapsed = time.perf_counter() - started
+        self.assertIsNone(found)
+        self.assertLess(elapsed, 1.0)
 
 
 if __name__ == "__main__":

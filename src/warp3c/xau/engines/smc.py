@@ -17,7 +17,6 @@ from ..structure import (
     dealing_range,
     displacement,
     dol,
-    find_sweeps,
     fvgs,
     in_discount,
     order_block,
@@ -318,6 +317,7 @@ def _liquidity_levels(
     moment: datetime,
     window: str,
     m5: tuple[Bar, ...] = (),
+    points: list[Swing] | None = None,
 ) -> tuple[D, ...]:
     """D8. SSL for longs, BSL for shorts, using only levels known at sweep_at.
 
@@ -325,7 +325,8 @@ def _liquidity_levels(
     swings within $0.50 over the last 48 bars. London KZ extreme is NY only.
     """
     kind = "low" if direction == "long" else "high"
-    points = swings(m15, 2)
+    if points is None:
+        points = swings(m15, 2)
     levels = [
         point.price
         for point in points
@@ -361,14 +362,54 @@ def _liquidity_levels(
     return tuple(unique)
 
 
+def _level_flags(bar: Bar, level: D, side: str) -> tuple[bool, bool, bool]:
+    """Pierce by ≥ $0.10, close back through the level, close still beyond it."""
+    if side == "ssl":
+        return bar.low <= level - D("0.10"), bar.close > level, bar.close <= level
+    return bar.high >= level + D("0.10"), bar.close < level, bar.close >= level
+
+
+def _sweep_at(m15: tuple[Bar, ...], sweep_at: int, level: D, side: str) -> Sweep | None:
+    """D9 at one bar. Matches the sweep find_sweeps would record at this index."""
+    if sweep_at < 0 or sweep_at >= len(m15):
+        return None
+    pierced, back, held = _level_flags(m15[sweep_at], level, side)
+    if not pierced:
+        return None
+    run = sweep_at
+    while run > 0 and _level_flags(m15[run - 1], level, side)[0]:
+        run -= 1
+    index = run
+    while index < sweep_at:
+        _pierced, bar_back, bar_held = _level_flags(m15[index], level, side)
+        nxt = m15[index + 1] if index + 1 < len(m15) else None
+        if nxt is not None:
+            _next_pierced, nxt_back, nxt_held = _level_flags(nxt, level, side)
+            if (bar_held and nxt_held) or (not bar_back and nxt_back):
+                index += 2
+                continue
+        index += 1
+    if index != sweep_at:
+        return None
+    nxt = m15[sweep_at + 1] if sweep_at + 1 < len(m15) else None
+    if nxt is not None and held and _level_flags(nxt, level, side)[2]:
+        return None
+    if back:
+        extreme = m15[sweep_at].low if side == "ssl" else m15[sweep_at].high
+        return Sweep(sweep_at, side, level, extreme)
+    if nxt is not None and _level_flags(nxt, level, side)[1]:
+        extreme = min(m15[sweep_at].low, nxt.low) if side == "ssl" else max(m15[sweep_at].high, nxt.high)
+        return Sweep(sweep_at, side, level, extreme)
+    return None
+
+
 def _sweep_of(m15: tuple[Bar, ...], sweep_at: int, levels: tuple[D, ...], side: str) -> Sweep | None:
     """D9. Nearest pool level swept by sweep_at, close-back within two candles."""
     hits = []
     for level in levels:
-        for sweep in find_sweeps(m15, level, side):
-            if sweep.index == sweep_at:
-                hits.append(sweep)
-                break
+        sweep = _sweep_at(m15, sweep_at, level, side)
+        if sweep is not None:
+            hits.append(sweep)
     if not hits:
         return None
     return max(hits, key=lambda sweep: sweep.level) if side == "ssl" else min(hits, key=lambda sweep: sweep.level)
@@ -399,14 +440,22 @@ def _s1(
         return None
     points = swings(m15, 2)
     side = "ssl" if direction == "long" else "bsl"
-    # Search the latest bars of the killzone for a sweep into a POI, then displacement and CHoCH.
-    for sweep_at in range(len(m15) - 1, 2, -1):
+    # S1.6. The CHoCH has to be the bar that just closed, at most 6 bars after the sweep.
+    # Bars before this window, and before the killzone, cannot signal.
+    if window_start is not None and m15[-1].open_time < window_start:
+        return None
+    last = len(m15) - 1
+    earliest = max(3, last - 6)
+    for sweep_at in range(last, earliest - 1, -1):
         bar = m15[sweep_at]
+        if window_start is not None and bar.open_time < window_start:
+            break
         poi = next((zone for zone in pois if _overlap(bar, zone[0], zone[1])), None)
         if poi is None:
             continue
         levels = _liquidity_levels(
-            m15, direction=direction, sweep_at=sweep_at, moment=bar.open_time, window=window, m5=m5,
+            m15, direction=direction, sweep_at=sweep_at, moment=bar.open_time, window=window,
+            m5=m5, points=points,
         )
         swept = _sweep_of(m15, sweep_at, levels, side)
         if swept is None:
@@ -435,8 +484,6 @@ def _s1(
                 choch_at = index
                 break
         if choch_at is None:
-            continue
-        if window_start is not None and m15[sweep_at].open_time < window_start:
             continue
         if not is_current(choch_at, len(m15), m15[choch_at].open_time, window_start):
             continue
