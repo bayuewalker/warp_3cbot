@@ -6,7 +6,7 @@ import json
 import sqlite3
 from contextlib import closing, nullcontext
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from .models import EquityMark
@@ -38,7 +38,8 @@ class OrderJournal:
                 id INTEGER PRIMARY KEY,
                 marked_at TEXT NOT NULL,
                 equity TEXT NOT NULL,
-                reliable INTEGER NOT NULL
+                reliable INTEGER NOT NULL,
+                scope TEXT NOT NULL DEFAULT 'account'
             )
             """
         )
@@ -108,6 +109,18 @@ class OrderJournal:
         )
         self.db.execute(
             """
+            CREATE TABLE IF NOT EXISTS realized_pnl (
+                client_id TEXT PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                closed_at TEXT NOT NULL,
+                realized_usdt TEXT NOT NULL,
+                fees_usdt TEXT NOT NULL,
+                recorded_at TEXT NOT NULL
+            )
+            """
+        )
+        self.db.execute(
+            """
             CREATE TABLE IF NOT EXISTS verdicts (
                 id INTEGER PRIMARY KEY,
                 symbol TEXT NOT NULL,
@@ -124,6 +137,36 @@ class OrderJournal:
             )
             """
         )
+        self.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS risk_decisions (
+                id INTEGER PRIMARY KEY,
+                recorded_at TEXT NOT NULL,
+                signal_id TEXT NOT NULL,
+                risk_decision_id TEXT NOT NULL,
+                account_hash TEXT NOT NULL,
+                nav TEXT NOT NULL,
+                free_usdt TEXT NOT NULL,
+                reserved_so TEXT NOT NULL,
+                commitment TEXT NOT NULL,
+                ladder TEXT NOT NULL,
+                stop_usdt TEXT NOT NULL,
+                stop_pct TEXT NOT NULL,
+                open_stop_after TEXT NOT NULL,
+                decision TEXT NOT NULL,
+                reasons TEXT NOT NULL
+            )
+            """
+        )
+        self._ensure_equity_scope()
+
+    def _ensure_equity_scope(self) -> None:
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(equity_marks)")}
+        if "scope" not in columns:
+            self.db.execute("ALTER TABLE equity_marks ADD COLUMN scope TEXT NOT NULL DEFAULT 'account'")
+        bots = {row[1] for row in self.db.execute("PRAGMA table_info(warp_bots)")}
+        if "ladder" not in bots:
+            self.db.execute("ALTER TABLE warp_bots ADD COLUMN ladder TEXT")
 
     def close(self) -> None:
         self.db.close()
@@ -184,18 +227,32 @@ class OrderJournal:
         ).fetchone()
         return bool(row and row[0])
 
-    def record_equity(self, equity: Decimal, reliable: bool, *, now: datetime | None = None) -> None:
+    def record_equity(
+        self, equity: Decimal, reliable: bool, *, now: datetime | None = None, scope: str = "account"
+    ) -> None:
+        if scope not in {"account", "sleeve"}:
+            raise ValueError("Unknown equity scope")
         moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         self.db.execute(
-            "INSERT INTO equity_marks(marked_at, equity, reliable) VALUES(?,?,?)",
-            (moment.isoformat(), format(equity, "f"), 1 if reliable else 0),
+            "INSERT INTO equity_marks(marked_at, equity, reliable, scope) VALUES(?,?,?,?)",
+            (moment.isoformat(), format(equity, "f"), 1 if reliable else 0, scope),
         )
 
-    def equity_marks(self) -> list[EquityMark]:
+    def latest_equity_scope(self) -> str | None:
+        row = self.db.execute(
+            "SELECT scope FROM equity_marks ORDER BY marked_at DESC, id DESC LIMIT 1"
+        ).fetchone()
+        return None if row is None else str(row[0])
+
+    def equity_marks(self, *, scope: str | None = None) -> list[EquityMark]:
+        sql = "SELECT marked_at, equity, reliable FROM equity_marks"
+        values: tuple = ()
+        if scope is not None:
+            sql += " WHERE scope=?"
+            values = (scope,)
+        sql += " ORDER BY marked_at"
         marks = []
-        for marked_at, equity, reliable in self.db.execute(
-            "SELECT marked_at, equity, reliable FROM equity_marks ORDER BY marked_at"
-        ):
+        for marked_at, equity, reliable in self.db.execute(sql, values):
             moment = datetime.fromisoformat(marked_at)
             if moment.tzinfo is None:
                 moment = moment.replace(tzinfo=timezone.utc)
@@ -415,7 +472,7 @@ class OrderJournal:
         return [_warp_row(row) for row in rows]
 
     def update_warp_bot(self, warp_id: str, **fields: str) -> None:
-        allowed = {"status", "external_code", "updated_at"}
+        allowed = {"status", "external_code", "updated_at", "ladder"}
         if not fields or any(key not in allowed for key in fields):
             raise ValueError("Unexpected bot field")
         assignments = ", ".join(f"{key}=?" for key in fields)
@@ -423,6 +480,98 @@ class OrderJournal:
             f"UPDATE warp_bots SET {assignments} WHERE warp_id=?",
             (*fields.values(), warp_id),
         )
+
+    def record_risk_decision(self, row: dict) -> None:
+        self.db.execute(
+            """
+            INSERT INTO risk_decisions(
+                recorded_at, signal_id, risk_decision_id, account_hash, nav, free_usdt,
+                reserved_so, commitment, ladder, stop_usdt, stop_pct, open_stop_after, decision, reasons
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                row["recorded_at"], row["signal_id"], row["risk_decision_id"], row["account_hash"],
+                row["nav"], row["free_usdt"], row["reserved_so"], row["commitment"], row["ladder"],
+                row["stop_usdt"], row["stop_pct"], row["open_stop_after"], row["decision"], row["reasons"],
+            ),
+        )
+
+    def recent_risk_decisions(self, limit: int = 20) -> list[dict]:
+        rows = self.db.execute(
+            """
+            SELECT recorded_at, signal_id, risk_decision_id, account_hash, nav, free_usdt,
+                   reserved_so, commitment, stop_usdt, stop_pct, open_stop_after, decision, reasons
+              FROM risk_decisions ORDER BY id DESC LIMIT ?
+            """,
+            (limit,),
+        )
+        found = []
+        for item in rows:
+            found.append(
+                {
+                    "recorded_at": item[0],
+                    "signal_id": item[1],
+                    "risk_decision_id": item[2],
+                    "account_hash": item[3],
+                    "nav": item[4],
+                    "free_usdt": item[5],
+                    "reserved_so": item[6],
+                    "commitment": item[7],
+                    "stop_usdt": item[8],
+                    "stop_pct": item[9],
+                    "open_stop_after": item[10],
+                    "decision": item[11],
+                    "reasons": json.loads(item[12]) if item[12] else [],
+                }
+            )
+        return found
+
+    def record_realized(
+        self, client_id: str, symbol: str, closed_at: datetime, realized: Decimal, fees: Decimal
+    ) -> None:
+        """One row per closed WARP strategy. A second call with a different amount is an error."""
+        if not client_id or closed_at.tzinfo is None or not realized.is_finite() or not fees.is_finite():
+            raise ValueError("Realized P&L unreadable")
+        moment = closed_at.astimezone(timezone.utc).isoformat()
+        text = format(realized, "f")
+        existing = self.db.execute(
+            "SELECT realized_usdt FROM realized_pnl WHERE client_id=?", (client_id,)
+        ).fetchone()
+        if existing is not None:
+            if str(existing[0]) != text:
+                raise ValueError("Realized P&L disagrees with the journal")
+            return
+        self.db.execute(
+            """
+            INSERT INTO realized_pnl(client_id, symbol, closed_at, realized_usdt, fees_usdt, recorded_at)
+            VALUES(?,?,?,?,?,?)
+            """,
+            (client_id, symbol, moment, text, format(fees, "f"), datetime.now(timezone.utc).isoformat()),
+        )
+
+    def realized_pnl(self) -> list[dict]:
+        """Stored closes. A row that cannot be parsed raises; callers must not treat that as zero."""
+        found = []
+        query = "SELECT client_id, symbol, closed_at, realized_usdt, fees_usdt FROM realized_pnl ORDER BY closed_at"
+        for client_id, symbol, closed_at, realized, fees in self.db.execute(query):
+            try:
+                amount = Decimal(str(realized))
+                fee = Decimal(str(fees))
+                moment = datetime.fromisoformat(str(closed_at))
+            except (ValueError, InvalidOperation, ArithmeticError) as exc:
+                raise ValueError("Realized P&L unreadable") from exc
+            if moment.tzinfo is None or not amount.is_finite() or not fee.is_finite():
+                raise ValueError("Realized P&L unreadable")
+            found.append(
+                {
+                    "client_id": str(client_id),
+                    "symbol": str(symbol),
+                    "closed_at": moment,
+                    "realized_usdt": amount,
+                    "fees_usdt": fee,
+                }
+            )
+        return found
 
     def record_verdict(
         self, symbol: str, verdict: str, confidence: Decimal, price: Decimal, now: datetime
@@ -503,6 +652,7 @@ def _warp_row(row) -> dict:
         "commitment": row[10],
         "created_at": row[11],
         "updated_at": row[12],
+        "ladder": row[13] if len(row) > 13 else None,
     }
 
 

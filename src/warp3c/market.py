@@ -98,6 +98,8 @@ def analyze(
     tradable: bool,
     cfg: Settings,
     now: datetime,
+    min_qty: Decimal | None = None,
+    step_size: Decimal | None = None,
 ) -> MarketEvidence:
     closes = [c["close"] for c in candles]
     last = closes[-1]
@@ -149,6 +151,8 @@ def analyze(
         tradable=tradable,
         passed=passed,
         reason=reason,
+        min_qty=min_qty,
+        step_size=step_size,
     )
 
 
@@ -371,6 +375,8 @@ class MarketData:
             tradable=rules["tradable"],
             cfg=self.cfg,
             now=now,
+            min_qty=rules["min_qty"],
+            step_size=rules["step_size"],
         )
         if self.cfg.discovery == "auto" and item.passed:
             spread = _spread(ticker)
@@ -425,10 +431,17 @@ class MarketData:
                 min_notional = positive(item["minNotional"], "min notional", allow_zero=False)
         if min_notional is None:
             raise MarketDataError("Minimum notional filter missing")
+        try:
+            min_qty, step_size = _lot(row)
+        except MarketDataError:
+            # Missing LOT_SIZE is not a zero quantity. The entry check refuses it.
+            min_qty, step_size = None, None
         return {
             "tradable": row.get("status") == "TRADING",
             "quote_precision": precision,
             "min_notional": min_notional,
+            "min_qty": min_qty,
+            "step_size": step_size,
         }
 
     def tradebook_context(self, symbols: tuple[str, ...], *, now: datetime | None = None) -> dict:

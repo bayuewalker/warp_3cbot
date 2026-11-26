@@ -99,6 +99,7 @@ def public_config(cfg) -> dict:
     """Numbers and modes only. Secrets and webhook URLs stay out."""
     return {
         "mode": cfg.mode,
+        "shared_account": bool(cfg.shared_account),
         "discovery": cfg.discovery,
         "symbols": list(cfg.symbols),
         "discovery_allow": list(cfg.discovery_allow),
@@ -182,9 +183,10 @@ def _positions(engine) -> list[dict]:
 
 def _pnl_today(journal) -> str | None:
     now = datetime.now(timezone.utc)
+    # Sleeve marks and whole-account marks are different series. Use whichever was written last.
     today = [
         mark
-        for mark in journal.equity_marks()
+        for mark in journal.equity_marks(scope=journal.latest_equity_scope())
         if mark.reliable and mark.marked_at.astimezone(timezone.utc).date() == now.date()
     ]
     if not today:
@@ -276,6 +278,7 @@ def publish(cfg, journal, engine) -> None:
     SNAPSHOT["/api/status"] = {
         "alive": True,
         "mode": cfg.mode,
+        "shared_account": bool(cfg.shared_account),
         "reason": status.reason,
         "market_data_fresh": status.market_data_fresh,
         "dependencies_healthy": status.dependencies_healthy,
@@ -289,6 +292,7 @@ def publish(cfg, journal, engine) -> None:
         "providers": _provider_health(cfg, engine),
         "pipeline": pipeline,
         "published_at": now.isoformat(),
+        "risk_decisions": journal.recent_risk_decisions(20),
     }
     SNAPSHOT["/api/risk"] = {
         "reason": status.reason,

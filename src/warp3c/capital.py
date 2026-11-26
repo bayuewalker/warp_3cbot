@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 
 from .models import positive
 from .risk import dca_ladder_factor
@@ -55,6 +55,7 @@ class Policy:
     fee_rate: Decimal = Decimal("0.001")
     slippage_rate: Decimal = Decimal("0")
     virtual_drop: Decimal = Decimal("0.35")
+    min_order: Decimal = Decimal("5")
 
     @classmethod
     def from_settings(cls, cfg) -> Policy:
@@ -91,6 +92,7 @@ class Policy:
             fee_rate=cfg.fee_rate,
             slippage_rate=cfg.slippage_rate,
             virtual_drop=cfg.virtual_drop,
+            min_order=cfg.min_order_usdt,
         )
 
 
@@ -195,6 +197,8 @@ def build_ladder(
     step: Decimal,
     policy: Policy,
     stop_enabled: bool = True,
+    min_qty: Decimal | None = None,
+    step_size: Decimal | None = None,
 ) -> Ladder | None:
     if price <= 0 or commitment <= 0 or not 5 <= safety_orders <= 8:
         return None
@@ -230,6 +234,12 @@ def build_ladder(
     gross = all_cost - coins * fill
     fees = policy.fee_rate * all_cost + policy.fee_rate * coins * fill
     stop_loss = max(Decimal("0"), gross) + fees
+    if min_qty is not None and step_size is not None:
+        if not lot_ok(base, price, min_qty, step_size):
+            return None
+        for index, level in enumerate(buys, start=1):
+            if not lot_ok(orders[index], level, min_qty, step_size):
+                return None
     tp = take_profit_floor(policy)
     return Ladder(
         commitment,
@@ -251,6 +261,20 @@ def orders_clear_minimum(ladder: Ladder, minimum: Decimal) -> bool:
     return all(order >= minimum for order in ladder.orders)
 
 
+def order_minimum(min_notional: Decimal, policy: Policy) -> Decimal:
+    """Exchange minimum, plus the 2% cushion and one fee, and never below WARP_MIN_ORDER_USDT."""
+    padded = min_notional * (Decimal("1") + policy.order_cushion) + (min_notional * policy.fee_rate)
+    return max(padded, policy.min_order)
+
+
+def lot_ok(quote: Decimal, price: Decimal, min_qty: Decimal, step: Decimal) -> bool:
+    """Base quantity at this level, rounded down to stepSize, still clears minQty."""
+    if quote <= 0 or price <= 0 or min_qty <= 0 or step <= 0:
+        return False
+    steps = (quote / price / step).to_integral_value(rounding=ROUND_DOWN)
+    return steps * step >= min_qty
+
+
 def search_ladder(
     *,
     price: Decimal,
@@ -263,14 +287,18 @@ def search_ladder(
     policy: Policy,
     stop_enabled: bool = True,
     max_base: Decimal | None = None,
+    min_qty: Decimal | None = None,
+    step_size: Decimal | None = None,
+    open_book: tuple[tuple[Decimal, Decimal], ...] = (),
 ) -> Ladder | None:
     if cap <= 0 or nav <= 0 or price <= 0:
         return None
+    floor = order_minimum(minimum, policy)
     step = step_pct(atr_1h_pct, policy)
     best: Ladder | None = None
     amount = cap
     for _ in range(18):
-        if amount < minimum:
+        if amount < floor:
             break
         for count in (8, 7, 6, 5):
             for scale in (Decimal("1.2"), Decimal("1.1"), Decimal("1")):
@@ -282,8 +310,10 @@ def search_ladder(
                     step=step,
                     policy=policy,
                     stop_enabled=stop_enabled,
+                    min_qty=min_qty,
+                    step_size=step_size,
                 )
-                if ladder is None or not orders_clear_minimum(ladder, minimum):
+                if ladder is None or not orders_clear_minimum(ladder, floor):
                     continue
                 if max_base is not None and ladder.base > max_base:
                     continue
@@ -291,7 +321,11 @@ def search_ladder(
                     continue
                 if open_stop_risk + ladder.stop_loss > policy.aggregate_stop_risk * nav:
                     continue
-                if stress_loss([open_commitment, ladder.commitment], policy) > policy.stress_cap * nav:
+                if open_book:
+                    stressed = scenario_stress([*open_book, (ladder.commitment, ladder.stop_loss)], policy)
+                else:
+                    stressed = stress_loss([open_commitment, ladder.commitment], policy)
+                if stressed > policy.stress_cap * nav:
                     continue
                 if ladder.take_profit < take_profit_floor(policy):
                     continue
@@ -304,9 +338,41 @@ def search_ladder(
 
 
 def stress_loss(commitments: list[Decimal], policy: Policy) -> Decimal:
-    """All open WARP deals down 30% from their anchors, then 1% worse on the exit."""
+    """Flat shock kept for callers that do not know each deal's stop. Prefer scenario_stress."""
     keep = (Decimal("1") - policy.stress_shock) * (Decimal("1") - policy.stress_slippage)
     return sum((item * (Decimal("1") - keep) for item in commitments), Decimal("0"))
+
+
+def scenario_stress(
+    deals: list[tuple[Decimal, Decimal]], policy: Policy
+) -> Decimal:
+    """Worst of 10/20/30/40% moves, all deals together.
+
+    Each deal is (commitment, stop_loss). A shock inside the stop is the shocked
+    loss plus slippage. Past the stop, the loss is the stop plus slippage on the
+    commitment: the stop does not fill until price is worse than the trigger.
+    Slippage is WARP_STRESS_SLIPPAGE (default 1%, the top of the 0.3–1% band).
+    """
+    shocks = (Decimal("0.10"), Decimal("0.20"), Decimal("0.30"), Decimal("0.40"))
+    worst = Decimal("0")
+    for shock in shocks:
+        total = Decimal("0")
+        for commitment, stop in deals:
+            shocked = commitment * shock
+            if shocked <= stop:
+                total += shocked + commitment * policy.stress_slippage
+            else:
+                total += stop + commitment * policy.stress_slippage
+        if total > worst:
+            worst = total
+    return worst
+
+
+def gap_through_stop(stop_price: Decimal, fill_price: Decimal) -> Decimal:
+    """Extra adverse distance when a stop fills through a gap. Never a reason to add a safety order."""
+    if stop_price <= 0 or fill_price <= 0:
+        raise ValueError("Stop fill prices must be positive")
+    return max(Decimal("0"), stop_price - fill_price)
 
 
 def stop_configured(payload: dict | None) -> bool:
@@ -617,6 +683,9 @@ def approve(
     day_start: Decimal | None = None,
     equity: Decimal | None = None,
     peak: Decimal | None = None,
+    min_qty: Decimal | None = None,
+    step_size: Decimal | None = None,
+    open_book: tuple[tuple[Decimal, Decimal], ...] = (),
 ) -> Decision:
     """One AEGIS decision. A BUY and a score of at least 80 are both required."""
     if mismatched_account:
@@ -689,6 +758,9 @@ def approve(
         policy=policy,
         stop_enabled=chosen.stop,
         max_base=max_base,
+        min_qty=min_qty,
+        step_size=step_size,
+        open_book=open_book,
     )
     if ladder is None:
         return Decision("VETO", ["no_feasible_ladder"], nav=book.eligible, cap=caps.new_deal_cap, score=score)
@@ -705,6 +777,8 @@ def apply_ladder(payload: dict, ladder: Ladder, exits: Exits | None = None) -> d
     chosen = exits or Exits()
     updated = dict(payload)
     updated["amountPerTrade"] = ladder.base
+    # extraOrderCount includes the entry. 5 means the entry plus four safety orders
+    # (3Commas UpsertDcaBot and EditDcaStrategy schemas; URL in docs/risk/TRADEBOOK_MAPPING.md).
     updated["extraOrderCount"] = ladder.safety_orders + 1
     updated["extraOrderDeviation"] = ladder.step
     updated["extraOrderVolumeMultiplier"] = ladder.scale
@@ -744,22 +818,43 @@ def outbound_matches(payload: dict, exits: Exits) -> bool:
     return True
 
 
-def readback_ok(remote: dict, exits: Exits) -> bool:
+def readback_ok(remote: dict, exits: Exits, ladder: Ladder | None = None) -> bool:
     """Check a 3Commas echo. An id-only body is accepted; echoed exits must match the toggles."""
     if not isinstance(remote, dict):
         return False
     echoed = [key for key in ("stopLoss", "takeProfits", "trailingStopActivation") if key in remote]
-    if not echoed:
-        return True
-    if "stopLoss" in remote and exits.stop != stop_configured(remote):
-        return False
-    if "takeProfits" in remote and exits.take_profit != _take_profit_on(remote):
-        return False
-    if "trailingStopActivation" in remote:
-        trailing = remote.get("trailingStopActivation")
-        enabled = trailing is not None and Decimal(str(trailing)) > 0
-        if exits.trailing != enabled:
+    if echoed:
+        if "stopLoss" in remote and exits.stop != stop_configured(remote):
             return False
+        if "takeProfits" in remote and exits.take_profit != _take_profit_on(remote):
+            return False
+        if "trailingStopActivation" in remote:
+            trailing = remote.get("trailingStopActivation")
+            enabled = trailing is not None and Decimal(str(trailing)) > 0
+            if exits.trailing != enabled:
+                return False
+    if ladder is not None:
+        # Echoed ladder fields must match the ladder that was risk-checked. Absent fields stay id-only.
+        expected: dict[str, Decimal | int] = {
+            "amountPerTrade": ladder.base,
+            "extraOrderCount": ladder.safety_orders + 1,
+            "extraOrderVolumeMultiplier": ladder.scale,
+            "extraOrderDeviation": ladder.step,
+        }
+        if exits.stop:
+            expected["stopLoss"] = ladder.stop_fraction
+        for key, want in expected.items():
+            if key not in remote:
+                continue
+            if isinstance(want, int):
+                if remote[key] != want:
+                    return False
+                continue
+            try:
+                if Decimal(str(remote[key])) != want:
+                    return False
+            except (ValueError, ArithmeticError):
+                return False
     return True
 
 
