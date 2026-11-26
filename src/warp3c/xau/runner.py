@@ -24,7 +24,7 @@ from .alerts import (
     ops,
     weekly,
 )
-from .basis import BasisBook
+from .basis import MIN_SAMPLES, BasisBook
 from .candles import prepare, shift
 from .clock import (
     ema_entry_open,
@@ -83,8 +83,14 @@ class XauRunner:
         self._stall_open = False
         self._feed_down = False
         self._basis_down = False
+        self._basis_alerted = False
         self._episode = 0
         self._error = ""
+        self._started_at = clock() if callable(clock) else datetime.now(timezone.utc)
+        self._live_feed: str | None = None
+        self._last_bar_at: datetime | None = None
+        self._basis_state = None
+        self._warming = False
         self.state = "starting"
         self.thread = threading.Thread(target=self._loop, name="xau", daemon=True)
 
@@ -111,7 +117,7 @@ class XauRunner:
                 else:
                     self.cycle()
                 self._backoff = 30
-                if self.state not in {"feed_unavailable", "config_error"}:
+                if self.state not in {"feed_unavailable", "config_error", "warming"}:
                     self.state = "running"
             except Exception as exc:
                 self.state = "degraded"
@@ -180,13 +186,11 @@ class XauRunner:
         m1 = cleaned.bars.get("1m", ())
         perp_close = m1[-1].close if m1 else None
         basis = self.basis.observe(perp_close, spot, now)
-        if not basis.healthy and not self._basis_down:
-            self._basis_down = True
-            self._episode += 1
-            event, detail = ops("basis_unhealthy", str(self._episode), basis.reason)
-            self.outbox.submit(now, OPS, event, detail)
-        if basis.healthy:
-            self._basis_down = False
+        self._live_feed = feed_name
+        if m1:
+            self._last_bar_at = m1[-1].open_time
+        self._basis_state = basis
+        warming = self._watch_basis(basis, now)
         shifted = {
             name: shift(bars, basis.value or D("0")) if basis.healthy else bars
             for name, bars in cleaned.bars.items()
@@ -195,7 +199,9 @@ class XauRunner:
         window = window_at(now)
         engine = self._locked_engine(window, shifted, now)
         dirty = bool(cleaned.gaps) or cleaned.stale_m5 or not basis.healthy
-        if dirty:
+        if warming:
+            self.state = "warming"
+        elif dirty:
             self.state = "degraded"
         else:
             self.state = "running"
@@ -203,6 +209,33 @@ class XauRunner:
             self._maybe_signal(engine, window, shifted, now, feed_name, basis.value, dxy, basis.healthy, dirty)
         self._maybe_summaries(now)
         self._error = ""
+
+    def _watch_basis(self, basis, now: datetime) -> bool:
+        """Warm-up is the sample requirement plus five minutes, measured from start.
+
+        few_samples during that window reports warming and does not alert.
+        Any unhealthy basis after warm-up, or after a healthy reading, alerts once.
+        Recovery alerts once, and only after an alert was sent.
+        """
+        deadline = self._started_at + timedelta(minutes=MIN_SAMPLES) + timedelta(minutes=5)
+        warming = now < deadline and not basis.healthy and basis.reason == "few_samples"
+        self._warming = warming
+        if warming:
+            return True
+        if not basis.healthy:
+            if not self._basis_alerted:
+                self._basis_alerted = True
+                self._basis_down = True
+                self._episode += 1
+                event, detail = ops("basis_unhealthy", str(self._episode), basis.reason)
+                self.outbox.submit(now, OPS, event, detail)
+            return False
+        if self._basis_alerted:
+            event, detail = ops("basis_recovered", str(self._episode), "ok")
+            self.outbox.submit(now, OPS, event, detail)
+            self._basis_alerted = False
+        self._basis_down = False
+        return False
 
     def _feed_unavailable(self, now: datetime) -> None:
         self.state = "feed_unavailable"
@@ -504,6 +537,15 @@ class XauRunner:
             "engine": self.store.window_engine(window.key) if self.store._migrated else None,
             "feed": rows[-1]["feed"] if rows else None,
             "basis": rows[-1]["basis"] if rows else None,
+            "live_feed": self._live_feed,
+            "last_bar_age_s": _bar_age(self._last_bar_at, now),
+            "basis_value": (
+                None if self._basis_state is None or self._basis_state.value is None
+                else format(self._basis_state.value, "f")
+            ),
+            "basis_samples": None if self._basis_state is None else self._basis_state.samples,
+            "basis_reason": None if self._basis_state is None else self._basis_state.reason,
+            "warming": self._warming,
             "basis_healthy": self.basis.observe(None, None, now).healthy,
             "next_tier1": None if nxt is None else {"title": nxt.title, "wib": format_wib(nxt.at, "%Y-%m-%d %H:%M")},
             "halt": {"global": (parent / "HALT").exists(), "xau": (parent / "XAU_HALT").exists()},
@@ -518,6 +560,12 @@ class XauRunner:
             "stats30": grouped(rows, rolling=30).get("model", {}),
             "paused_models": paused_models(rows),
         }
+
+
+def _bar_age(opened: datetime | None, now: datetime) -> int | None:
+    if opened is None:
+        return None
+    return max(0, int((now - opened).total_seconds()))
 
 
 def _management(bars, bar, pos) -> dict:

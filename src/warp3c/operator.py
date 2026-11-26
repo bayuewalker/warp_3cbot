@@ -288,7 +288,17 @@ def _xau_block() -> dict:
         block = snapshot()
         if not isinstance(block, dict):
             return {"enabled": False, "state": "unavailable"}
-        return block
+        if block.get("enabled") is not True:
+            return block
+        # feed/basis stay the last signal row. These fields are the live book.
+        live = dict(block)
+        live.setdefault("live_feed", None)
+        live.setdefault("last_bar_age_s", None)
+        live.setdefault("basis_value", None)
+        live.setdefault("basis_samples", None)
+        live.setdefault("basis_reason", None)
+        live.setdefault("warming", False)
+        return live
     except Exception:
         return {"enabled": False, "state": "unavailable"}
 

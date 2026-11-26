@@ -51,6 +51,19 @@ def research_retry_default(research_seconds: int) -> int:
     return int(raw)
 
 
+def _backtest_candles(raw: str | None) -> int:
+    """Unset stays at the 120-candle scan. An opt-in value is 120..1000."""
+    if raw is None or not raw.strip():
+        return 120
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError("Invalid WARP_BACKTEST_CANDLES") from exc
+    if value < 120 or value > 1000:
+        raise ValueError("Invalid WARP_BACKTEST_CANDLES")
+    return value
+
+
 def parse_groups(raw: str) -> tuple[tuple[str, str], ...]:
     """`majors:BTCUSDT|ETHUSDT,alts:SOLUSDT`. Empty means one shared book."""
     pairs: list[tuple[str, str]] = []
@@ -138,6 +151,7 @@ class Settings:
     require_backtest: bool = False
     blend_confidence: bool = False
     backtest_min_trades: int = 3
+    backtest_candles: int = 120
     screener_url: str = "https://scanner.tradingview.com"
     nvidia_model: str = DEFAULT_NVIDIA_MODEL
     openrouter_model: str = "deepseek/deepseek-v4-pro"
@@ -244,6 +258,8 @@ class Settings:
             raise ValueError("Invalid WARP_ANALYSIS")
         if not 5 <= self.llm_timeout <= 120 or self.llm_daily_calls < 1 or self.backtest_min_trades < 1:
             raise ValueError("Invalid analysis limits")
+        if type(self.backtest_candles) is not int or not 120 <= self.backtest_candles <= 1000:
+            raise ValueError("Invalid WARP_BACKTEST_CANDLES")
         if self.llm_daily_usd <= 0 or self.llm_usd_per_call <= 0:
             raise ValueError("Invalid LLM budget")
         if self.dashboard_password and len(self.dashboard_password) < 12:
@@ -416,6 +432,7 @@ class Settings:
             require_backtest=os.getenv("WARP_REQUIRE_BACKTEST", "0") == "1",
             blend_confidence=os.getenv("WARP_BLEND_CONFIDENCE", "0") == "1",
             backtest_min_trades=int(os.getenv("WARP_BACKTEST_MIN_TRADES", "3")),
+            backtest_candles=_backtest_candles(os.getenv("WARP_BACKTEST_CANDLES")),
             screener_url=os.getenv("WARP_SCREENER_URL", "https://scanner.tradingview.com"),
             nvidia_model=(
                 os.getenv("WARP_NVIDIA_MODEL") or os.getenv("NVIDIA_MODEL") or DEFAULT_NVIDIA_MODEL

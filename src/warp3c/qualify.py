@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
-from .backtest import run_backtest
+from .backtest import candles_for_backtest, run_backtest
 from .bots import BotTemplate, execution_fractions
 from .levels import derive_levels
 from .models import MarketEvidence, Signal
@@ -23,9 +23,19 @@ def blend_confidence(model: Decimal, evidence: MarketEvidence | None) -> Decimal
     return score.quantize(Decimal("0.0001"))
 
 
+def _places(value: Decimal, places: str) -> str:
+    """Display text only. Decision math keeps the original Decimal."""
+    return format(value.quantize(Decimal(places), rounding=ROUND_HALF_UP), "f")
+
+
 def _why(signal: Signal, evidence: MarketEvidence | None, levels, backtest, *, indonesian: bool) -> str:
     regime = evidence.regime.replace("_", " ") if evidence else "unknown"
-    rsi = format(evidence.rsi, "f") if evidence else "n/a"
+    if evidence is None:
+        rsi = "n/a"
+        momentum = "n/a"
+    else:
+        rsi = _places(evidence.rsi, "0.1")
+        momentum = _places(evidence.momentum, "0.01")
     action = signal.action
     confidence = format(signal.confidence, "f")
     if levels is None:
@@ -42,11 +52,11 @@ def _why(signal: Signal, evidence: MarketEvidence | None, levels, backtest, *, i
         )
     if indonesian:
         return (
-            f"{signal.symbol} berada di regime {regime} dengan RSI {rsi}. "
+            f"{signal.symbol} berada di regime {regime} dengan RSI {rsi} dan momentum {momentum}. "
             f"Model memilih {action} dengan keyakinan {confidence}. {signal.thesis} {prices_id}"
         )
     return (
-        f"{signal.symbol} is in a {regime} regime with RSI {rsi}. "
+        f"{signal.symbol} is in a {regime} regime with RSI {rsi} and momentum {momentum}. "
         f"The model says {action} with confidence {confidence}. {signal.thesis} {prices}"
     )
 
@@ -62,8 +72,10 @@ def qualify(
     stop_fraction, take_fraction = execution_fractions(cfg, chosen)
     levels = derive_levels(evidence, cfg, stop_fraction=stop_fraction, take_fraction=take_fraction)
     blended = blend_confidence(signal.confidence, evidence)
+    supplied = candles if (cfg.require_backtest or candles) else None
+    window = candles_for_backtest(supplied, int(getattr(cfg, "backtest_candles", 120) or 120))
     check = run_backtest(
-        candles if (cfg.require_backtest or candles) else None,
+        window,
         stop_fraction,
         take_fraction,
         min_trades=cfg.backtest_min_trades,

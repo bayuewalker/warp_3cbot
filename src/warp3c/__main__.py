@@ -20,9 +20,8 @@ from .httpapi import dispatch
 from .market import MarketData
 from .notify import Delivery, channel_configured, enqueue_incident, flush_alerts
 from .operator import HEALTH, publish
-from .schedule import Clocks
 from .state import OrderJournal
-from .supervisor import ResearchGate, once
+from .supervisor import ResearchGate, clocks_from_journal, once
 from .telemetry import configure_logging, log_event, send_alert, send_telegram
 from .threecommas import IntegrationError, ThreeCommas
 from .vibe import VibeResearch
@@ -192,6 +191,78 @@ def start_vibe() -> subprocess.Popen | None:
     raise RuntimeError("Vibe-Trading health endpoint unavailable after startup")
 
 
+def transient_cycle_block(exc: BaseException) -> bool:
+    """5xx, 429, and timeouts are transient. Everything else alerts immediately."""
+    if not isinstance(exc, IntegrationError):
+        return False
+    status = exc.status_code
+    if status == 429 or (isinstance(status, int) and 500 <= status <= 599):
+        return True
+    text = str(exc).lower()
+    return "timeout" in text or "timed out" in text
+
+
+class CycleBlockTracker:
+    """Alert only after a transient block has lasted for two loops and 60 seconds."""
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.since: datetime | None = None
+        self.alerted = False
+
+    def failure(self, exc: BaseException, now: datetime) -> bool:
+        if self.count == 0 or self.since is None:
+            self.since = now
+        self.count += 1
+        if self.alerted:
+            return False
+        if not transient_cycle_block(exc):
+            self.alerted = True
+            return True
+        elapsed = (now - self.since).total_seconds()
+        if self.count >= 2 and elapsed >= 60:
+            self.alerted = True
+            return True
+        return False
+
+    def recovered(self) -> bool:
+        """A healthy cycle ends the streak. Notify only if an alert was sent."""
+        alerted = self.alerted
+        self.count = 0
+        self.since = None
+        self.alerted = False
+        return alerted
+
+
+def note_blocked_cycle(
+    cfg: Settings,
+    journal: OrderJournal | None,
+    exc: BaseException,
+    tracker: CycleBlockTracker,
+    now: datetime,
+) -> None:
+    """Fail closed immediately. Log once. Alert only when the block is worth a page."""
+    HEALTH["last_cycle_ok"] = False
+    HEALTH["dependencies_healthy"] = False
+    HEALTH["execution_permitted"] = False
+    HEALTH["risk_permitted"] = False
+    HEALTH["reason"] = "cycle_blocked"
+    detail = str(exc) if isinstance(exc, IntegrationError) else exc.__class__.__name__
+    log_event(
+        "cycle_blocked",
+        mode=cfg.mode,
+        error_type=type(exc).__name__,
+        detail=detail[:300],
+    )
+    if tracker.failure(exc, now):
+        _notify(cfg, journal, "cycle_blocked", detail[:300])
+
+
+def note_cycle_recovered(cfg: Settings, journal: OrderJournal | None, tracker: CycleBlockTracker) -> None:
+    if tracker.recovered():
+        _notify(cfg, journal, "cycle_recovered", "cycle healthy")
+
+
 def _notify(cfg: Settings, journal: OrderJournal | None, event: str, detail: str) -> None:
     if journal is None:
         return
@@ -296,7 +367,8 @@ def main():
         accounts.start()
         publish(cfg, journal, engine)
         gate = ResearchGate()
-        clocks = Clocks()
+        clocks = clocks_from_journal(journal)
+        block_tracker = CycleBlockTracker()
         live_at = {"price": 0.0, "screen": time.monotonic(), "accounts_at": ""}
         log_event("worker_started", mode=cfg.mode, symbols=",".join(cfg.symbols), discovery=cfg.discovery)
         while not STOP.is_set():
@@ -311,19 +383,13 @@ def main():
                 HEALTH["risk_permitted"] = engine.status.risk_permitted
                 HEALTH["reason"] = engine.status.reason
                 publish(cfg, journal, engine)
+                note_cycle_recovered(cfg, journal, block_tracker)
                 if engine.status.reason in {"ok", "observe_without_account"}:
                     journal.clear_alert()
                 elif not engine.status.risk_permitted:
                     _notify(cfg, journal, engine.status.reason, "new entries are paused")
             except Exception as exc:
-                HEALTH["last_cycle_ok"] = False
-                HEALTH["dependencies_healthy"] = False
-                HEALTH["execution_permitted"] = False
-                HEALTH["risk_permitted"] = False
-                HEALTH["reason"] = "cycle_blocked"
-                detail = str(exc) if isinstance(exc, IntegrationError) else exc.__class__.__name__
-                log_event("cycle_blocked", error=detail[:300])
-                _notify(cfg, journal, "cycle_blocked", detail[:300])
+                note_blocked_cycle(cfg, journal, exc, block_tracker, datetime.now(timezone.utc))
             finally:
                 if journal is not None:
                     _flush(cfg, journal)

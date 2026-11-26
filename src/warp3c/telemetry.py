@@ -14,6 +14,7 @@ LOG = logging.getLogger("warp3c")
 _HIDDEN = {"api_key", "api_secret", "secret", "signature", "authorization", "token", "webhook"}
 # Telegram puts the bot token in the path. httpx logs that path at INFO.
 _BOT_PATH = re.compile(r"/bot[^/\s]+/")
+_HTTP_STATUS = re.compile(r"HTTP/(?:1\.[01]|2)\s+(\d{3})\b")
 _HTTP_LOGGERS = ("httpx", "httpcore")
 
 
@@ -71,6 +72,26 @@ def _redact_record(record: logging.LogRecord) -> None:
 _REDACT = _RedactBotPath()
 
 
+class _QuietHttpSuccess(logging.Filter):
+    """Drop INFO lines for HTTP 2xx. Keep 3xx/4xx/5xx and every WARNING or higher."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.WARNING or record.levelno != logging.INFO:
+            return True
+        try:
+            message = record.getMessage()
+        except (TypeError, ValueError):
+            return True
+        match = _HTTP_STATUS.search(message)
+        if match is None:
+            return True
+        code = int(match.group(1))
+        return not 200 <= code <= 299
+
+
+_QUIET = _QuietHttpSuccess()
+
+
 def _http_logger(name: str) -> bool:
     return name == "httpx" or name.startswith("httpx.") or name == "httpcore" or name.startswith("httpcore.")
 
@@ -81,6 +102,10 @@ def _attach(logger: logging.Logger) -> None:
     for handler in logger.handlers:
         if not any(isinstance(existing, _RedactBotPath) for existing in handler.filters):
             handler.addFilter(_REDACT)
+        # Handler filter, not a logger filter: a capture handler added by tests still
+        # sees the redacted line, and the process handler drops successful requests.
+        if not any(isinstance(existing, _QuietHttpSuccess) for existing in handler.filters):
+            handler.addFilter(_QUIET)
 
 
 def install_http_redaction() -> None:
@@ -106,7 +131,7 @@ def install_http_redaction() -> None:
 
 
 def configure_logging() -> None:
-    """The process log setup `main()` uses. INFO request lines stay, tokens do not."""
+    """The process log setup `main()` uses. INFO 2xx lines are dropped. Tokens stay masked."""
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     install_http_redaction()
 

@@ -420,6 +420,22 @@ class OrderJournal:
             row = db.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
         return None if row is None else str(row[0])
 
+    def research_started_at(self) -> datetime | None:
+        """Last research start, or None when this journal has never started one."""
+        raw = self.get_setting("research_started_at")
+        if not raw:
+            return None
+        try:
+            moment = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        return moment.astimezone(timezone.utc)
+
+    def note_research_started(self, moment: datetime) -> None:
+        self.set_setting("research_started_at", moment.astimezone(timezone.utc).isoformat())
+
     def set_setting(self, key: str, value: str) -> None:
         """Write from the HTTP thread without borrowing the worker connection."""
         db = sqlite3.connect(self.path, isolation_level=None, timeout=30)

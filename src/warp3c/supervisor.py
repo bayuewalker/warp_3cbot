@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -11,6 +12,7 @@ from .market import MarketDataError
 from .notify import channel_configured, enqueue_incident
 from .schedule import Clocks, due_actions
 from .telemetry import log_event
+from .vibe import ResearchError
 
 _NO_RETRY = frozenset({"llm_cap", "unconfigured"})
 _REMINDER_SECONDS = 300
@@ -185,6 +187,27 @@ class ResearchGate:
             engine.status.reason = "ok"
         return clocks
 
+    def note_budget_wait(self, engine, now: datetime) -> None:
+        """Not enough calls left for one run. Wait for the UTC day. No cap error and no alert."""
+        day = now.astimezone(timezone.utc).date().isoformat()
+        tomorrow = (now.astimezone(timezone.utc) + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        with self._lock:
+            self._state = "budget_wait"
+            self._error = None
+            self._error_code = None
+            self._consecutive = 0
+            self._next = tomorrow
+            view = self._status_locked()
+        journal = getattr(engine, "journal", None)
+        logged = None if journal is None else journal.get_setting("budget_wait_day")
+        if logged != day:
+            log_event("budget_wait", day=day)
+            if journal is not None:
+                journal.set_setting("budget_wait_day", day)
+        engine.research_status = view
+
     def _status_locked(self) -> dict:
         return {
             "state": self._state,
@@ -218,6 +241,85 @@ def _next_from_clock(clocks: Clocks, research_seconds: int) -> datetime | None:
     return clocks.research + timedelta(seconds=research_seconds)
 
 
+def clocks_from_journal(journal) -> Clocks:
+    """Seed the research clock from the last start, so a restart does not run again."""
+    started = None
+    reader = getattr(journal, "research_started_at", None)
+    if callable(reader):
+        started = reader()
+    return Clocks(research=started)
+
+
+def _calls_per_run(analyst) -> int:
+    """Screen plus final on the happy path. Screen runs only when nvidia is configured."""
+    nvidia = bool(getattr(analyst, "nvidia_key", ""))
+    router = bool(getattr(analyst, "openrouter_key", ""))
+    if not nvidia and not router:
+        return 0
+    return (1 if nvidia else 0) + 1
+
+
+def _research_budget(engine) -> tuple[int, int] | None:
+    """Remaining daily calls and the calls one healthy run spends. None when this is not the LLM path."""
+    # Vibe never spends the local budget. auto and llm do, and only when the analyst is configured.
+    analysis = getattr(getattr(engine, "cfg", None), "analysis", "auto")
+    if analysis not in {"llm", "auto"}:
+        return None
+    analyst = getattr(engine, "analyst", None)
+    budget = getattr(analyst, "budget", None)
+    if analyst is None or budget is None:
+        return None
+    configured = getattr(analyst, "configured", None)
+    if callable(configured) and not configured():
+        return None
+    per_run = _calls_per_run(analyst)
+    if per_run < 1:
+        return None
+    try:
+        snap = budget.snapshot()
+        remaining = int(snap["calls_cap"]) - int(snap["calls_used"])
+    except (ResearchError, TypeError, ValueError, KeyError, ArithmeticError):
+        # An unreadable budget still fails inside the research thread. Do not raise into the loop.
+        return None
+    return remaining, per_run
+
+
+def paced_research_seconds(cfg, now: datetime, remaining: int, per_run: int) -> int:
+    """Spread the runs still affordable across the rest of the UTC day. Never faster than the setting."""
+    base = cfg.research_seconds
+    if per_run < 1 or remaining < per_run:
+        return base
+    runs_left = remaining // per_run
+    if runs_left < 1:
+        return base
+    moment = now.astimezone(timezone.utc)
+    midnight = (moment + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    seconds_left = (midnight - moment).total_seconds()
+    if seconds_left <= 0:
+        return base
+    paced = seconds_left / runs_left
+    if paced <= base:
+        return base
+    return max(base, math.ceil(paced))
+
+
+def _score_forward(engine, moment: datetime) -> None:
+    """Grade due forward rows at most once per scan interval. A failure stays inside the loop."""
+    last = getattr(engine, "_forward_scored_at", None)
+    interval = engine.cfg.scan_seconds
+    if last is not None and (moment - last).total_seconds() < interval:
+        return
+    engine._forward_scored_at = moment
+    try:
+        engine._evaluate(moment)
+    except Exception as exc:
+        if not getattr(engine, "_forward_failing", False):
+            log_event("forward_eval_failed", error=type(exc).__name__)
+            engine._forward_failing = True
+        return
+    engine._forward_failing = False
+
+
 def once(engine, gate: ResearchGate, clocks: Clocks, *, now: datetime | None = None) -> Clocks:
     """Monitor even when research is still running. Orders wait for a finished result."""
     moment = now or datetime.now(timezone.utc)
@@ -225,7 +327,18 @@ def once(engine, gate: ResearchGate, clocks: Clocks, *, now: datetime | None = N
     # start() clears the error, then decide whether the backoff still says due.
     if not gate.busy():
         clocks = gate.settle(engine, clocks, moment, engine.cfg)
-    actions = due_actions(clocks, moment, engine.cfg)
+    budget = None if gate.busy() else _research_budget(engine)
+    interval = engine.cfg.research_seconds
+    hold_for_budget = False
+    if budget is not None:
+        remaining, per_run = budget
+        if remaining < per_run:
+            hold_for_budget = True
+        else:
+            interval = paced_research_seconds(engine.cfg, moment, remaining, per_run)
+    actions = due_actions(clocks, moment, engine.cfg, research_seconds=interval)
+    if hold_for_budget:
+        actions = frozenset(action for action in actions if action != "research")
     if "monitor" in actions or "reconcile" in actions:
         engine.monitor()
         clocks = replace(
@@ -242,14 +355,20 @@ def once(engine, gate: ResearchGate, clocks: Clocks, *, now: datetime | None = N
             engine.status.market_data_fresh = False
             engine.status.reason = "market_data"
             log_event("market_data_blocked", mode=engine.cfg.mode)
+        _score_forward(engine, moment)
     if "research" in actions and not gate.busy():
-        gate.start(engine.collect_research)
-        clocks = replace(clocks, research=moment)
+        if gate.start(engine.collect_research):
+            clocks = replace(clocks, research=moment)
+            journal = getattr(engine, "journal", None)
+            if journal is not None and hasattr(journal, "note_research_started"):
+                journal.note_research_started(moment)
     if not gate.busy():
         # Monitor may have replaced the reason. Settle again so the overlay
         # returns, and so a run that finished inside this call is recorded.
         # The generation was already handled, so this does not log a second time.
         clocks = gate.settle(engine, clocks, moment, engine.cfg)
+    if hold_for_budget and not gate.busy():
+        gate.note_budget_wait(engine, moment)
     if engine._halted():
         return clocks
     pending = gate.take(engine.cfg.max_signal_age, moment)
