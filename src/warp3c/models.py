@@ -42,6 +42,8 @@ class MarketEvidence:
     tradable: bool
     passed: bool
     reason: str
+    min_qty: Decimal | None = None
+    step_size: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -111,6 +113,8 @@ class PlannedOrder:
     base_amount: Decimal
     full_commitment: Decimal
     confidence: Decimal
+    # Legacy fraction cap for this symbol. AEGIS sizes inside it. 0 means "use full_commitment".
+    budget: Decimal = Decimal("0")
 
 
 @dataclass(frozen=True)

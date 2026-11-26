@@ -149,9 +149,10 @@ class FailureTests(unittest.TestCase):
     def test_daily_loss_and_halt_block_entries(self):
         now = datetime.now(timezone.utc)
         marks = [EquityMark(now - timedelta(minutes=5), Decimal("1000"), True)]
-        reason = circuit_reason(marks, Decimal("900"), True, Settings(), now)
+        # 4% is past the 3% tradebook daily limit and inside the 8% drawdown limit.
+        reason = circuit_reason(marks, Decimal("960"), True, Settings(), now)
         self.assertEqual(reason, "daily_loss")
-        account = Account("p123", True, Decimal("900"), Decimal("0"), Decimal("900"))
+        account = Account("p123", True, Decimal("960"), Decimal("0"), Decimal("960"))
         decision = GlobalRisk(Settings()).assess(account, [], [sig()], prices={"BTCUSDT": Decimal("100")}, marks=marks)
         self.assertFalse(decision.execution_permitted)
         with tempfile.TemporaryDirectory() as tmp:

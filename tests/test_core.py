@@ -24,6 +24,7 @@ def evidence(symbol="BTCUSDT"):
         symbol, datetime.now(timezone.utc), Decimal("100"), Decimal("10000000"),
         "up", Decimal("0.02"), Decimal("60"), Decimal("0.01"), "trend_up",
         Decimal("5"), 2, True, True, "ok",
+        Decimal("0.00001"), Decimal("0.00001"),
     )
 
 

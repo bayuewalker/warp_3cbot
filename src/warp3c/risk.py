@@ -372,13 +372,16 @@ def circuit_reason(
         return "mtm_unreliable"
     moment = now.astimezone(timezone.utc)
     prior = [mark for mark in marks if mark.reliable and mark.marked_at <= moment]
+    # The tighter limit wins. Tradebook defaults are 0.03 daily and 0.08 drawdown.
+    daily_limit = min(cfg.max_daily_loss, cfg.trade_daily_loss)
+    drawdown_limit = min(cfg.max_drawdown, cfg.trade_drawdown)
     peak = max((mark.equity for mark in prior), default=None)
-    if peak is not None and peak > 0 and equity < peak * (Decimal("1") - cfg.max_drawdown):
+    if peak is not None and peak > 0 and equity < peak * (Decimal("1") - drawdown_limit):
         return "drawdown"
     today = [mark for mark in prior if mark.marked_at.astimezone(timezone.utc).date() == moment.date()]
     if today:
         start = min(today, key=lambda mark: mark.marked_at).equity
-        if start > 0 and equity < start * (Decimal("1") - cfg.max_daily_loss):
+        if start > 0 and equity < start * (Decimal("1") - daily_limit):
             return "daily_loss"
     return None
 
@@ -537,10 +540,19 @@ class GlobalRisk:
                 continue
             base = min(self.cfg.max_base * profile.size_scale, full_budget / gross)
             base = quantize_quote(base, evidence.quote_precision)
-            if base < self.cfg.min_base or base < evidence.min_notional:
+            if base < evidence.min_notional and full_budget < evidence.min_notional:
+                continue
+            # min_base is the legacy ladder floor. A smaller AEGIS ladder can still be feasible,
+            # so a base under that floor does not drop the candidate. The budget is what AEGIS may spend.
+            if base < self.cfg.min_base:
+                proposals.append(PlannedOrder(signal.symbol, base, full_budget, signal.confidence, full_budget))
+                committed += full_budget
+                spendable -= full_budget
+                group_committed[group] = group_committed.get(group, Decimal("0")) + full_budget
+                active_pairs.append(signal.symbol)
                 continue
             full = base * gross
-            proposals.append(PlannedOrder(signal.symbol, base, full, signal.confidence))
+            proposals.append(PlannedOrder(signal.symbol, base, full, signal.confidence, full_budget))
             committed += full
             spendable -= full
             group_committed[group] = group_committed.get(group, Decimal("0")) + full

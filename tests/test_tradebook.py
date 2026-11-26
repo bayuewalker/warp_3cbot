@@ -175,10 +175,10 @@ class TradebookTests(unittest.TestCase):
             price=Decimal("100"), cap=Decimal("300"), nav=Decimal("5000"),
             open_stop_risk=Decimal("0"), open_commitment=Decimal("0"),
             minimum=Decimal("1"), atr_1h_pct=Decimal("0.02"), policy=policy(sleeve_pct=Decimal("1")),
-            max_base=Decimal("5"),
+            max_base=Decimal("8"),
         )
         self.assertIsNotNone(capped)
-        self.assertLessEqual(capped.base, Decimal("5"))
+        self.assertLessEqual(capped.base, Decimal("8"))
         self.assertLess(capped.commitment, Decimal("300"))
 
     def test_addendum_cooldowns_review_and_go_no_go(self):

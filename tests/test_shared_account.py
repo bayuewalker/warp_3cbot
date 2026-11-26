@@ -768,7 +768,7 @@ class RealizedLossTests(unittest.TestCase):
         self.assertEqual(decision.reason, "drawdown")
         self.assertFalse(decision.execution_permitted)
         self.assertEqual(decision.orders, [])
-        daily = GlobalRisk(shared_cfg(max_drawdown=Decimal("0.9"))).assess(
+        daily = GlobalRisk(shared_cfg(max_drawdown=Decimal("0.9"), trade_drawdown=Decimal("0.9"))).assess(
             account, [], [], prices={}, marks=[], now=now, journaled=frozenset(),
             shared_since=now - timedelta(days=1), realized_since=Decimal("-15"),
             day_start=Decimal("50"), peak=(now - timedelta(hours=1), Decimal("50")),
@@ -854,7 +854,7 @@ class RealizedLossTests(unittest.TestCase):
             engine = Engine(cfg, RecordingBroker(live_account()), Research(), journal, Markets())
             self.assertEqual(engine.cycle(), 0)
             self.assertEqual(engine.broker.created, [])
-            self.assertEqual(engine.last_aegis[-1]["reasons"], ["daily_loss"])
+            self.assertEqual(engine.status.reason, "daily_loss")
 
         with tempfile.TemporaryDirectory() as tmp:
             cfg = live_cfg(tmp, trade_daily_loss=Decimal("0.5"), trade_drawdown=Decimal("0.5"), **loose)

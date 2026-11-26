@@ -292,6 +292,7 @@ def publish(cfg, journal, engine) -> None:
         "providers": _provider_health(cfg, engine),
         "pipeline": pipeline,
         "published_at": now.isoformat(),
+        "risk_decisions": journal.recent_risk_decisions(20),
     }
     SNAPSHOT["/api/risk"] = {
         "reason": status.reason,

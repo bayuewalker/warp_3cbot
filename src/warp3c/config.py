@@ -158,6 +158,8 @@ class Settings:
     paper_min_deals: int = 30
     virtual_drop: Decimal = Decimal("0.35")
     shared_account: bool = False
+    min_order_usdt: Decimal = Decimal("5")
+    max_entry_signal_seconds: int = 300
 
     def __post_init__(self) -> None:
         if self.mode not in {"observe", "paper", "live"}:
@@ -174,6 +176,10 @@ class Settings:
             raise ValueError("WARP_SHARED_ACCOUNT must be a boolean")
         if self.shared_account and not (self.sleeve_usdt.is_finite() and self.sleeve_usdt > 0):
             raise ValueError("WARP_SHARED_ACCOUNT requires an explicit WARP_SLEEVE_USDT above zero")
+        if not self.min_order_usdt.is_finite() or self.min_order_usdt <= 0:
+            raise ValueError("Invalid WARP_MIN_ORDER_USDT")
+        if type(self.max_entry_signal_seconds) is not int or not 1 <= self.max_entry_signal_seconds <= 3600:
+            raise ValueError("Invalid WARP_MAX_ENTRY_SIGNAL_SECONDS")
         for name in (
             "allocation_ceiling",
             "per_deal_ceiling",
@@ -416,4 +422,6 @@ class Settings:
             paper_min_deals=int(os.getenv("WARP_PAPER_MIN_DEALS", "30")),
             virtual_drop=dec("WARP_VIRTUAL_STOP", "0.35"),
             shared_account=strict_flag("WARP_SHARED_ACCOUNT"),
+            min_order_usdt=dec("WARP_MIN_ORDER_USDT", "5"),
+            max_entry_signal_seconds=int(os.getenv("WARP_MAX_ENTRY_SIGNAL_SECONDS", "300")),
         )

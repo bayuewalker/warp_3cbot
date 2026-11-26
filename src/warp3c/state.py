@@ -137,12 +137,36 @@ class OrderJournal:
             )
             """
         )
+        self.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS risk_decisions (
+                id INTEGER PRIMARY KEY,
+                recorded_at TEXT NOT NULL,
+                signal_id TEXT NOT NULL,
+                risk_decision_id TEXT NOT NULL,
+                account_hash TEXT NOT NULL,
+                nav TEXT NOT NULL,
+                free_usdt TEXT NOT NULL,
+                reserved_so TEXT NOT NULL,
+                commitment TEXT NOT NULL,
+                ladder TEXT NOT NULL,
+                stop_usdt TEXT NOT NULL,
+                stop_pct TEXT NOT NULL,
+                open_stop_after TEXT NOT NULL,
+                decision TEXT NOT NULL,
+                reasons TEXT NOT NULL
+            )
+            """
+        )
         self._ensure_equity_scope()
 
     def _ensure_equity_scope(self) -> None:
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(equity_marks)")}
         if "scope" not in columns:
             self.db.execute("ALTER TABLE equity_marks ADD COLUMN scope TEXT NOT NULL DEFAULT 'account'")
+        bots = {row[1] for row in self.db.execute("PRAGMA table_info(warp_bots)")}
+        if "ladder" not in bots:
+            self.db.execute("ALTER TABLE warp_bots ADD COLUMN ladder TEXT")
 
     def close(self) -> None:
         self.db.close()
@@ -448,7 +472,7 @@ class OrderJournal:
         return [_warp_row(row) for row in rows]
 
     def update_warp_bot(self, warp_id: str, **fields: str) -> None:
-        allowed = {"status", "external_code", "updated_at"}
+        allowed = {"status", "external_code", "updated_at", "ladder"}
         if not fields or any(key not in allowed for key in fields):
             raise ValueError("Unexpected bot field")
         assignments = ", ".join(f"{key}=?" for key in fields)
@@ -456,6 +480,51 @@ class OrderJournal:
             f"UPDATE warp_bots SET {assignments} WHERE warp_id=?",
             (*fields.values(), warp_id),
         )
+
+    def record_risk_decision(self, row: dict) -> None:
+        self.db.execute(
+            """
+            INSERT INTO risk_decisions(
+                recorded_at, signal_id, risk_decision_id, account_hash, nav, free_usdt,
+                reserved_so, commitment, ladder, stop_usdt, stop_pct, open_stop_after, decision, reasons
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                row["recorded_at"], row["signal_id"], row["risk_decision_id"], row["account_hash"],
+                row["nav"], row["free_usdt"], row["reserved_so"], row["commitment"], row["ladder"],
+                row["stop_usdt"], row["stop_pct"], row["open_stop_after"], row["decision"], row["reasons"],
+            ),
+        )
+
+    def recent_risk_decisions(self, limit: int = 20) -> list[dict]:
+        rows = self.db.execute(
+            """
+            SELECT recorded_at, signal_id, risk_decision_id, account_hash, nav, free_usdt,
+                   reserved_so, commitment, stop_usdt, stop_pct, open_stop_after, decision, reasons
+              FROM risk_decisions ORDER BY id DESC LIMIT ?
+            """,
+            (limit,),
+        )
+        found = []
+        for item in rows:
+            found.append(
+                {
+                    "recorded_at": item[0],
+                    "signal_id": item[1],
+                    "risk_decision_id": item[2],
+                    "account_hash": item[3],
+                    "nav": item[4],
+                    "free_usdt": item[5],
+                    "reserved_so": item[6],
+                    "commitment": item[7],
+                    "stop_usdt": item[8],
+                    "stop_pct": item[9],
+                    "open_stop_after": item[10],
+                    "decision": item[11],
+                    "reasons": json.loads(item[12]) if item[12] else [],
+                }
+            )
+        return found
 
     def record_realized(
         self, client_id: str, symbol: str, closed_at: datetime, realized: Decimal, fees: Decimal
@@ -583,6 +652,7 @@ def _warp_row(row) -> dict:
         "commitment": row[10],
         "created_at": row[11],
         "updated_at": row[12],
+        "ladder": row[13] if len(row) > 13 else None,
     }
 
 

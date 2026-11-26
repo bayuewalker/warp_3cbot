@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
 import sqlite3
@@ -33,10 +34,17 @@ from .config import Settings
 from .forward import evaluate_due
 from .levels import derive_levels
 from .market import MarketData, MarketDataError
-from .models import Signal
+from .models import Signal, positive
 from .ownership import warp_name
 from .qualify import qualify
-from .risk import GlobalRisk, is_warp_strategy, pair_symbols, realized_pnl
+from .risk import (
+    GlobalRisk,
+    is_warp_strategy,
+    net_base_qty,
+    pair_symbols,
+    realized_pnl,
+    unfilled_quote,
+)
 from .screener import ScreenerError, ScreenerFilters, select_symbols
 from .state import OrderJournal
 from .telemetry import log_event
@@ -352,6 +360,12 @@ class Engine:
             submit and decision.execution_permitted and self.cfg.mode != "observe" and not paused
         )
         self.status.reason = decision.reason
+        if decision.reason in {"drawdown", "daily_loss"}:
+            self.journal.enqueue_alert(
+                f"breaker:{decision.reason}",
+                f"{decision.reason} {decision.equity}",
+                now=now,
+            )
         if self._discovery_block and decision.execution_permitted:
             self.status.reason = self._discovery_block
             self.status.risk_permitted = False
@@ -417,6 +431,7 @@ class Engine:
                 self.status.execution_permitted = False
                 continue
             book = self._approve(account, plan, now)
+            self._record_risk_decision(plan, account, book, now)
             self._remember_aegis(plan.symbol, book, account)
             if book.decision != "APPROVED" or book.ladder is None:
                 notes.append((stamp, plan.symbol, "broker", ",".join(book.reasons) or book.decision, "not_submitted"))
@@ -524,11 +539,30 @@ class Engine:
                 "market": "spot",
                 "symbol": plan.symbol,
                 "status": "pending",
-                "commitment": format(plan.full_commitment, "f"),
+                "commitment": format(
+                    self._approved_ladder.commitment if getattr(self, "_approved_ladder", None) else plan.full_commitment,
+                    "f",
+                ),
                 "created_at": stamp,
                 "updated_at": stamp,
             }
         )
+        approved = getattr(self, "_approved_ladder", None)
+        if approved is not None:
+            self.journal.update_warp_bot(
+                warp_id,
+                ladder=json.dumps(
+                    {
+                        "commitment": format(approved.commitment, "f"),
+                        "stop_loss": format(approved.stop_loss, "f"),
+                        "stop_price": format(approved.stop_price, "f"),
+                        "step": format(approved.step, "f"),
+                        "safety_orders": approved.safety_orders,
+                        "scale": format(approved.scale, "f"),
+                    }
+                ),
+                updated_at=stamp,
+            )
         self.journal.reserve(client_id, plan.symbol, envelope if isinstance(envelope, dict) else request)
         product = envelope.get("product") if isinstance(envelope, dict) else template.product
         exits = _exits(template)
@@ -540,7 +574,7 @@ class Engine:
             result = self.broker.create_grid_bot(request)
         else:
             result = self.broker.create_strategy(request)
-        if isinstance(result, dict) and not readback_ok(result, exits):
+        if isinstance(result, dict) and not readback_ok(result, exits, getattr(self, "_approved_ladder", None)):
             kept = _broker_id_or_none(result)
             if kept:
                 self.journal.confirm(client_id, kept)
@@ -551,7 +585,7 @@ class Engine:
                     updated_at=datetime.now(timezone.utc).isoformat(),
                 )
                 self._kept_order = True
-            raise IntegrationError("3Commas read-back does not match the exit toggles", uncertain=True)
+            raise IntegrationError("3Commas read-back does not match the approved order", uncertain=True)
         return result
 
     def _journaled(self, positions) -> frozenset[str] | None:
@@ -937,33 +971,46 @@ class Engine:
                 policy=policy,
                 weights=template.weight_map(),
             )
+        if evidence is None or evidence.min_qty is None or evidence.step_size is None:
+            from .capital import Decision
+
+            self._last_exposure = None
+            return Decision("WAIT_DATA_INCOMPLETE", ["lot_size"])
         bots = [row for row in self.journal.warp_bots(account.code) if row.get("status") in {"pending", "unknown", "confirmed", "active", "paused"}]
-        warp_committed = sum((Decimal(str(row.get("commitment") or "0")) for row in bots), Decimal("0"))
+        prices = {symbol: item.last_price for symbol, item in self.evidence.items()}
+        exposure = self._warp_exposure(bots, prices)
+        if exposure is None:
+            from .capital import Decision
+
+            self._last_exposure = None
+            return Decision("WAIT_DATA_INCOMPLETE", ["open_risk"])
+        budget = plan.budget if plan.budget > 0 else plan.full_commitment
+        self._last_exposure = exposure
         return approve(
             policy=policy,
             account_usdt=account.total_usdt,
             free_usdt=account.free_usdt,
-            warp_owned=Decimal("0"),
-            warp_committed=warp_committed,
-            warp_pending_so=Decimal("0"),
+            warp_owned=exposure["owned"],
+            warp_committed=exposure["committed"],
+            warp_pending_so=exposure["pending"],
             non_warp_spent=account.used_usdt,
             non_warp_future_so=self._foreign_future_so(),
             open_deals=len(bots),
-            open_stop_risk=Decimal("0"),
+            open_stop_risk=exposure["stop"],
             open_symbols=[str(row.get("symbol")) for row in bots],
-            price=evidence.last_price if evidence is not None else plan.base_amount,
-            minimum=evidence.min_notional if evidence is not None else self.cfg.min_base,
+            price=evidence.last_price,
+            minimum=evidence.min_notional,
             model_buy=True,
             score=score,
             min_score=self._template().min_score,
             exits=_exits(self._template()),
-            max_commitment=plan.full_commitment,
-            max_base=plan.base_amount,
+            max_commitment=budget,
+            max_base=self.cfg.max_base,
             symbol=plan.symbol,
             now=now,
             tape=tape,
             corr=corr,
-            quote_volume=gate["quote_volume"] if gate else (evidence.quote_volume if evidence is not None else policy.min_quote_volume),
+            quote_volume=gate["quote_volume"] if gate else evidence.quote_volume,
             spread=None if gate is None else gate.get("spread"),
             change_24h=None if gate is None else gate.get("change_24h"),
             listed_days=None if gate is None else gate.get("listed_days"),
@@ -971,8 +1018,125 @@ class Engine:
             tradable=True if gate is None else bool(gate.get("tradable")),
             on_binance_spot=True if gate is None else bool(gate.get("on_binance_spot")),
             atr_1h_pct=None if gate is None else gate.get("atr_1h_pct"),
-            stale=bool(gate and (gate.get("quote_age") is None or gate["quote_age"] > 30 or (evidence is not None and (now - evidence.as_of.astimezone(timezone.utc)).total_seconds() > 300))),
+            stale=self._entry_stale(evidence, gate, now),
+            mismatched_account=self._account_mismatch(account),
+            min_qty=evidence.min_qty,
+            step_size=evidence.step_size,
+            open_book=exposure["book"],
             **self._loss_context(),
+        )
+
+    def _entry_stale(self, evidence, gate, now: datetime) -> bool:
+        """Entry signal stays within WARP_MAX_ENTRY_SIGNAL_SECONDS. The live quote stays within 30s."""
+        if evidence is None or evidence.as_of.tzinfo is None:
+            return True
+        age = (now - evidence.as_of.astimezone(timezone.utc)).total_seconds()
+        if age < -60 or age > self.cfg.max_entry_signal_seconds:
+            return True
+        if gate is None:
+            return age > 30
+        return gate.get("quote_age") is None or gate["quote_age"] > 30
+
+    def _account_mismatch(self, account) -> bool:
+        exchange = (account.exchange_code or "BINANCE").upper()
+        if account.market not in {"", "spot"} or exchange != "BINANCE":
+            return True
+        target = self._target()
+        if not target:
+            return False
+        if target.get("code") and str(target["code"]) != account.code:
+            return True
+        if target.get("exchange_code") and str(target["exchange_code"]).upper() != exchange:
+            return True
+        if target.get("market") and str(target["market"]) != "spot":
+            return True
+        return False
+
+    def _warp_exposure(self, bots: list[dict], prices: dict) -> dict | None:
+        """Open WARP risk from the stored ladder and the live row. Missing data is None, not zero."""
+        if not bots:
+            zero = Decimal("0")
+            return {"stop": zero, "pending": zero, "owned": zero, "committed": zero, "book": ()}
+        by_client = {
+            str(row.get("clientId")): row
+            for row in self.last_positions
+            if isinstance(row, dict) and row.get("clientId")
+        }
+        stop = pending = owned = committed = Decimal("0")
+        book: list[tuple[Decimal, Decimal]] = []
+        for bot in bots:
+            raw = bot.get("ladder")
+            if not raw:
+                return None
+            try:
+                stored = json.loads(raw)
+                stored_stop = Decimal(str(stored["stop_loss"]))
+                stored_commit = Decimal(str(stored["commitment"]))
+                stop_price = Decimal(str(stored["stop_price"]))
+            except (KeyError, TypeError, ValueError, ArithmeticError):
+                return None
+            row = by_client.get(str(bot.get("client_id") or ""))
+            if row is None:
+                return None
+            try:
+                pending += unfilled_quote(row, self.cfg.fee_rate)
+                qty = net_base_qty(row)
+                base = pair_symbols(row).get("base")
+            except (IntegrationError, ValueError):
+                return None
+            deal_stop = stored_stop
+            if qty > 0:
+                price = prices.get(f"{base}USDT") if base else None
+                if price is None or price <= 0:
+                    return None
+                owned += qty * price
+                if row.get("totalEntryCost") is None or row.get("totalEntryAmount") in (None, "", "0", 0):
+                    return None
+                try:
+                    filled_cost = positive(row["totalEntryCost"], "entry cost")
+                    fill = stop_price * (Decimal("1") - self.cfg.stop_slippage)
+                except (ValueError, ArithmeticError):
+                    return None
+                if fill <= 0:
+                    return None
+                deal_stop = max(stored_stop, max(Decimal("0"), filled_cost - qty * fill))
+            stop += deal_stop
+            committed += stored_commit
+            book.append((stored_commit, deal_stop))
+        return {"stop": stop, "pending": pending, "owned": owned, "committed": committed, "book": tuple(book)}
+
+    def _record_risk_decision(self, plan, account, book, now: datetime) -> None:
+        evidence = self.evidence.get(plan.symbol)
+        as_of = "none"
+        if evidence is not None and evidence.as_of.tzinfo is not None:
+            as_of = evidence.as_of.astimezone(timezone.utc).isoformat()
+        signal_id = f"{plan.symbol}|{as_of}|{self.screener_fetched_at or 'engine'}"
+        fetched = account.fetched_at.isoformat() if account.fetched_at.tzinfo is not None else "naive"
+        digest = hashlib.sha256(
+            f"{account.code}|{account.free_usdt}|{account.used_usdt}|{fetched}".encode()
+        ).hexdigest()
+        ladder = book.ladder
+        nav = book.nav if book.nav else Decimal("0")
+        stop = ladder.stop_loss if ladder is not None else Decimal("0")
+        prior = getattr(self, "_last_exposure", None)
+        open_after = stop + (prior["stop"] if prior else Decimal("0"))
+        self.journal.record_risk_decision(
+            {
+                "recorded_at": now.astimezone(timezone.utc).isoformat(),
+                "signal_id": signal_id,
+                "risk_decision_id": secrets.token_hex(8),
+                "account_hash": digest,
+                "nav": format(nav, "f"),
+                "free_usdt": format(account.free_usdt, "f"),
+                "reserved_so": "0" if ladder is None else format(max(Decimal("0"), ladder.commitment - ladder.base), "f"),
+                "commitment": "0" if ladder is None else format(ladder.commitment, "f"),
+                "ladder": "" if ladder is None else format(ladder.commitment, "f"),
+                "stop_usdt": format(stop, "f"),
+                "stop_pct": "0" if nav <= 0 else format(stop / nav, "f"),
+                "open_stop_after": format(open_after, "f"),
+                "decision": book.decision,
+                "reasons": json.dumps(list(book.reasons)),
+            }
         )
 
     def _read_non_warp_future_so(self) -> Decimal | None:
