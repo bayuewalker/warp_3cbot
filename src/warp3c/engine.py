@@ -36,7 +36,7 @@ from .market import MarketData, MarketDataError
 from .models import Signal
 from .ownership import warp_name
 from .qualify import qualify
-from .risk import GlobalRisk, pair_symbols
+from .risk import GlobalRisk, is_warp_strategy, pair_symbols
 from .screener import ScreenerError, ScreenerFilters, select_symbols
 from .state import OrderJournal
 from .telemetry import log_event
@@ -332,6 +332,8 @@ class Engine:
             now=now,
             evidence=self.evidence,
             extra_commitments=self._untracked(positions),
+            journaled=self._journaled(positions),
+            shared_since=self._shared_since(now),
         )
         self.last_decision = decision
         if decision.equity is not None:
@@ -544,6 +546,36 @@ class Engine:
             raise IntegrationError("3Commas read-back does not match the exit toggles", uncertain=True)
         return result
 
+    def _journaled(self, positions) -> frozenset[str] | None:
+        """Live WARP client ids the journal knows. Only shared mode uses this."""
+        if not self.cfg.shared_account:
+            return None
+        return frozenset(
+            str(row["clientId"])
+            for row in positions
+            if is_warp_strategy(row)
+            and self.journal.submission_state(str(row["clientId"])) in {"confirmed", "unknown"}
+        )
+
+    def _shared_since(self, now: datetime) -> datetime | None:
+        """Start of the sleeve-equity series. Whole-account marks before it are never compared."""
+        key = "shared_account_since"
+        raw = self.journal.get_setting(key)
+        if not self.cfg.shared_account:
+            if raw:
+                self.journal.set_setting(key, "")
+            return None
+        if not raw:
+            self.journal.set_setting(key, now.astimezone(timezone.utc).isoformat())
+            return now
+        try:
+            since = datetime.fromisoformat(raw)
+        except ValueError as exc:
+            raise IntegrationError("Shared-account equity baseline unreadable; entries halted") from exc
+        if since.tzinfo is None:
+            raise IntegrationError("Shared-account equity baseline unreadable; entries halted")
+        return since
+
     def _untracked(self, positions) -> tuple[tuple[str, Decimal], ...]:
         live = {
             str(row.get("clientId"))
@@ -580,8 +612,11 @@ class Engine:
 
     def _needed_symbols(self, account, positions) -> set[str]:
         needed: set[str] = set()
+        shared = self.cfg.shared_account
         for row in positions:
             if not isinstance(row, dict):
+                continue
+            if shared and not is_warp_strategy(row):
                 continue
             pair = row.get("pair")
             if isinstance(pair, str) and pair.endswith("USDT"):
@@ -592,7 +627,7 @@ class Engine:
                 base = None
             if base:
                 needed.add(f"{base}USDT")
-        if account is not None:
+        if account is not None and not shared:
             for asset, balance in account.holdings().items():
                 if asset != "USDT" and balance.total > 0:
                     needed.add(f"{asset}USDT")
@@ -857,6 +892,8 @@ class Engine:
         try:
             rows = self.broker.list_dca_bots()
         except IntegrationError:
+            if self.cfg.shared_account:
+                raise
             return Decimal("0")
         total = Decimal("0")
         for row in rows:

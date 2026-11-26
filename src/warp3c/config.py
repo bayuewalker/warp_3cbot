@@ -15,6 +15,16 @@ def dec(name: str, fallback: str) -> Decimal:
     return result
 
 
+def strict_flag(name: str, fallback: str = "0") -> bool:
+    """Opt-in switch. Anything other than an explicit on or off value refuses to start."""
+    raw = os.getenv(name, fallback).strip().lower()
+    if raw in {"", "0", "false"}:
+        return False
+    if raw in {"1", "true"}:
+        return True
+    raise ValueError(f"{name}: expected 0, 1, true, or false")
+
+
 def _fraction(name: str, value: Decimal) -> None:
     if not value.is_finite() or not Decimal("0") < value <= Decimal("1"):
         raise ValueError(f"Invalid fraction: {name}")
@@ -147,6 +157,7 @@ class Settings:
     paper_min_days: int = 30
     paper_min_deals: int = 30
     virtual_drop: Decimal = Decimal("0.35")
+    shared_account: bool = False
 
     def __post_init__(self) -> None:
         if self.mode not in {"observe", "paper", "live"}:
@@ -159,6 +170,10 @@ class Settings:
             raise ValueError("Invalid strategy sleeve")
         if self.sleeve_usdt == 0 and self.sleeve_pct == 0:
             raise ValueError("Strategy sleeve is unset")
+        if type(self.shared_account) is not bool:
+            raise ValueError("WARP_SHARED_ACCOUNT must be a boolean")
+        if self.shared_account and not (self.sleeve_usdt.is_finite() and self.sleeve_usdt > 0):
+            raise ValueError("WARP_SHARED_ACCOUNT requires an explicit WARP_SLEEVE_USDT above zero")
         for name in (
             "allocation_ceiling",
             "per_deal_ceiling",
@@ -400,4 +415,5 @@ class Settings:
             paper_min_days=int(os.getenv("WARP_PAPER_MIN_DAYS", "30")),
             paper_min_deals=int(os.getenv("WARP_PAPER_MIN_DEALS", "30")),
             virtual_drop=dec("WARP_VIRTUAL_STOP", "0.35"),
+            shared_account=strict_flag("WARP_SHARED_ACCOUNT"),
         )

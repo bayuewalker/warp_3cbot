@@ -99,6 +99,7 @@ def public_config(cfg) -> dict:
     """Numbers and modes only. Secrets and webhook URLs stay out."""
     return {
         "mode": cfg.mode,
+        "shared_account": bool(cfg.shared_account),
         "discovery": cfg.discovery,
         "symbols": list(cfg.symbols),
         "discovery_allow": list(cfg.discovery_allow),
@@ -276,6 +277,7 @@ def publish(cfg, journal, engine) -> None:
     SNAPSHOT["/api/status"] = {
         "alive": True,
         "mode": cfg.mode,
+        "shared_account": bool(cfg.shared_account),
         "reason": status.reason,
         "market_data_fresh": status.market_data_fresh,
         "dependencies_healthy": status.dependencies_healthy,

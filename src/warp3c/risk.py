@@ -64,9 +64,29 @@ def net_base_qty(strategy: dict) -> Decimal:
     return entry - exited
 
 
+def is_warp_strategy(strategy: dict) -> bool:
+    return (
+        isinstance(strategy, dict)
+        and strategy.get("createdBy") == "open_api"
+        and str(strategy.get("clientId") or "").startswith("warp3c-")
+    )
+
+
 def managed_strategies(
-    raw: list[dict], profile_code: str, *, demo: bool | None = None, exchange_code: str | None = None
+    raw: list[dict],
+    profile_code: str,
+    *,
+    demo: bool | None = None,
+    exchange_code: str | None = None,
+    shared: bool = False,
+    journaled: frozenset[str] | None = None,
 ) -> list[dict]:
+    """WARP's own strategies on the profile.
+
+    Default: any other strategy on the profile is an error. Shared mode skips
+    strategies WARP did not create, without reading further into them, and
+    requires every WARP-looking strategy to be in the WARP journal.
+    """
     result = []
     for strategy in raw:
         profiles = strategy.get("profileStrategies")
@@ -75,8 +95,12 @@ def managed_strategies(
         owned = [p for p in profiles if isinstance(p, dict) and p.get("profile", {}).get("code") == profile_code]
         if not owned:
             continue
-        if strategy.get("createdBy") != "open_api" or not str(strategy.get("clientId") or "").startswith("warp3c-"):
+        if not is_warp_strategy(strategy):
+            if shared:
+                continue
             raise IntegrationError("External strategy on dedicated account; require manual reconciliation")
+        if shared and (journaled is None or str(strategy["clientId"]) not in journaled):
+            raise IntegrationError("WARP strategy is not in the WARP journal; entries halted")
         code = _exchange(strategy).get("code")
         if code is None or (exchange_code is not None and code != exchange_code):
             raise IntegrationError("Mixed or missing exchange profile: cannot size safely")
@@ -149,9 +173,22 @@ def signal_executable(signal: Signal, cfg: Settings, now: datetime) -> bool:
     return True
 
 
-def assert_balances_explained(account: Account, strategies: list[dict], prices: dict[str, Decimal]) -> None:
-    """Live spot balances must match visible strategy quantities. Demo ledgers do not."""
+def assert_balances_explained(
+    account: Account,
+    strategies: list[dict],
+    prices: dict[str, Decimal],
+    *,
+    shared: bool = False,
+) -> None:
+    """Live spot balances must match visible strategy quantities. Demo ledgers do not.
+
+    Shared mode checks WARP's own strategies only. Coins WARP did not buy are not
+    read, marked, or compared, so they can neither halt nor be attributed to WARP.
+    """
     if account.demo:
+        return
+    if shared:
+        _assert_shared_wallet(account, strategies, prices)
         return
     known: dict[str, Decimal] = {}
     for strategy in strategies:
@@ -179,9 +216,80 @@ def assert_balances_explained(account: Account, strategies: list[dict], prices: 
             raise IntegrationError("Open strategy is missing from wallet balances")
 
 
-def mark_to_market(
-    account: Account, strategies: list[dict], prices: dict[str, Decimal]
+def _assert_shared_wallet(account: Account, strategies: list[dict], prices: dict[str, Decimal]) -> None:
+    wallet = account.assets.get("USDT")
+    if wallet is None:
+        raise IntegrationError("Shared-account USDT balance missing; entries halted")
+    if wallet.free != account.free_usdt:
+        raise IntegrationError("Shared-account USDT balance is inconsistent; entries halted")
+    known: dict[str, Decimal] = {}
+    for strategy in strategies:
+        base = pair_symbols(strategy).get("base")
+        if not base:
+            raise IntegrationError("Strategy base asset missing")
+        known[str(base)] = known.get(str(base), Decimal("0")) + net_base_qty(strategy)
+    for asset, quantity in known.items():
+        if quantity <= 0:
+            continue
+        held = account.assets.get(asset)
+        if held is None:
+            raise IntegrationError("Open strategy is missing from wallet balances")
+        price = prices.get(f"{asset}USDT")
+        if price is None or price <= 0:
+            raise IntegrationError("Held asset has no USDT mark")
+        dust = max(Decimal("0.00000001"), Decimal("1") / price)
+        if quantity > held.total + dust:
+            raise IntegrationError("Strategy quantity exceeds wallet balance")
+
+
+def _net_cost(strategy: dict) -> Decimal:
+    try:
+        return positive(strategy.get("totalEntryCost"), "entry cost") - positive(
+            strategy.get("totalExitCost"), "exit cost"
+        )
+    except ValueError as exc:
+        raise IntegrationError("Strategy cost basis missing") from exc
+
+
+def warp_sleeve_equity(
+    strategies: list[dict], prices: dict[str, Decimal], sleeve_usdt: Decimal
 ) -> tuple[Decimal, bool]:
+    """Sleeve plus open P&L on WARP's own strategies. Never reads the wallet.
+
+    Realized results of strategies that left the live list are not in this number.
+    """
+    equity = sleeve_usdt
+    for strategy in strategies:
+        try:
+            cost = _net_cost(strategy)
+            quantity = net_base_qty(strategy)
+            base = pair_symbols(strategy).get("base")
+        except (IntegrationError, ValueError):
+            return Decimal("0"), False
+        price = prices.get(f"{base}USDT") if base else None
+        if price is None or price <= 0:
+            return Decimal("0"), False
+        last = strategy.get("lastPrice")
+        if last is not None:
+            try:
+                mark = positive(last, "broker mark", allow_zero=False)
+            except ValueError:
+                return Decimal("0"), False
+            if abs(mark - price) / price > Decimal("0.02"):
+                return Decimal("0"), False
+        equity += quantity * price - max(cost, Decimal("0"))
+    return equity, equity > 0
+
+
+def mark_to_market(
+    account: Account,
+    strategies: list[dict],
+    prices: dict[str, Decimal],
+    *,
+    sleeve_usdt: Decimal | None = None,
+) -> tuple[Decimal, bool]:
+    if sleeve_usdt is not None:
+        return warp_sleeve_equity(strategies, prices, sleeve_usdt)
     if not account.demo:
         equity = Decimal("0")
         for asset, balance in account.holdings().items():
@@ -254,11 +362,19 @@ class GlobalRisk:
         now: datetime | None = None,
         evidence: dict[str, MarketEvidence] | None = None,
         extra_commitments: tuple[tuple[str, Decimal], ...] = (),
+        journaled: frozenset[str] | None = None,
+        shared_since: datetime | None = None,
     ) -> RiskDecision:
         moment = now or datetime.now(timezone.utc)
+        shared = self.cfg.shared_account
         self._require_fresh(account, moment)
         active = managed_strategies(
-            positions, account.code, demo=account.demo, exchange_code=self.cfg.exchange_code
+            positions,
+            account.code,
+            demo=account.demo,
+            exchange_code=self.cfg.exchange_code,
+            shared=shared,
+            journaled=journaled,
         )
         active_names = {str(strategy.get("pair") or "") for strategy in active}
         extra = tuple(
@@ -268,13 +384,22 @@ class GlobalRisk:
         )
         if len(active) + len(extra) > self.cfg.max_positions:
             raise IntegrationError("Active position count already exceeds configured limit")
-        assert_balances_explained(account, active, prices)
-        equity, reliable = mark_to_market(account, active, prices)
+        assert_balances_explained(account, active, prices, shared=shared)
+        if shared:
+            if shared_since is None:
+                raise IntegrationError("Shared-account equity baseline missing; entries halted")
+            # Marks taken on a whole-account basis must never be compared with sleeve equity.
+            marks = [mark for mark in marks if mark.marked_at >= shared_since]
+            equity, reliable = mark_to_market(account, active, prices, sleeve_usdt=self.cfg.sleeve_usdt)
+        else:
+            equity, reliable = mark_to_market(account, active, prices)
         reason = circuit_reason(marks, equity, reliable, self.cfg, moment)
         if reason or not reliable or equity is None:
             return RiskDecision([], False, reason or "mtm_unreliable", equity if reliable else None, reliable)
         if _abnormal_volatility(active, evidence or {}, self.cfg.max_volatility):
             return RiskDecision([], False, "abnormal_volatility", equity, True)
+        if shared and account.free_usdt < self._sleeve_cash_needed(active):
+            return RiskDecision([], False, "insufficient_free_usdt", equity, True)
         orders = self.plan(
             account,
             positions,
@@ -282,8 +407,14 @@ class GlobalRisk:
             equity=equity,
             now=moment,
             extra_commitments=extra,
+            journaled=journaled,
         )
         return RiskDecision(orders, True, "ok", equity, True)
+
+    def _sleeve_cash_needed(self, active: list[dict]) -> Decimal:
+        """Free USDT WARP still needs to fund the rest of its sleeve."""
+        invested = sum((max(_net_cost(strategy), Decimal("0")) for strategy in active), Decimal("0"))
+        return max(Decimal("0"), self.cfg.sleeve_usdt - invested)
 
     def plan(
         self,
@@ -294,10 +425,16 @@ class GlobalRisk:
         equity: Decimal,
         now: datetime | None = None,
         extra_commitments: tuple[tuple[str, Decimal], ...] = (),
+        journaled: frozenset[str] | None = None,
     ) -> list[PlannedOrder]:
         moment = now or datetime.now(timezone.utc)
         active = managed_strategies(
-            positions, account.code, demo=account.demo, exchange_code=self.cfg.exchange_code
+            positions,
+            account.code,
+            demo=account.demo,
+            exchange_code=self.cfg.exchange_code,
+            shared=self.cfg.shared_account,
+            journaled=journaled,
         )
         if equity <= 0:
             return []
