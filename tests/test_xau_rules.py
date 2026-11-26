@@ -23,7 +23,14 @@ from warp3c.xau.clock import ema_entry_open, market_closed, scalp_entry_open, sm
 from warp3c.xau.config import XauConfigError, XauSettings
 from warp3c.xau.engines.ema import _exhausted, ema_entry, ema_stop, evaluate_ema
 from warp3c.xau.engines.scalp import evaluate_scalp
-from warp3c.xau.engines.smc import build_setup, evaluate_smc, s3_signal, sl_price, targets
+from warp3c.xau.engines.smc import (
+    build_setup,
+    clean_session_sweep,
+    evaluate_smc,
+    s3_signal,
+    sl_price,
+    targets,
+)
 from warp3c.xau.execution import ExecutionDisabled, NullAdapter, OrderIntent
 from warp3c.xau.feeds import HttpFeeds, parse_binance, parse_bybit, parse_dxy, parse_okx, parse_spot
 from warp3c.xau.gate import GateContext, evaluate
@@ -272,6 +279,48 @@ class PricingTests(unittest.TestCase):
         )
         self.assertEqual(setup.grade, "A")
         self.assertEqual(setup.entry_type, "market")
+        self.assertTrue(setup.chase_ok)
+
+    def test_s1_13_clean_sweep_is_asia_pdl_or_london_and_not_assumed(self):
+        plain = build_setup(
+            model="S1", direction="long", entry_type="limit", entry=D("3565.40"), extreme=D("3560"),
+            atr_h1=D("12"), spread=D("0.30"), l1=D("3600"), dol_price=D("3620"),
+            ote=False, clean_sweep=False, vacuum=False, fresh_reversal=False,
+            bias="bullish", window="London KZ", valid_until=None, reason="plain",
+            poi_ok=True, liquidity_ok=True, trigger_ok=True, displacement_ok=True, risk_pct=D("0.40"),
+        )
+        self.assertEqual(plain.grade, "A")
+        asia = datetime(2026, 11, 25, 0, tzinfo=UTC)  # 07:00 WIB
+        london = datetime(2026, 11, 25, 7, tzinfo=UTC)  # 14:00 WIB
+        prior = datetime(2026, 11, 24, 5, tzinfo=UTC)
+        moment = datetime(2026, 11, 25, 8, tzinfo=UTC)  # 15:00 WIB, London KZ
+        bars = (
+            _bar(prior, "100", "110", "90", "100", "15m"),
+            _bar(asia, "101", "102", "100", "101", "15m"),
+            _bar(asia + timedelta(hours=1), "101", "102", "100.4", "101.2", "15m"),
+            _bar(london, "99", "100", "95", "98", "15m"),
+        )
+        self.assertTrue(clean_session_sweep(D("100"), "long", bars, moment, "London KZ"))
+        self.assertTrue(clean_session_sweep(D("90"), "long", bars, moment, "London KZ"))
+        self.assertFalse(clean_session_sweep(D("95"), "long", bars, moment, "London KZ"))
+        ny = datetime(2026, 11, 25, 14, tzinfo=UTC)  # 21:00 WIB
+        self.assertTrue(clean_session_sweep(D("95"), "long", bars, ny, "NY KZ"))
+        self.assertFalse(clean_session_sweep(D("80"), "long", bars, ny, "NY KZ"))
+
+    def test_c9_market_outside_the_poi_is_a_chase(self):
+        setup = build_setup(
+            model="S1", direction="long", entry_type="market", entry=D("3565.40"), extreme=D("3560"),
+            atr_h1=D("12"), spread=D("0.30"), l1=D("3600"), dol_price=D("3620"),
+            ote=False, clean_sweep=False, vacuum=False, fresh_reversal=False,
+            bias="bullish", window="London KZ", valid_until=None, reason="market",
+            poi_ok=True, liquidity_ok=True, trigger_ok=True, displacement_ok=True, risk_pct=D("0.40"),
+            inside_poi=False,
+        )
+        self.assertFalse(setup.chase_ok)
+        gated = evaluate(setup, _gate())
+        self.assertEqual(gated.failures, ("C9",))
+        self.assertEqual(gated.grade, "B")
+        self.assertFalse(gated.sent)
 
     def test_s2_positive_and_two_negatives(self):
         setup = build_setup(
@@ -294,6 +343,21 @@ class PricingTests(unittest.TestCase):
             fresh_reversal=False, aligned=False, bias_text="range", window="NY KZ",
             valid_until=None, risk_pct=D("0.40"), in_kz=False,
         ))
+
+
+def _wick_world(close="124", open_="122.4", high="125", low="121"):
+    """Three one-candle wick retests. The last one is the M10 confirmation."""
+    count = 19
+    ema50 = [D(100 + i) for i in range(count)]
+    ema20 = [ema50[i] - 1 if i < 12 else ema50[i] + 4 for i in range(count)]
+    bars = [_m15(i, 140, 141, 139, 140) for i in range(count)]
+    bars[13] = _m15(13, "119", "121", "118", "120")
+    bars[14] = _m15(14, "118.2", "120", "117.5", "119.2")
+    bars[15] = _m15(15, "120.5", "122", "120", "121")
+    bars[16] = _m15(16, "120.2", "122", "119.5", "121")
+    bars[17] = _m15(17, "122", "124", "122", "123")
+    bars[18] = _m15(18, open_, high, low, close)
+    return tuple(bars), ema20, ema50
 
 
 def _ema_world(confirm_close="128", confirm_open="124", confirm_high="130", confirm_low="123"):
@@ -361,13 +425,60 @@ class EmaTests(unittest.TestCase):
         )
         self.assertIsNone(setup)
 
-    def test_m12_chase_is_rejected(self):
-        bars, ema20, ema50 = _ema_world("137", "130", "140", "128")
+    def test_m6_m10_one_candle_wick_retest_confirms(self):
+        bars, ema20, ema50 = _wick_world()
+        setup = evaluate_ema(
+            bars, spread=D("0.30"), risk_pct=D("0.50"), window="London EMA", valid_until=None,
+            in_window=True, bias_text="bullish", ema20=ema20, ema50=ema50, atr=D("10"),
+        )
+        self.assertIsNotNone(setup)
+        self.assertEqual(setup.tags["retests"], [1, 1, 1])
+        self.assertTrue(setup.chase_ok)
+        gated = evaluate(setup, _gate(window_engine="EMA"))
+        self.assertNotIn("C9", gated.failures)
+        self.assertTrue(gated.sent)
+
+    def test_m10_wick_in_the_lower_half_does_not_confirm(self):
+        bars, ema20, ema50 = _wick_world(close="122.2", open_="122.0", high="125", low="121")
         setup = evaluate_ema(
             bars, spread=D("0.30"), risk_pct=D("0.50"), window="London EMA", valid_until=None,
             in_window=True, bias_text="bullish", ema20=ema20, ema50=ema50, atr=D("10"),
         )
         self.assertIsNone(setup)
+
+    def test_m2_stale_confirmation_is_not_reissued(self):
+        bars, ema20, ema50 = _ema_world()
+        bars = list(bars)
+        bars.append(_m15(len(bars), "128.2", "130", "128", "129"))
+        ema50 = list(ema50) + [D(100 + len(ema50))]
+        ema20 = list(ema20) + [ema50[-1] + 4]
+        setup = evaluate_ema(
+            tuple(bars), spread=D("0.30"), risk_pct=D("0.50"), window="London EMA", valid_until=None,
+            in_window=True, bias_text="bullish", ema20=ema20, ema50=ema50, atr=D("10"),
+        )
+        self.assertIsNone(setup)
+
+    def test_k3_confirmation_outside_the_window_is_rejected(self):
+        bars, ema20, ema50 = _ema_world()
+        common = dict(
+            spread=D("0.30"), risk_pct=D("0.50"), window="London EMA", valid_until=None,
+            in_window=True, bias_text="bullish", ema20=ema20, ema50=ema50, atr=D("10"),
+        )
+        late = bars[-1].open_time + timedelta(minutes=30)
+        self.assertIsNone(evaluate_ema(bars, window_start=late, **common))
+        self.assertIsNotNone(evaluate_ema(bars, window_start=bars[0].open_time, **common))
+
+    def test_m12_c9_chase_fails_the_gate(self):
+        bars, ema20, ema50 = _ema_world("137", "130", "140", "128")
+        setup = evaluate_ema(
+            bars, spread=D("0.30"), risk_pct=D("0.50"), window="London EMA", valid_until=None,
+            in_window=True, bias_text="bullish", ema20=ema20, ema50=ema50, atr=D("10"),
+        )
+        self.assertIsNotNone(setup)
+        self.assertFalse(setup.chase_ok)
+        gated = evaluate(setup, _gate(window_engine="EMA"))
+        self.assertIn("C9", gated.failures)
+        self.assertFalse(gated.sent)
 
     def test_m9_exhaustion_rejects(self):
         ema = [D(i * 2) for i in range(7)] + [D("12"), D("12.05"), D("12.1")]

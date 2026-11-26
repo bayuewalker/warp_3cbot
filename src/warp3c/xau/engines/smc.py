@@ -5,10 +5,12 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from ..candles import Bar
+from ..candles import Bar, is_current
+from ..clock import wib
 from ..gate import Setup
 from ..structure import (
     FVG,
+    asia_extreme,
     atr_last,
     dealing_range,
     displacement,
@@ -101,6 +103,7 @@ def build_setup(
     trigger_ok: bool,
     displacement_ok: bool,
     risk_pct: D,
+    inside_poi: bool = True,
 ) -> Setup | None:
     """Shared S1/S2 pricing. Returns None when the stop cap or the 2R gate fails."""
     sl = sl_price(extreme, atr_h1, spread, direction, entry)
@@ -141,7 +144,7 @@ def build_setup(
         liquidity_ok=liquidity_ok,
         trigger_ok=trigger_ok,
         displacement_ok=displacement_ok,
-        chase_ok=entry_type == "limit" or entry_type == "market",
+        chase_ok=entry_type == "limit" or (entry_type == "market" and inside_poi and rr1 >= D("2")),
         sl_ok=True,
         target_ok=True,
         spread=spread,
@@ -216,6 +219,7 @@ def evaluate_smc(
     risk_pct: D,
     in_kz: bool,
     s1_developing: bool = False,
+    window_start: datetime | None = None,
 ) -> Setup | None:
     """S1, else S2 when S1 is not developing. S3 is not produced."""
     if not in_kz or atr_h1 is None or atr_h1 <= 0:
@@ -230,7 +234,7 @@ def evaluate_smc(
     s1 = _s1(
         m15=m15, h1=h1, direction=direction, atr_h1=atr_h1, spread=spread, eq=eq,
         dol_price=external, fresh_reversal=fresh_reversal, bias_text=bias_text,
-        window=window, valid_until=valid_until, risk_pct=risk_pct,
+        window=window, valid_until=valid_until, risk_pct=risk_pct, window_start=window_start,
     )
     if s1 is not None:
         return s1
@@ -239,7 +243,7 @@ def evaluate_smc(
     return _s2(
         m15=m15, h1=h1, h4=h4, direction=direction, atr_h1=atr_h1, spread=spread, eq=eq,
         dol_price=external, fresh_reversal=fresh_reversal, bias_text=bias_text,
-        window=window, valid_until=valid_until, risk_pct=risk_pct,
+        window=window, valid_until=valid_until, risk_pct=risk_pct, window_start=window_start,
     )
 
 
@@ -286,6 +290,7 @@ def _s1(
     window: str,
     valid_until: datetime | None,
     risk_pct: D,
+    window_start: datetime | None = None,
 ) -> Setup | None:
     if dol_price is None or len(m15) < 5:
         return None
@@ -334,6 +339,10 @@ def _s1(
                 break
         if choch_at is None:
             continue
+        if window_start is not None and m15[sweep_at].open_time < window_start:
+            continue
+        if not is_current(choch_at, len(m15), m15[choch_at].open_time, window_start):
+            continue
         close = m15[choch_at].close
         zones = [zone for zone in fvgs(m15, atr_m15) if disp[0] - 1 <= zone.index <= disp[1]]
         chosen = _pick_fvg(zones, direction, poi[0], poi[1], close)
@@ -351,27 +360,72 @@ def _s1(
             if point.kind == ("high" if direction == "long" else "low")
         ]
         l1 = _l1(entry, direction, swing_prices, eq)
+        clean = clean_session_sweep(level, direction, m15, m15[choch_at].open_time, window)
+        ote = _ote(m15, disp, entry, direction)
         setup = build_setup(
             model="S1", direction=direction, entry_type=entry_type, entry=entry, extreme=extreme,
             atr_h1=atr_h1, spread=spread, l1=l1, dol_price=dol_price,
-            ote=_ote(m15, disp, entry, direction),
-            clean_sweep=True,
+            ote=ote,
+            clean_sweep=clean,
             vacuum=False,
             fresh_reversal=fresh_reversal,
             bias=bias_text, window=window, valid_until=valid_until,
             reason="S1 Judas sweep through a killzone POI",
             poi_ok=True, liquidity_ok=True, trigger_ok=True, displacement_ok=True,
             risk_pct=risk_pct,
+            inside_poi=market,
         )
         if setup is None:
             continue
-        setup.tags["vacuum"] = _vacuum(h1, direction, setup.tp1, setup.tp2)
-        if setup.tags["vacuum"] and not fresh_reversal:
-            setup.grade = "A+"
-            setup.confidence = 85
+        vacuum = _vacuum(h1, direction, setup.tp1, setup.tp2)
+        setup.tags["vacuum"] = vacuum
+        setup.tags["clean_sweep"] = clean
+        setup.grade = grade_for(
+            base="A", ote=ote, clean_sweep=clean, vacuum=vacuum, fresh_reversal=fresh_reversal,
+        )
+        setup.confidence = 85 if setup.grade == "A+" else 70
         setup.tags["poi"] = [str(poi[0]), str(poi[1])]
         return setup
     return None
+
+
+def clean_session_sweep(level: D, direction: str, m15: tuple[Bar, ...], moment: datetime, window: str) -> bool:
+    """S1.13. The swept level is the Asia extreme, PDL/PDH, or the London KZ extreme in NY."""
+    found: list[D] = []
+    asia = asia_extreme(m15, moment, direction)
+    if asia is not None:
+        found.append(asia)
+    prior = _prior_day_extreme(m15, moment, direction)
+    if prior is not None:
+        found.append(prior)
+    if window.startswith("NY"):
+        london = _minute_extreme(m15, moment, direction, 14 * 60, 17 * 60)
+        if london is not None:
+            found.append(london)
+    return any(abs(level - item) <= D("0.50") for item in found)
+
+
+def _prior_day_extreme(bars: tuple[Bar, ...], moment: datetime, direction: str) -> D | None:
+    day = wib(moment).date()
+    older = [bar for bar in bars if wib(bar.open_time).date() < day]
+    if not older:
+        return None
+    previous = max(wib(bar.open_time).date() for bar in older)
+    chosen = [bar for bar in older if wib(bar.open_time).date() == previous]
+    return min(bar.low for bar in chosen) if direction == "long" else max(bar.high for bar in chosen)
+
+
+def _minute_extreme(bars: tuple[Bar, ...], moment: datetime, direction: str, start: int, end: int) -> D | None:
+    day = wib(moment).date()
+    chosen = []
+    for bar in bars:
+        local = wib(bar.open_time)
+        minute = local.hour * 60 + local.minute
+        if local.date() == day and start <= minute < end:
+            chosen.append(bar)
+    if not chosen:
+        return None
+    return min(bar.low for bar in chosen) if direction == "long" else max(bar.high for bar in chosen)
 
 
 def _ote(bars: tuple[Bar, ...], disp: tuple[int, int], entry: D, direction: str) -> bool:
@@ -405,6 +459,7 @@ def _s2(
     window: str,
     valid_until: datetime | None,
     risk_pct: D,
+    window_start: datetime | None = None,
 ) -> Setup | None:
     """S2. Fresh H4 BOS, pullback to an H1/H4 FVG CE, retrace ≤ 80%, then an M15 micro CHoCH."""
     events = [event for event in structure_events(h4, 2) if event.kind == "bos"]
@@ -427,6 +482,8 @@ def _s2(
     zones += [zone for zone in fvgs(h4, atr_h4) if unmitigated(h4, zone)]
     price = m15[-1].close if m15 else None
     if price is None:
+        return None
+    if not is_current(len(m15) - 1, len(m15), m15[-1].open_time, window_start):
         return None
     touched = None
     for zone in zones:

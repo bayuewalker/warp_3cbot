@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
-from ..candles import Bar
+from ..candles import Bar, is_current
 from ..gate import Setup
 from ..structure import atr_last, ema_series, q_away, q_toward
 
@@ -52,6 +52,7 @@ def evaluate_ema(
     bias_text: str,
     swing_highs: list[D] | None = None,
     swing_lows: list[D] | None = None,
+    window_start: datetime | None = None,
     ema20: list[D | None] | None = None,
     ema50: list[D | None] | None = None,
     atr: D | None = None,
@@ -69,8 +70,8 @@ def evaluate_ema(
         atr = atr_last(bars)
     if atr is None or atr <= 0:
         return None
-    long = _walk(bars, ema20, ema50, atr, "long")
-    short = _walk(bars, ema20, ema50, atr, "short")
+    long = _walk(bars, ema20, ema50, atr, "long", window_start)
+    short = _walk(bars, ema20, ema50, atr, "short", window_start)
     chosen = long or short
     if chosen is None:
         return None
@@ -80,7 +81,7 @@ def evaluate_ema(
     )
 
 
-def _walk(bars: tuple[Bar, ...], ema20, ema50, atr: D, direction: str) -> dict | None:
+def _walk(bars: tuple[Bar, ...], ema20, ema50, atr: D, direction: str, window_start: datetime | None) -> dict | None:
     cross_at: int | None = None
     separated = False
     armed = False
@@ -148,19 +149,30 @@ def _walk(bars: tuple[Bar, ...], ema20, ema50, atr: D, direction: str) -> dict |
         if active is None:
             if not armed and (bar.low > e20 if direction == "long" else bar.high < e20):
                 armed = True
-            if armed and touched:
-                active = {"start": index, "low": bar.low, "high": bar.high}
-            continue
-        active["low"] = min(active["low"], bar.low)
-        active["high"] = max(active["high"], bar.high)
-        if not left:
-            continue
+            if not (armed and touched):
+                continue
+            active = {"start": index, "low": bar.low, "high": bar.high}
+            if not left:
+                continue
+        else:
+            active["low"] = min(active["low"], bar.low)
+            active["high"] = max(active["high"], bar.high)
+            if not left:
+                continue
         retests.append(_Retest(active["start"], index, active["low"], active["high"]))
         active = None
         armed = bar.low > e20 if direction == "long" else bar.high < e20
         if len(retests) == 3:
-            if not _confirmation(bar, e20, direction):
-                return None
+            current = is_current(index, len(bars), bar.open_time, window_start)
+            if not _confirmation(bar, e20, direction) or not current:
+                if current:
+                    return None
+                cross_at = None
+                separated = False
+                armed = False
+                active = None
+                retests = []
+                continue
             return {
                 "direction": direction,
                 "cross": cross_at,
@@ -207,8 +219,7 @@ def _to_setup(bars, found, atr, spread, risk_pct, window, valid_until, bias_text
     if _exhausted(bars, ema20, found, atr, direction):
         return None
     extension = (bar.close - e20) if direction == "long" else (e20 - bar.close)
-    if extension > atr:
-        return None
+    chase_ok = extension <= atr
     entry = ema_entry(bar.high if direction == "long" else bar.low, direction)
     retest = found["retests"][2]
     extreme = retest.low if direction == "long" else retest.high
@@ -253,7 +264,7 @@ def _to_setup(bars, found, atr, spread, risk_pct, window, valid_until, bias_text
         liquidity_ok=True,
         trigger_ok=True,
         displacement_ok=True,
-        chase_ok=True,
+        chase_ok=chase_ok,
         sl_ok=True,
         target_ok=True,
         spread=spread,

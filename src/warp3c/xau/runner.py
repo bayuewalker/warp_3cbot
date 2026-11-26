@@ -293,7 +293,7 @@ class XauRunner:
                 direction=direction, atr_h1=atr_last(bars.get("1h", ())), spread=spread,
                 fresh_reversal=_fresh(bars.get("4h", ()), bias(bars.get("1d", ())) if bars.get("1d") else "range"),
                 aligned=_aligned(bars), bias_text=bias_text, window=window.name, valid_until=valid,
-                risk_pct=risk, in_kz=True,
+                risk_pct=risk, in_kz=True, window_start=window.start_wib.astimezone(timezone.utc),
             )
         elif engine == "EMA" and ema_entry_open(now):
             risk = D("0.50")
@@ -303,6 +303,7 @@ class XauRunner:
                 bars.get("15m", ()), spread=spread, risk_pct=risk, window=window.name,
                 valid_until=valid, in_window=True, bias_text=bias_text,
                 swing_highs=highs, swing_lows=lows,
+                window_start=window.start_wib.astimezone(timezone.utc),
             )
         elif engine == "SCALP":
             if self.news.scalp_window_blocked(now):

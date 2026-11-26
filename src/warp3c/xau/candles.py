@@ -111,6 +111,15 @@ def _scheduled_close(left: datetime, right: datetime, step: timedelta) -> bool:
     return True
 
 
+def is_current(index: int, total: int, opened: datetime, window_start: datetime | None) -> bool:
+    """M2/M15 and S1. The signal bar is the one that just closed, inside this window."""
+    if total <= 0 or index != total - 1:
+        return False
+    if window_start is not None and opened < window_start:
+        return False
+    return True
+
+
 def shift(bars: tuple[Bar, ...] | list[Bar], basis: Decimal) -> tuple[Bar, ...]:
     """R0.3. Published and tracked prices are perp minus the basis."""
     if basis == 0:
