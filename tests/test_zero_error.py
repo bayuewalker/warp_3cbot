@@ -242,6 +242,33 @@ class ForwardTests(unittest.TestCase):
             self.assertEqual(calls["n"], 9)
             journal.close()
 
+    def test_hourly_retries_do_not_starve_a_later_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = OrderJournal(os.path.join(tmp, "warp.db"))
+            start = T0 - timedelta(hours=80)
+            for _ in range(7):
+                journal.record_verdict("OLDUSDT", "BUY", Decimal("0.8"), Decimal("100"), start)
+            journal.record_verdict("NEWUSDT", "BUY", Decimal("0.8"), Decimal("100"), start)
+            calls = {"n": 0, "new": 0}
+
+            def price_at(symbol, _moment):
+                calls["n"] += 1
+                if symbol == "NEWUSDT":
+                    calls["new"] += 1
+                    return Decimal("110")
+                return None
+
+            evaluate_due(journal, price_at, T0, limit=20)
+            self.assertEqual(calls["new"], 0)
+            evaluate_due(journal, price_at, T0 + timedelta(hours=1), limit=20)
+            new = next(row for row in journal.verdict_rows() if row["symbol"] == "NEWUSDT")
+            self.assertEqual(calls["new"], 3)
+            self.assertIsNotNone(new["move_4h"])
+            self.assertIsNotNone(new["move_24h"])
+            self.assertIsNotNone(new["move_72h"])
+            self.assertLess(calls["n"], 24 * 20)
+            journal.close()
+
     def test_retry_after_backoff_stays_inside_the_lookup_cap(self):
         with tempfile.TemporaryDirectory() as tmp:
             journal = OrderJournal(os.path.join(tmp, "warp.db"))
