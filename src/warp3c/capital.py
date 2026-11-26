@@ -36,6 +36,7 @@ class Policy:
     stop_slippage: Decimal = Decimal("0.005")
     stress_shock: Decimal = Decimal("0.30")
     stress_slippage: Decimal = Decimal("0.01")
+    stress_gap_share: Decimal = Decimal("0.50")
     stress_cap: Decimal = Decimal("0.08")
     corr_min: Decimal = Decimal("0.85")
     max_alts: int = 2
@@ -73,6 +74,7 @@ class Policy:
             stop_slippage=cfg.stop_slippage,
             stress_shock=cfg.stress_shock,
             stress_slippage=cfg.stress_slippage,
+            stress_gap_share=cfg.stress_gap_share,
             stress_cap=cfg.stress_cap,
             corr_min=cfg.corr_min,
             max_alts=cfg.max_alts,
@@ -183,6 +185,30 @@ def step_pct(atr_1h_pct: Decimal | None, policy: Policy) -> Decimal:
     return min(policy.step_max, max(policy.step_min, raw))
 
 
+def constant_step_levels(price: Decimal, step: Decimal, safety_orders: int) -> tuple[Decimal, ...]:
+    """Safety prices at a constant step. Index 1 is the first safety order."""
+    return tuple(price * (Decimal("1") - step * Decimal(index)) for index in range(1, safety_orders + 1))
+
+
+def broker_safety_levels(
+    price: Decimal, step: Decimal, multiplier: Decimal, safety_orders: int
+) -> tuple[Decimal, ...]:
+    """Cumulative extra-order spacing.
+
+    extraOrderDeviationMultiplier scales each successive gap. At 1 the gaps stay
+    equal to ``step``, which is the ladder ``build_ladder`` prices. Field meaning:
+    docs/risk/TRADEBOOK_MAPPING.md.
+    """
+    levels: list[Decimal] = []
+    gap = step
+    cumulative = Decimal("0")
+    for _ in range(safety_orders):
+        cumulative += gap
+        levels.append(price * (Decimal("1") - cumulative))
+        gap *= multiplier
+    return tuple(levels)
+
+
 def take_profit_floor(policy: Policy) -> Decimal:
     round_trip = (policy.fee_rate * 2) + policy.slippage_rate
     return max(policy.tp_min, policy.tp_fee_multiple * round_trip)
@@ -216,8 +242,7 @@ def build_ladder(
         orders.append(base * (scale ** (index - 1)))
     buys: list[Decimal] = []
     coins = base / price
-    for index in range(1, safety_orders + 1):
-        level = price * (Decimal("1") - step * index)
+    for index, level in enumerate(constant_step_levels(price, step, safety_orders), start=1):
         if level <= 0:
             return None
         buys.append(level)
@@ -321,10 +346,12 @@ def search_ladder(
                     continue
                 if open_stop_risk + ladder.stop_loss > policy.aggregate_stop_risk * nav:
                     continue
+                deal = (ladder.commitment, ladder.stop_loss)
                 if open_book:
-                    stressed = scenario_stress([*open_book, (ladder.commitment, ladder.stop_loss)], policy)
+                    stressed = portfolio_stress([*open_book, deal], policy)
                 else:
-                    stressed = stress_loss([open_commitment, ladder.commitment], policy)
+                    flat = [ladder.commitment] if open_commitment <= 0 else [open_commitment, ladder.commitment]
+                    stressed = portfolio_stress([deal], policy, flat_commitments=flat)
                 if stressed > policy.stress_cap * nav:
                     continue
                 if ladder.take_profit < take_profit_floor(policy):
@@ -349,23 +376,41 @@ def scenario_stress(
     """Worst of 10/20/30/40% moves, all deals together.
 
     Each deal is (commitment, stop_loss). A shock inside the stop is the shocked
-    loss plus slippage. Past the stop, the loss is the stop plus slippage on the
-    commitment: the stop does not fill until price is worse than the trigger.
-    Slippage is WARP_STRESS_SLIPPAGE (default 1%, the top of the 0.3–1% band).
+    loss plus slippage. Past the stop, the loss is the stop plus
+    commitment * max(stress_slippage, gap_fraction). gap_fraction is
+    (shock - stop/commitment) * WARP_STRESS_GAP_SHARE. The stop does not fill
+    until price is worse than the trigger (tradebook §7.2). The result is never
+    below stop + commitment * stress_slippage.
     """
     shocks = (Decimal("0.10"), Decimal("0.20"), Decimal("0.30"), Decimal("0.40"))
+    share = policy.stress_gap_share
     worst = Decimal("0")
     for shock in shocks:
         total = Decimal("0")
         for commitment, stop in deals:
             shocked = commitment * shock
-            if shocked <= stop:
+            if shocked <= stop or commitment <= 0:
                 total += shocked + commitment * policy.stress_slippage
             else:
-                total += stop + commitment * policy.stress_slippage
+                gap_fraction = (shock - (stop / commitment)) * share
+                slip = max(policy.stress_slippage, gap_fraction)
+                total += stop + commitment * slip
         if total > worst:
             worst = total
     return worst
+
+
+def portfolio_stress(
+    deals: list[tuple[Decimal, Decimal]],
+    policy: Policy,
+    *,
+    flat_commitments: list[Decimal] | None = None,
+) -> Decimal:
+    """Gap-aware scenario. A single deal also keeps the flat shock when that is larger."""
+    scenario = scenario_stress(deals, policy)
+    if flat_commitments is None:
+        return scenario
+    return max(scenario, stress_loss(flat_commitments, policy))
 
 
 def gap_through_stop(stop_price: Decimal, fill_price: Decimal) -> Decimal:
@@ -782,6 +827,12 @@ def apply_ladder(payload: dict, ladder: Ladder, exits: Exits | None = None) -> d
     updated["extraOrderCount"] = ladder.safety_orders + 1
     updated["extraOrderDeviation"] = ladder.step
     updated["extraOrderVolumeMultiplier"] = ladder.scale
+    # Constant step. A multiplier above 1 spaces live safety orders geometrically
+    # deeper than the ladder that was risk-checked. Position Averaging (false)
+    # repeats the base as SO1, which is the shape build_ladder uses.
+    # Field meanings: docs/risk/TRADEBOOK_MAPPING.md.
+    updated["extraOrderDeviationMultiplier"] = Decimal("1")
+    updated["applyDcaForFirstSafetyOrder"] = False
     if chosen.stop:
         # Anchor to the entry order so the broker stop is the price the model checked.
         updated["stopLoss"] = ladder.stop_fraction
@@ -855,6 +906,14 @@ def readback_ok(remote: dict, exits: Exits, ladder: Ladder | None = None) -> boo
                     return False
             except (ValueError, ArithmeticError):
                 return False
+    if "extraOrderDeviationMultiplier" in remote:
+        try:
+            if Decimal(str(remote["extraOrderDeviationMultiplier"])) != Decimal("1"):
+                return False
+        except (ValueError, ArithmeticError):
+            return False
+    if "applyDcaForFirstSafetyOrder" in remote and remote["applyDcaForFirstSafetyOrder"] is not False:
+        return False
     return True
 
 

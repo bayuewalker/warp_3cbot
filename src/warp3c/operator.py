@@ -150,17 +150,48 @@ def public_config(cfg) -> dict:
 def _provider_health(cfg, engine) -> dict:
     analyst = getattr(engine, "analyst", None)
     if analyst is not None and hasattr(analyst, "health"):
-        return analyst.health()
-    blank = {
-        "configured": False,
-        "healthy": False,
-        "state": "unconfigured",
-        "detail": "",
-        "until": None,
+        health = analyst.health()
+    else:
+        blank = {
+            "configured": False,
+            "healthy": False,
+            "state": "unconfigured",
+            "detail": "",
+            "until": None,
+        }
+        health = {
+            "nvidia": {**blank, "model": cfg.nvidia_model},
+            "openrouter": {**blank, "model": cfg.openrouter_model},
+        }
+    budget = getattr(getattr(analyst, "budget", None), "snapshot", None)
+    health["budget"] = budget() if budget is not None else {
+        "day": datetime.now(timezone.utc).date().isoformat(),
+        "calls_used": 0,
+        "calls_cap": cfg.llm_daily_calls,
+        "usd_used": "0",
+        "usd_cap": _text(cfg.llm_daily_usd),
     }
+    return health
+
+
+def _research_view(engine) -> dict:
+    view = getattr(engine, "research_status", None)
+    if not isinstance(view, dict):
+        return {
+            "state": "ok",
+            "error_code": None,
+            "last_ok_at": None,
+            "last_failed_at": None,
+            "next_attempt_at": None,
+            "consecutive_failures": 0,
+        }
     return {
-        "nvidia": {**blank, "model": cfg.nvidia_model},
-        "openrouter": {**blank, "model": cfg.openrouter_model},
+        "state": view.get("state") or "ok",
+        "error_code": view.get("error_code"),
+        "last_ok_at": view.get("last_ok_at"),
+        "last_failed_at": view.get("last_failed_at"),
+        "next_attempt_at": view.get("next_attempt_at"),
+        "consecutive_failures": view.get("consecutive_failures") or 0,
     }
 
 
@@ -255,6 +286,8 @@ def publish(cfg, journal, engine) -> None:
         })
     current_cards = [card for card in cards if card["fresh"]]
     discovered = list(getattr(engine, "universe", ()))
+    research = _research_view(engine)
+    research_failing = research["state"] in {"failed", "backoff", "capped"}
     pipeline = {
         "screening": {
             "state": "ready" if discovered and status.market_data_fresh else "blocked",
@@ -262,7 +295,11 @@ def publish(cfg, journal, engine) -> None:
             "count": len(discovered),
         },
         "analysis": {
-            "state": "ready" if current_cards and status.dependencies_healthy else "pending",
+            "state": (
+                "blocked" if research_failing
+                else "ready" if current_cards and status.dependencies_healthy
+                else "pending"
+            ),
             "count": len(current_cards),
             "mode": cfg.analysis,
         },
@@ -290,6 +327,7 @@ def publish(cfg, journal, engine) -> None:
         "pnl_today": _pnl_today(journal),
         "equity": None if decision is None or decision.equity is None else _text(decision.equity),
         "providers": _provider_health(cfg, engine),
+        "research": research,
         "pipeline": pipeline,
         "published_at": now.isoformat(),
         "risk_decisions": journal.recent_risk_decisions(20),

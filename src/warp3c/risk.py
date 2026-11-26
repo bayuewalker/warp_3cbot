@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from .config import Settings
 from .market import quantize_quote
@@ -17,6 +17,7 @@ from .models import (
     positive,
 )
 from .regime import profile_for
+from .telemetry import log_event
 from .threecommas import IntegrationError
 
 ACTIVE = {"new", "entered", "cancelling", "panic_exiting"}
@@ -80,6 +81,8 @@ def managed_strategies(
     exchange_code: str | None = None,
     shared: bool = False,
     journaled: frozenset[str] | None = None,
+    dust_marks: dict[str, tuple[Decimal, Decimal]] | None = None,
+    dust_usdt: Decimal | None = None,
 ) -> list[dict]:
     """WARP's own strategies on the profile.
 
@@ -118,7 +121,8 @@ def managed_strategies(
             result.append(strategy)
             continue
         if status in TERMINAL:
-            if net_base_qty(strategy) > 0:
+            residual = held_base_residual(strategy)
+            if residual > 0 and not _dust_within_cap(strategy, residual, dust_marks, dust_usdt):
                 raise IntegrationError("Terminal strategy still holds base asset")
             continue
         raise IntegrationError("Strategy status missing or unknown")
@@ -251,13 +255,98 @@ def _net_cost(strategy: dict) -> Decimal:
         raise IntegrationError("Strategy cost basis missing") from exc
 
 
-def realized_pnl(strategy: dict) -> tuple[Decimal, Decimal]:
-    """Quote P&L of a closed strategy, and the fee that was subtracted.
+def _optional_base_commission(strategy: dict, key: str) -> Decimal:
+    if strategy.get(key) in (None, ""):
+        return Decimal("0")
+    try:
+        return positive(strategy[key], key)
+    except ValueError as exc:
+        raise IntegrationError("Realized P&L unreadable; entries halted") from exc
+
+
+def held_base_residual(strategy: dict) -> Decimal:
+    """Base still held after the entry base commission.
+
+    residual = totalEntryAmount - totalEntryCommission - totalExitAmount.
+    totalEntryCommission is the base-asset commission. Field meaning:
+    docs/risk/TRADEBOOK_MAPPING.md.
+    """
+    if strategy.get("totalEntryAmount") is None or strategy.get("totalExitAmount") is None:
+        raise IntegrationError("Strategy base quantity missing")
+    try:
+        entry = positive(strategy["totalEntryAmount"], "entry amount")
+        exited = positive(strategy["totalExitAmount"], "exit amount")
+    except ValueError as exc:
+        raise IntegrationError("Realized P&L unreadable; entries halted") from exc
+    if exited > entry:
+        raise IntegrationError("Exit amount exceeds entry amount")
+    residual = entry - _optional_base_commission(strategy, "totalEntryCommission") - exited
+    if residual < 0:
+        raise IntegrationError("Realized P&L unreadable; entries halted")
+    return residual
+
+
+def _quote_commission(strategy: dict) -> Decimal:
+    """Quote commission. Both cost fields are required. totalFee is a legacy fallback.
+
+    totalEntryCommissionCost and totalExitCommissionCost are the quote commission
+    sums. Field meaning: docs/risk/TRADEBOOK_MAPPING.md. totalFee is UNVERIFIED:
+    it is not a Strategy schema field.
+    """
+    entry_key = "totalEntryCommissionCost"
+    exit_key = "totalExitCommissionCost"
+    entry_present = strategy.get(entry_key) not in (None, "")
+    exit_present = strategy.get(exit_key) not in (None, "")
+    try:
+        if entry_present and exit_present:
+            return positive(strategy[entry_key], "entry commission") + positive(
+                strategy[exit_key], "exit commission"
+            )
+        if entry_present or exit_present:
+            raise IntegrationError("Realized P&L unreadable; entries halted")
+        if strategy.get("totalFee") not in (None, ""):
+            return positive(strategy["totalFee"], "fee")
+    except ValueError as exc:
+        raise IntegrationError("Realized P&L unreadable; entries halted") from exc
+    raise IntegrationError("Realized P&L unreadable; entries halted")
+
+
+def _dust_within_cap(
+    strategy: dict,
+    residual: Decimal,
+    dust_marks: dict[str, tuple[Decimal, Decimal]] | None,
+    dust_usdt: Decimal | None,
+) -> bool:
+    if dust_marks is None or dust_usdt is None or dust_usdt <= 0 or residual <= 0:
+        return False
+    pair = str(strategy.get("pair") or "")
+    found = dust_marks.get(pair)
+    if found is None:
+        base = pair_symbols(strategy).get("base")
+        if base:
+            found = dust_marks.get(f"{base}USDT")
+    if found is None:
+        return False
+    mark, min_notional = found
+    if mark <= 0 or min_notional <= 0:
+        return False
+    return residual * mark < min(min_notional, dust_usdt)
+
+
+def realized_pnl(
+    strategy: dict,
+    *,
+    mark: Decimal | None = None,
+    min_notional: Decimal | None = None,
+    dust_usdt: Decimal = Decimal("1"),
+) -> tuple[Decimal, Decimal]:
+    """Quote P&L of a closed strategy, and the quote fee that was subtracted.
 
     totalEntryCost and totalExitCost are the quote fields mark-to-market already uses.
-    totalFee is subtracted when the row carries it. A missing cost, an unparseable fee,
-    or base still held is an error: callers must halt, not book zero.
-    Whether the cost fields are themselves net of fees is not stated by the payload.
+    Quote commission is totalEntryCommissionCost + totalExitCommissionCost. Both are
+    required. A missing cost, an unparseable fee, or base still held above dust is an
+    error: callers must halt, not book zero. Field meanings:
+    docs/risk/TRADEBOOK_MAPPING.md.
     """
     if not isinstance(strategy, dict):
         raise IntegrationError("Realized P&L unreadable; entries halted")
@@ -266,18 +355,48 @@ def realized_pnl(strategy: dict) -> tuple[Decimal, Decimal]:
     try:
         spent = positive(strategy["totalEntryCost"], "entry cost")
         received = positive(strategy["totalExitCost"], "exit cost")
-        still_held = net_base_qty(strategy)
+        fee = _quote_commission(strategy)
+        residual = held_base_residual(strategy)
     except (IntegrationError, ValueError) as exc:
         raise IntegrationError("Realized P&L unreadable; entries halted") from exc
-    if still_held > 0:
-        raise IntegrationError("Closed strategy still holds base; realized P&L withheld")
-    fee = Decimal("0")
-    if strategy.get("totalFee") not in (None, ""):
+    dust_value = Decimal("0")
+    if residual > 0:
+        fresh = (
+            mark is not None
+            and min_notional is not None
+            and mark.is_finite()
+            and min_notional.is_finite()
+            and mark > 0
+            and min_notional > 0
+            and dust_usdt.is_finite()
+            and dust_usdt > 0
+        )
+        if not fresh:
+            raise IntegrationError("Closed strategy still holds base; realized P&L withheld")
+        dust_value = residual * mark
+        if dust_value >= min(min_notional, dust_usdt):
+            raise IntegrationError("Closed strategy still holds base; realized P&L withheld")
+        log_event("dust_residual", qty=format(residual, "f"), value=format(dust_value, "f"))
+    pnl = received - spent - fee - dust_value
+    reported = strategy.get("totalProfitLoss")
+    if reported not in (None, ""):
         try:
-            fee = positive(strategy["totalFee"], "fee")
-        except ValueError as exc:
+            cross = Decimal(str(reported)) * Decimal("0.0001")
+        except (InvalidOperation, ValueError, ArithmeticError) as exc:
             raise IntegrationError("Realized P&L unreadable; entries halted") from exc
-    return received - spent - fee, fee
+        if not cross.is_finite():
+            raise IntegrationError("Realized P&L unreadable; entries halted")
+        tolerance = max(Decimal("0.05"), spent * Decimal("0.005"))
+        if abs(cross - pnl) > tolerance:
+            taken = min(pnl, cross)
+            log_event(
+                "pnl_crosscheck_mismatch",
+                computed=format(pnl, "f"),
+                reported=format(cross, "f"),
+                taken=format(taken, "f"),
+            )
+            pnl = taken
+    return pnl, fee
 
 
 def warp_sleeve_equity(
@@ -406,6 +525,7 @@ class GlobalRisk:
         realized_since: Decimal = Decimal("0"),
         day_start: Decimal | None = None,
         peak: tuple[datetime, Decimal] | None = None,
+        dust_marks: dict[str, tuple[Decimal, Decimal]] | None = None,
     ) -> RiskDecision:
         moment = now or datetime.now(timezone.utc)
         shared = self.cfg.shared_account
@@ -417,6 +537,8 @@ class GlobalRisk:
             exchange_code=self.cfg.exchange_code,
             shared=shared,
             journaled=journaled,
+            dust_marks=dust_marks,
+            dust_usdt=self.cfg.dust_usdt,
         )
         active_names = {str(strategy.get("pair") or "") for strategy in active}
         extra = tuple(
@@ -459,6 +581,7 @@ class GlobalRisk:
             now=moment,
             extra_commitments=extra,
             journaled=journaled,
+            dust_marks=dust_marks,
         )
         return RiskDecision(orders, True, "ok", equity, True)
 
@@ -477,6 +600,7 @@ class GlobalRisk:
         now: datetime | None = None,
         extra_commitments: tuple[tuple[str, Decimal], ...] = (),
         journaled: frozenset[str] | None = None,
+        dust_marks: dict[str, tuple[Decimal, Decimal]] | None = None,
     ) -> list[PlannedOrder]:
         moment = now or datetime.now(timezone.utc)
         active = managed_strategies(
@@ -486,6 +610,8 @@ class GlobalRisk:
             exchange_code=self.cfg.exchange_code,
             shared=self.cfg.shared_account,
             journaled=journaled,
+            dust_marks=dust_marks,
+            dust_usdt=self.cfg.dust_usdt,
         )
         if equity <= 0:
             return []

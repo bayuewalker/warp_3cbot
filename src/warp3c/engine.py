@@ -33,6 +33,7 @@ from .capital import (
 from .config import Settings
 from .forward import evaluate_due
 from .levels import derive_levels
+from .llm import warn_budget_short
 from .market import MarketData, MarketDataError
 from .models import Signal, positive
 from .ownership import warp_name
@@ -103,7 +104,18 @@ class Engine:
         self.market = market
         self.screener = screener
         self.analyst = analyst
+        if analyst is not None and hasattr(analyst, "bind_journal"):
+            analyst.bind_journal(journal)
+        warn_budget_short(cfg.research_seconds, cfg.llm_daily_calls)
         self.guard = GlobalRisk(cfg)
+        self.research_status = {
+            "state": "ok",
+            "error_code": None,
+            "last_ok_at": None,
+            "last_failed_at": None,
+            "next_attempt_at": None,
+            "consecutive_failures": 0,
+        }
         self.status = CycleStatus()
         self.universe = cfg.symbols
         self.evidence = {}
@@ -348,6 +360,7 @@ class Engine:
             realized_since=self._realized_since(since),
             day_start=day_start,
             peak=peak,
+            dust_marks=self._dust_marks(),
         )
         self.last_decision = decision
         if decision.equity is not None:
@@ -696,12 +709,36 @@ class Engine:
         client_id = str(bot.get("client_id") or "")
         if not client_id:
             raise IntegrationError("Realized P&L unreadable; entries halted")
-        amount, fee = realized_pnl(row)
         symbol = str(row.get("pair") or bot.get("symbol") or "")
+        mark, notional = self._mark_for_dust(symbol)
+        amount, fee = realized_pnl(
+            row, mark=mark, min_notional=notional, dust_usdt=self.cfg.dust_usdt
+        )
         try:
             self.journal.record_realized(client_id, symbol, datetime.now(timezone.utc), amount, fee)
         except ValueError as exc:
             raise IntegrationError("Realized P&L unreadable; entries halted") from exc
+
+    def _mark_for_dust(self, symbol: str) -> tuple[Decimal | None, Decimal | None]:
+        """Fresh public mark and minNotional from the cached scan. No network call."""
+        item = self.evidence.get(symbol)
+        if item is None or item.as_of.tzinfo is None:
+            return None, None
+        age = (datetime.now(timezone.utc) - item.as_of.astimezone(timezone.utc)).total_seconds()
+        if age < -60 or age > self.cfg.max_account_age:
+            return None, None
+        if not item.last_price.is_finite() or item.last_price <= 0:
+            return None, None
+        notional = item.min_notional if item.min_notional is not None and item.min_notional > 0 else None
+        return item.last_price, notional
+
+    def _dust_marks(self) -> dict[str, tuple[Decimal, Decimal]]:
+        marks: dict[str, tuple[Decimal, Decimal]] = {}
+        for symbol in self.evidence:
+            mark, notional = self._mark_for_dust(symbol)
+            if mark is not None and notional is not None:
+                marks[symbol] = (mark, notional)
+        return marks
 
     def _loss_context(self) -> dict:
         """Trade-level halts see the sleeve. Strict mode passes nothing, so approve() is unchanged."""
@@ -1136,7 +1173,8 @@ class Engine:
                 "open_stop_after": format(open_after, "f"),
                 "decision": book.decision,
                 "reasons": json.dumps(list(book.reasons)),
-            }
+            },
+            keep=self.cfg.risk_decisions_keep,
         )
 
     def _read_non_warp_future_so(self) -> Decimal | None:

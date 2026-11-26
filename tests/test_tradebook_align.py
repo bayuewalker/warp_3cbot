@@ -137,10 +137,11 @@ class TradebookAlignTests(unittest.TestCase):
         flat = stress_loss([one.commitment] * 3, chosen)
         priced = scenario_stress(deals, chosen)
         self.assertEqual(priced, scenario_stress(list(deals), chosen))
-        # Flat 30%+1% on 3x300 is 276.3, above the 96 cap, so three deals were unreachable.
-        # The stop-bounded grid on this ladder is under the cap. The 6.5% aggregate still binds.
+        # Flat 30%+1% on 3x300 is above the 96 cap. The gap-aware grid is too:
+        # a 40% shock past this stop prices three deals above 8% of E.
+        # The 6.5% aggregate still rejects a third deal when open stop is already there.
         self.assertGreater(flat, cap)
-        self.assertLess(priced, cap)
+        self.assertGreater(priced, cap)
         self.assertGreater(one.stop_loss * 3, Decimal("0.065") * nav)
         # Two deals already sit on the 6.5% aggregate, so a third cannot be resized in.
         third = fresh(

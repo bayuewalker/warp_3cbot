@@ -481,20 +481,38 @@ class OrderJournal:
             (*fields.values(), warp_id),
         )
 
-    def record_risk_decision(self, row: dict) -> None:
-        self.db.execute(
-            """
-            INSERT INTO risk_decisions(
-                recorded_at, signal_id, risk_decision_id, account_hash, nav, free_usdt,
-                reserved_so, commitment, ladder, stop_usdt, stop_pct, open_stop_after, decision, reasons
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                row["recorded_at"], row["signal_id"], row["risk_decision_id"], row["account_hash"],
-                row["nav"], row["free_usdt"], row["reserved_so"], row["commitment"], row["ladder"],
-                row["stop_usdt"], row["stop_pct"], row["open_stop_after"], row["decision"], row["reasons"],
-            ),
-        )
+    def record_risk_decision(self, row: dict, *, keep: int = 5000) -> None:
+        """Insert one decision and drop rows older than the newest ``keep``.
+
+        The delete runs in the same transaction as the insert. ``keep`` below 100 is refused.
+        """
+        if type(keep) is not int or keep < 100:
+            raise ValueError("Risk decision retention is below 100")
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            self.db.execute(
+                """
+                INSERT INTO risk_decisions(
+                    recorded_at, signal_id, risk_decision_id, account_hash, nav, free_usdt,
+                    reserved_so, commitment, ladder, stop_usdt, stop_pct, open_stop_after, decision, reasons
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    row["recorded_at"], row["signal_id"], row["risk_decision_id"], row["account_hash"],
+                    row["nav"], row["free_usdt"], row["reserved_so"], row["commitment"], row["ladder"],
+                    row["stop_usdt"], row["stop_pct"], row["open_stop_after"], row["decision"], row["reasons"],
+                ),
+            )
+            cutoff = self.db.execute(
+                "SELECT id FROM risk_decisions ORDER BY id DESC LIMIT 1 OFFSET ?",
+                (keep,),
+            ).fetchone()
+            if cutoff is not None:
+                self.db.execute("DELETE FROM risk_decisions WHERE id <= ?", (cutoff[0],))
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
 
     def recent_risk_decisions(self, limit: int = 20) -> list[dict]:
         rows = self.db.execute(
