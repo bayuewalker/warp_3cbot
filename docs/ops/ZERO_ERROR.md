@@ -19,7 +19,7 @@ The log has one `cycle_blocked` line per occurrence, with `mode`, `error_type`, 
 
 Research did not start because the remaining daily calls cannot cover one run (screen plus final when both providers are configured). The bot waits for the UTC day roll. This is a log line, not a Telegram alert, and it is not an `llm_cap` error.
 
-The call cap and the dollar cap are unchanged. The configured research interval is the fastest the bot will run. When fewer runs fit in the calls left today, the interval gets longer.
+The call cap and the dollar cap are unchanged. The configured research interval is the fastest the bot will run. When fewer runs fit in the calls left today, the interval gets longer. `next_attempt_at` is that paced time. A budget wait still shows the next UTC midnight, and a research error still shows its backoff.
 
 A restart inside the research interval does not start research again. The last start time is stored in the journal.
 
@@ -44,8 +44,8 @@ The live book is separate:
 
 ## forward_eval_failed
 
-Forward scoring runs on the scan clock, at most once per scan interval, with at most 20 price lookups per run. A lookup that fails is not repeated until the process starts again. The loop keeps running. The log is once per failure streak.
+Forward scoring runs on the scan clock, at most once per scan interval, with at most 20 price lookups per run. A lookup that fails waits 60 seconds, then 120, doubling up to one hour, and the retry counts against that same cap. The loop keeps running. The log is once per failure streak.
 
 ## Backtest window
 
-`WARP_BACKTEST_CANDLES` is optional. Unset means the current 120 closed 15-minute candles. An allowed opt-in is 120 through 1000. If that longer series is not available, the backtest result is `not_enough_candles`. The minimum-trade rule, stop, and target are unchanged. Do not set the variable until the fetch path is reviewed. The kline request limit is still the existing 120-candle scan.
+`WARP_BACKTEST_CANDLES` is optional and off by default. Unset means the current 120 closed 15-minute candles, requested as a single limit of 120. An allowed opt-in is 120 through 1000. The scan then requests that many closed candles (one extra raw bar so the forming candle does not shorten the series) and pages backward at the exchange cap of 1000. Regime and RSI still use the most recent 120 raw candles. If the longer series is not in hand, the backtest result is `not_enough_candles`. The minimum-trade rule, stop, and target are unchanged. Do not set the variable unless that longer window is what you want.
