@@ -183,9 +183,10 @@ def _positions(engine) -> list[dict]:
 
 def _pnl_today(journal) -> str | None:
     now = datetime.now(timezone.utc)
+    # Sleeve marks and whole-account marks are different series. Use whichever was written last.
     today = [
         mark
-        for mark in journal.equity_marks()
+        for mark in journal.equity_marks(scope=journal.latest_equity_scope())
         if mark.reliable and mark.marked_at.astimezone(timezone.utc).date() == now.date()
     ]
     if not today:

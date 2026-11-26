@@ -251,14 +251,49 @@ def _net_cost(strategy: dict) -> Decimal:
         raise IntegrationError("Strategy cost basis missing") from exc
 
 
-def warp_sleeve_equity(
-    strategies: list[dict], prices: dict[str, Decimal], sleeve_usdt: Decimal
-) -> tuple[Decimal, bool]:
-    """Sleeve plus open P&L on WARP's own strategies. Never reads the wallet.
+def realized_pnl(strategy: dict) -> tuple[Decimal, Decimal]:
+    """Quote P&L of a closed strategy, and the fee that was subtracted.
 
-    Realized results of strategies that left the live list are not in this number.
+    totalEntryCost and totalExitCost are the quote fields mark-to-market already uses.
+    totalFee is subtracted when the row carries it. A missing cost, an unparseable fee,
+    or base still held is an error: callers must halt, not book zero.
+    Whether the cost fields are themselves net of fees is not stated by the payload.
     """
-    equity = sleeve_usdt
+    if not isinstance(strategy, dict):
+        raise IntegrationError("Realized P&L unreadable; entries halted")
+    if strategy.get("totalEntryCost") is None or strategy.get("totalExitCost") is None:
+        raise IntegrationError("Realized P&L unreadable; entries halted")
+    try:
+        spent = positive(strategy["totalEntryCost"], "entry cost")
+        received = positive(strategy["totalExitCost"], "exit cost")
+        still_held = net_base_qty(strategy)
+    except (IntegrationError, ValueError) as exc:
+        raise IntegrationError("Realized P&L unreadable; entries halted") from exc
+    if still_held > 0:
+        raise IntegrationError("Closed strategy still holds base; realized P&L withheld")
+    fee = Decimal("0")
+    if strategy.get("totalFee") not in (None, ""):
+        try:
+            fee = positive(strategy["totalFee"], "fee")
+        except ValueError as exc:
+            raise IntegrationError("Realized P&L unreadable; entries halted") from exc
+    return received - spent - fee, fee
+
+
+def warp_sleeve_equity(
+    strategies: list[dict],
+    prices: dict[str, Decimal],
+    sleeve_usdt: Decimal,
+    *,
+    realized_since: Decimal = Decimal("0"),
+) -> tuple[Decimal, bool]:
+    """Sleeve, plus realized P&L booked since shared mode started, plus open P&L.
+
+    Never reads the wallet. A non-finite realized total is unreliable, not zero.
+    """
+    if not realized_since.is_finite():
+        return Decimal("0"), False
+    equity = sleeve_usdt + realized_since
     for strategy in strategies:
         try:
             cost = _net_cost(strategy)
@@ -287,9 +322,10 @@ def mark_to_market(
     prices: dict[str, Decimal],
     *,
     sleeve_usdt: Decimal | None = None,
+    realized_since: Decimal = Decimal("0"),
 ) -> tuple[Decimal, bool]:
     if sleeve_usdt is not None:
-        return warp_sleeve_equity(strategies, prices, sleeve_usdt)
+        return warp_sleeve_equity(strategies, prices, sleeve_usdt, realized_since=realized_since)
     if not account.demo:
         equity = Decimal("0")
         for asset, balance in account.holdings().items():
@@ -364,6 +400,9 @@ class GlobalRisk:
         extra_commitments: tuple[tuple[str, Decimal], ...] = (),
         journaled: frozenset[str] | None = None,
         shared_since: datetime | None = None,
+        realized_since: Decimal = Decimal("0"),
+        day_start: Decimal | None = None,
+        peak: tuple[datetime, Decimal] | None = None,
     ) -> RiskDecision:
         moment = now or datetime.now(timezone.utc)
         shared = self.cfg.shared_account
@@ -390,7 +429,16 @@ class GlobalRisk:
                 raise IntegrationError("Shared-account equity baseline missing; entries halted")
             # Marks taken on a whole-account basis must never be compared with sleeve equity.
             marks = [mark for mark in marks if mark.marked_at >= shared_since]
-            equity, reliable = mark_to_market(account, active, prices, sleeve_usdt=self.cfg.sleeve_usdt)
+            # Persisted anchors survive restart and a flag toggle. They are not reset here.
+            if peak is not None and peak[0].tzinfo is not None and peak[1].is_finite() and peak[1] > 0:
+                marks.append(EquityMark(peak[0], peak[1], True))
+            if day_start is not None and day_start.is_finite() and day_start > 0:
+                day_open = moment.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                if day_open >= shared_since:
+                    marks.append(EquityMark(day_open, day_start, True))
+            equity, reliable = mark_to_market(
+                account, active, prices, sleeve_usdt=self.cfg.sleeve_usdt, realized_since=realized_since
+            )
         else:
             equity, reliable = mark_to_market(account, active, prices)
         reason = circuit_reason(marks, equity, reliable, self.cfg, moment)

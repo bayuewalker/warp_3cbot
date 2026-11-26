@@ -8,7 +8,7 @@ import sqlite3
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from .accounts import execution_allowed
@@ -36,7 +36,7 @@ from .market import MarketData, MarketDataError
 from .models import Signal
 from .ownership import warp_name
 from .qualify import qualify
-from .risk import GlobalRisk, is_warp_strategy, pair_symbols
+from .risk import GlobalRisk, is_warp_strategy, pair_symbols, realized_pnl
 from .screener import ScreenerError, ScreenerFilters, select_symbols
 from .state import OrderJournal
 from .telemetry import log_event
@@ -323,21 +323,29 @@ class Engine:
             log_event("entries_paused", mode=self.cfg.mode, reason=self.status.reason)
             return 0
 
+        since = self._shared_since(now)
+        day_start, peak = self._shared_anchors(now)
+        scope = "sleeve" if self.cfg.shared_account else "account"
         decision = self.guard.assess(
             account,
             positions,
             deduped,
             prices=prices,
-            marks=self.journal.equity_marks(),
+            marks=self.journal.equity_marks(scope=scope),
             now=now,
             evidence=self.evidence,
             extra_commitments=self._untracked(positions),
             journaled=self._journaled(positions),
-            shared_since=self._shared_since(now),
+            shared_since=since,
+            realized_since=self._realized_since(since),
+            day_start=day_start,
+            peak=peak,
         )
         self.last_decision = decision
         if decision.equity is not None:
-            self.journal.record_equity(decision.equity, decision.equity_reliable, now=now)
+            self.journal.record_equity(decision.equity, decision.equity_reliable, now=now, scope=scope)
+            if decision.equity_reliable:
+                self._remember_shared_equity(decision.equity, now)
         self.status.dependencies_healthy = True
         self.status.risk_permitted = decision.execution_permitted
         self.status.execution_permitted = bool(
@@ -562,8 +570,7 @@ class Engine:
         key = "shared_account_since"
         raw = self.journal.get_setting(key)
         if not self.cfg.shared_account:
-            if raw:
-                self.journal.set_setting(key, "")
+            # Kept on purpose. Turning the flag off must not drop the peak or the realized ledger.
             return None
         if not raw:
             self.journal.set_setting(key, now.astimezone(timezone.utc).isoformat())
@@ -575,6 +582,107 @@ class Engine:
         if since.tzinfo is None:
             raise IntegrationError("Shared-account equity baseline unreadable; entries halted")
         return since
+
+    def _shared_anchors(self, now: datetime) -> tuple[Decimal | None, tuple[datetime, Decimal] | None]:
+        """Persisted day-start equity and high-water mark. Corrupt values halt; nothing is reset."""
+        if not self.cfg.shared_account:
+            return None, None
+        day_start = None
+        raw_day = self.journal.get_setting("shared_day_start")
+        if raw_day:
+            try:
+                day, amount = raw_day.split("|", 1)
+                value = Decimal(amount)
+                if not value.is_finite() or value <= 0:
+                    raise ValueError
+                if day == now.astimezone(timezone.utc).date().isoformat():
+                    day_start = value
+            except (ValueError, InvalidOperation, ArithmeticError) as exc:
+                raise IntegrationError("Shared-account day-start equity unreadable; entries halted") from exc
+        peak = None
+        raw_peak = self.journal.get_setting("shared_equity_peak")
+        if raw_peak:
+            try:
+                stamp, amount = raw_peak.split("|", 1)
+                moment = datetime.fromisoformat(stamp)
+                value = Decimal(amount)
+                if moment.tzinfo is None or not value.is_finite() or value <= 0:
+                    raise ValueError
+                peak = (moment, value)
+            except (ValueError, InvalidOperation, ArithmeticError) as exc:
+                raise IntegrationError("Shared-account equity peak unreadable; entries halted") from exc
+        return day_start, peak
+
+    def _remember_shared_equity(self, equity: Decimal, now: datetime) -> None:
+        if not self.cfg.shared_account or not equity.is_finite() or equity <= 0:
+            return
+        moment = now.astimezone(timezone.utc)
+        day_key = "shared_day_start"
+        stored = self.journal.get_setting(day_key) or ""
+        if not stored.startswith(moment.date().isoformat() + "|"):
+            self.journal.set_setting(day_key, moment.date().isoformat() + "|" + format(equity, "f"))
+        _day_start, peak = self._shared_anchors(moment)
+        if peak is None or equity > peak[1]:
+            self.journal.set_setting("shared_equity_peak", moment.isoformat() + "|" + format(equity, "f"))
+
+    def _close_events(self) -> list[dict]:
+        events = []
+        for row in self._realized_rows():
+            amount = row["realized_usdt"]
+            if amount < 0:
+                kind = "stop"
+            elif amount > 0:
+                kind = "tp"
+            else:
+                continue
+            events.append({"at": row["closed_at"], "kind": kind, "symbol": row["symbol"]})
+        return events
+
+    def _realized_rows(self) -> list[dict]:
+        try:
+            return self.journal.realized_pnl()
+        except ValueError as exc:
+            raise IntegrationError("Realized P&L unreadable; entries halted") from exc
+
+    def _realized_since(self, since: datetime | None) -> Decimal:
+        if not self.cfg.shared_account:
+            return Decimal("0")
+        if since is None:
+            raise IntegrationError("Shared-account equity baseline missing; entries halted")
+        retired = {"closed", "canceled", "cancelled", "panic_exited", "failed", "unlinked", "deleted"}
+        rows = self._realized_rows()
+        booked = {row["client_id"] for row in rows}
+        for bot in self.journal.warp_bots():
+            client_id = str(bot.get("client_id") or "")
+            if bot.get("status") in retired and client_id and client_id not in booked:
+                raise IntegrationError("Retired WARP strategy has no realized P&L; entries halted")
+        return sum((row["realized_usdt"] for row in rows if row["closed_at"] >= since), Decimal("0"))
+
+    def _book_realized(self, bot: dict, row: dict) -> None:
+        client_id = str(bot.get("client_id") or "")
+        if not client_id:
+            raise IntegrationError("Realized P&L unreadable; entries halted")
+        amount, fee = realized_pnl(row)
+        symbol = str(row.get("pair") or bot.get("symbol") or "")
+        try:
+            self.journal.record_realized(client_id, symbol, datetime.now(timezone.utc), amount, fee)
+        except ValueError as exc:
+            raise IntegrationError("Realized P&L unreadable; entries halted") from exc
+
+    def _loss_context(self) -> dict:
+        """Trade-level halts see the sleeve. Strict mode passes nothing, so approve() is unchanged."""
+        if not self.cfg.shared_account:
+            return {}
+        now = datetime.now(timezone.utc)
+        day_start, peak = self._shared_anchors(now)
+        decision = self.last_decision
+        equity = decision.equity if decision is not None and decision.equity_reliable else None
+        return {
+            "events": self._close_events(),
+            "day_start": day_start,
+            "peak": None if peak is None else peak[1],
+            "equity": equity,
+        }
 
     def _untracked(self, positions) -> tuple[tuple[str, Decimal], ...]:
         live = {
@@ -735,6 +843,8 @@ class Engine:
                 except (StrategyNotFound, IntegrationError):
                     continue
             if isinstance(row, dict) and str(row.get("status") or "") in terminal:
+                if self.cfg.shared_account:
+                    self._book_realized(bot, row)
                 self.journal.update_warp_bot(
                     bot["warp_id"],
                     status="closed",
@@ -862,6 +972,7 @@ class Engine:
             on_binance_spot=True if gate is None else bool(gate.get("on_binance_spot")),
             atr_1h_pct=None if gate is None else gate.get("atr_1h_pct"),
             stale=bool(gate and (gate.get("quote_age") is None or gate["quote_age"] > 30 or (evidence is not None and (now - evidence.as_of.astimezone(timezone.utc)).total_seconds() > 300))),
+            **self._loss_context(),
         )
 
     def _read_non_warp_future_so(self) -> Decimal | None:

@@ -6,7 +6,7 @@ import json
 import sqlite3
 from contextlib import closing, nullcontext
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from .models import EquityMark
@@ -38,7 +38,8 @@ class OrderJournal:
                 id INTEGER PRIMARY KEY,
                 marked_at TEXT NOT NULL,
                 equity TEXT NOT NULL,
-                reliable INTEGER NOT NULL
+                reliable INTEGER NOT NULL,
+                scope TEXT NOT NULL DEFAULT 'account'
             )
             """
         )
@@ -108,6 +109,18 @@ class OrderJournal:
         )
         self.db.execute(
             """
+            CREATE TABLE IF NOT EXISTS realized_pnl (
+                client_id TEXT PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                closed_at TEXT NOT NULL,
+                realized_usdt TEXT NOT NULL,
+                fees_usdt TEXT NOT NULL,
+                recorded_at TEXT NOT NULL
+            )
+            """
+        )
+        self.db.execute(
+            """
             CREATE TABLE IF NOT EXISTS verdicts (
                 id INTEGER PRIMARY KEY,
                 symbol TEXT NOT NULL,
@@ -124,6 +137,12 @@ class OrderJournal:
             )
             """
         )
+        self._ensure_equity_scope()
+
+    def _ensure_equity_scope(self) -> None:
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(equity_marks)")}
+        if "scope" not in columns:
+            self.db.execute("ALTER TABLE equity_marks ADD COLUMN scope TEXT NOT NULL DEFAULT 'account'")
 
     def close(self) -> None:
         self.db.close()
@@ -184,18 +203,32 @@ class OrderJournal:
         ).fetchone()
         return bool(row and row[0])
 
-    def record_equity(self, equity: Decimal, reliable: bool, *, now: datetime | None = None) -> None:
+    def record_equity(
+        self, equity: Decimal, reliable: bool, *, now: datetime | None = None, scope: str = "account"
+    ) -> None:
+        if scope not in {"account", "sleeve"}:
+            raise ValueError("Unknown equity scope")
         moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         self.db.execute(
-            "INSERT INTO equity_marks(marked_at, equity, reliable) VALUES(?,?,?)",
-            (moment.isoformat(), format(equity, "f"), 1 if reliable else 0),
+            "INSERT INTO equity_marks(marked_at, equity, reliable, scope) VALUES(?,?,?,?)",
+            (moment.isoformat(), format(equity, "f"), 1 if reliable else 0, scope),
         )
 
-    def equity_marks(self) -> list[EquityMark]:
+    def latest_equity_scope(self) -> str | None:
+        row = self.db.execute(
+            "SELECT scope FROM equity_marks ORDER BY marked_at DESC, id DESC LIMIT 1"
+        ).fetchone()
+        return None if row is None else str(row[0])
+
+    def equity_marks(self, *, scope: str | None = None) -> list[EquityMark]:
+        sql = "SELECT marked_at, equity, reliable FROM equity_marks"
+        values: tuple = ()
+        if scope is not None:
+            sql += " WHERE scope=?"
+            values = (scope,)
+        sql += " ORDER BY marked_at"
         marks = []
-        for marked_at, equity, reliable in self.db.execute(
-            "SELECT marked_at, equity, reliable FROM equity_marks ORDER BY marked_at"
-        ):
+        for marked_at, equity, reliable in self.db.execute(sql, values):
             moment = datetime.fromisoformat(marked_at)
             if moment.tzinfo is None:
                 moment = moment.replace(tzinfo=timezone.utc)
@@ -423,6 +456,53 @@ class OrderJournal:
             f"UPDATE warp_bots SET {assignments} WHERE warp_id=?",
             (*fields.values(), warp_id),
         )
+
+    def record_realized(
+        self, client_id: str, symbol: str, closed_at: datetime, realized: Decimal, fees: Decimal
+    ) -> None:
+        """One row per closed WARP strategy. A second call with a different amount is an error."""
+        if not client_id or closed_at.tzinfo is None or not realized.is_finite() or not fees.is_finite():
+            raise ValueError("Realized P&L unreadable")
+        moment = closed_at.astimezone(timezone.utc).isoformat()
+        text = format(realized, "f")
+        existing = self.db.execute(
+            "SELECT realized_usdt FROM realized_pnl WHERE client_id=?", (client_id,)
+        ).fetchone()
+        if existing is not None:
+            if str(existing[0]) != text:
+                raise ValueError("Realized P&L disagrees with the journal")
+            return
+        self.db.execute(
+            """
+            INSERT INTO realized_pnl(client_id, symbol, closed_at, realized_usdt, fees_usdt, recorded_at)
+            VALUES(?,?,?,?,?,?)
+            """,
+            (client_id, symbol, moment, text, format(fees, "f"), datetime.now(timezone.utc).isoformat()),
+        )
+
+    def realized_pnl(self) -> list[dict]:
+        """Stored closes. A row that cannot be parsed raises; callers must not treat that as zero."""
+        found = []
+        query = "SELECT client_id, symbol, closed_at, realized_usdt, fees_usdt FROM realized_pnl ORDER BY closed_at"
+        for client_id, symbol, closed_at, realized, fees in self.db.execute(query):
+            try:
+                amount = Decimal(str(realized))
+                fee = Decimal(str(fees))
+                moment = datetime.fromisoformat(str(closed_at))
+            except (ValueError, InvalidOperation, ArithmeticError) as exc:
+                raise ValueError("Realized P&L unreadable") from exc
+            if moment.tzinfo is None or not amount.is_finite() or not fee.is_finite():
+                raise ValueError("Realized P&L unreadable")
+            found.append(
+                {
+                    "client_id": str(client_id),
+                    "symbol": str(symbol),
+                    "closed_at": moment,
+                    "realized_usdt": amount,
+                    "fees_usdt": fee,
+                }
+            )
+        return found
 
     def record_verdict(
         self, symbol: str, verdict: str, confidence: Decimal, price: Decimal, now: datetime

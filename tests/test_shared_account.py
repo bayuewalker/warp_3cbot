@@ -22,7 +22,7 @@ from warp3c.httpapi import dispatch
 from warp3c.models import Account, AssetBalance, EquityMark
 from warp3c.operator import SNAPSHOT, publish
 from warp3c.ownership import NotOwned, apply_action
-from warp3c.risk import GlobalRisk, assert_balances_explained, mark_to_market
+from warp3c.risk import GlobalRisk, assert_balances_explained, mark_to_market, realized_pnl
 from warp3c.state import OrderJournal
 from warp3c.threecommas import IntegrationError, StrategyNotFound
 
@@ -576,16 +576,21 @@ class SharedEngineTests(unittest.TestCase):
             self.assertTrue(journal.get_setting("shared_account_since"))
             self.assertEqual([mark.equity for mark in journal.equity_marks()][-1], Decimal("200"))
 
-    def test_switching_back_to_strict_clears_the_shared_baseline(self):
+    def test_switching_the_flag_keeps_the_baseline_peak_and_realized_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             broker = RecordingBroker(live_account())
             cfg, journal, engine = self.build(tmp, broker)
             engine.cycle()
-            self.assertTrue(journal.get_setting("shared_account_since"))
+            since = journal.get_setting("shared_account_since")
+            peak = journal.get_setting("shared_equity_peak")
+            closed = datetime.now(timezone.utc)
+            journal.record_realized("warp3c-" + "cd" * 16, "SOLUSDT", closed, Decimal("-4"), Decimal("0.1"))
             strict = Engine(live_cfg(tmp, shared_account=False), RecordingBroker(live_account(external=False)),
                             Research(), journal, Markets())
             strict.cycle()
-            self.assertEqual(journal.get_setting("shared_account_since"), "")
+            self.assertEqual(journal.get_setting("shared_account_since"), since)
+            self.assertEqual(journal.get_setting("shared_equity_peak"), peak)
+            self.assertEqual(journal.realized_pnl()[0]["realized_usdt"], Decimal("-4"))
 
     def test_live_ack_gate_still_blocks_a_shared_order(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -710,6 +715,174 @@ class SurfaceTests(unittest.TestCase):
         self.assertNotIn("shared_account", text)
         for coin in EXTERNAL_NAMES:
             self.assertNotIn(coin, text)
+
+
+def _closed(client_id: str, *, entry: str = "10", exit_cost: str = "5") -> dict:
+    row = warp_row(client_id=client_id, cost=entry, qty="0.1")
+    row["status"] = "completed"
+    row["totalEntryCost"] = entry
+    row["totalExitCost"] = exit_cost
+    row["totalExitAmount"] = "0.1"
+    return row
+
+
+def _own(journal, warp_id: str, client_id: str, status: str = "confirmed") -> None:
+    stamp = datetime.now(timezone.utc).isoformat()
+    journal.insert_warp_bot(
+        {
+            "warp_id": warp_id, "name": "WARP-" + warp_id, "client_id": client_id, "external_code": "ext-" + warp_id,
+            "kind": "dca", "product": "strategy", "account_code": "p123", "market": "spot", "symbol": "SOLUSDT",
+            "status": status, "commitment": "10", "created_at": stamp, "updated_at": stamp,
+        }
+    )
+    journal.reserve(client_id, "SOLUSDT", {"pairCode": "SOLUSDT"})
+    journal.confirm(client_id, "sid-" + warp_id)
+
+
+class RealizedLossTests(unittest.TestCase):
+    """Closed WARP losses stay in the sleeve. The wallet's other USDT does not refill them."""
+
+    def test_closed_loss_is_derived_and_a_missing_cost_is_not_zero(self):
+        net, fee = realized_pnl(_closed("warp3c-" + "ab" * 16, entry="20", exit_cost="5"))
+        self.assertEqual((net, fee), (Decimal("-15"), Decimal("0")))
+        charged = _closed("warp3c-" + "ab" * 16, entry="20", exit_cost="5")
+        charged["totalFee"] = "1"
+        self.assertEqual(realized_pnl(charged)[0], Decimal("-16"))
+        for broken in ({}, {"totalEntryCost": "10"}, _closed("warp3c-" + "ab" * 16)):
+            row = dict(broken)
+            if "totalExitAmount" in row:
+                row["totalExitAmount"] = "0"
+            if row:
+                with self.assertRaises(IntegrationError):
+                    realized_pnl(row)
+
+    def test_three_stopped_deals_cut_sleeve_equity_and_trip_the_breaker(self):
+        now = datetime.now(timezone.utc)
+        account = live_account(now=now)
+        decision = GlobalRisk(shared_cfg()).assess(
+            account, [], [], prices={}, marks=[], now=now, journaled=frozenset(),
+            shared_since=now - timedelta(days=1), realized_since=Decimal("-15"),
+            day_start=Decimal("50"), peak=(now - timedelta(hours=1), Decimal("50")),
+        )
+        self.assertEqual(decision.equity, Decimal("35"))
+        self.assertEqual(decision.reason, "drawdown")
+        self.assertFalse(decision.execution_permitted)
+        self.assertEqual(decision.orders, [])
+        daily = GlobalRisk(shared_cfg(max_drawdown=Decimal("0.9"))).assess(
+            account, [], [], prices={}, marks=[], now=now, journaled=frozenset(),
+            shared_since=now - timedelta(days=1), realized_since=Decimal("-15"),
+            day_start=Decimal("50"), peak=(now - timedelta(hours=1), Decimal("50")),
+        )
+        self.assertEqual(daily.reason, "daily_loss")
+        self.assertFalse(daily.execution_permitted)
+
+    def _sleeve(self, tmp, broker, **overrides):
+        cfg = live_cfg(tmp, sleeve_usdt=Decimal("50"), **overrides)
+        journal = OrderJournal(cfg.db_path)
+        self.addCleanup(journal.close)
+        now = datetime.now(timezone.utc)
+        journal.set_setting("shared_account_since", (now - timedelta(days=1)).isoformat())
+        journal.set_setting("shared_day_start", now.date().isoformat() + "|50")
+        journal.set_setting("shared_equity_peak", (now - timedelta(hours=2)).isoformat() + "|50")
+        return cfg, journal, Engine(cfg, broker, Research(), journal, Markets())
+
+    def test_engine_books_three_closes_and_the_breaker_survives_restart(self):
+        deals = []
+        with tempfile.TemporaryDirectory() as tmp:
+            ids = ["warp3c-" + digit * 32 for digit in "123"]
+            for client_id in ids:
+                deals.append(_closed(client_id))
+            cfg, journal, engine = self._sleeve(tmp, RecordingBroker(live_account(), deals))
+            for index, client_id in enumerate(ids):
+                _own(journal, f"aaaaaaa{index + 1}", client_id)
+            self.assertEqual(engine.cycle(), 0)
+            self.assertEqual(engine.status.reason, "drawdown")
+            self.assertFalse(engine.status.execution_permitted)
+            self.assertEqual(engine.broker.created, [])
+            booked = sum((row["realized_usdt"] for row in journal.realized_pnl()), Decimal("0"))
+            self.assertEqual(booked, Decimal("-15"))
+            self.assertEqual(journal.equity_marks(scope="sleeve")[-1].equity, Decimal("35"))
+            peak = journal.get_setting("shared_equity_peak")
+            restarted = OrderJournal(cfg.db_path)
+            self.addCleanup(restarted.close)
+            again = Engine(cfg, RecordingBroker(live_account()), Research(), restarted, Markets())
+            self.assertEqual(again.cycle(), 0)
+            self.assertEqual(again.status.reason, "drawdown")
+            self.assertEqual(restarted.get_setting("shared_equity_peak"), peak)
+            self.assertEqual(sum((row["realized_usdt"] for row in restarted.realized_pnl()), Decimal("0")), Decimal("-15"))
+
+    def test_missing_or_unreadable_realized_pnl_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            deal = _closed("warp3c-" + "45" * 16)
+            deal.pop("totalExitCost")
+            _cfg, journal, engine = self._sleeve(tmp, RecordingBroker(live_account(), [deal]))
+            _own(journal, "bbbbbbb1", deal["clientId"])
+            with self.assertRaisesRegex(IntegrationError, "Realized P&L unreadable"):
+                engine.cycle()
+            self.assertEqual(journal.realized_pnl(), [])
+            self.assertEqual(journal.warp_bots()[0]["status"], "confirmed")
+            self.assertEqual(engine.broker.created, [])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _cfg, journal, engine = self._sleeve(tmp, RecordingBroker(live_account()))
+            client_id = "warp3c-" + "67" * 16
+            _own(journal, "bbbbbbb2", client_id, status="closed")
+            with self.assertRaisesRegex(IntegrationError, "no realized P&L"):
+                engine.cycle()
+            self.assertEqual(engine.broker.created, [])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _cfg, journal, engine = self._sleeve(tmp, RecordingBroker(live_account()))
+            client_id = "warp3c-" + "89" * 16
+            _own(journal, "bbbbbbb3", client_id, status="closed")
+            journal.record_realized(client_id, "SOLUSDT", datetime.now(timezone.utc), Decimal("-5"), Decimal("0"))
+            journal.db.execute("UPDATE realized_pnl SET realized_usdt='nope' WHERE client_id=?", (client_id,))
+            with self.assertRaisesRegex(IntegrationError, "unreadable"):
+                engine.cycle()
+
+    def test_trade_loss_and_stop_streak_veto_without_tripping_the_circuit(self):
+        loose = dict(max_daily_loss=Decimal("0.5"), max_drawdown=Decimal("0.5"), sleeve_usdt=Decimal("200"))
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = live_cfg(tmp, trade_daily_loss=Decimal("0.02"), **loose)
+            journal = OrderJournal(cfg.db_path)
+            self.addCleanup(journal.close)
+            now = datetime.now(timezone.utc)
+            journal.set_setting("shared_account_since", (now - timedelta(days=1)).isoformat())
+            journal.set_setting("shared_day_start", now.date().isoformat() + "|200")
+            journal.set_setting("shared_equity_peak", (now - timedelta(hours=2)).isoformat() + "|200")
+            journal.record_realized("warp3c-" + "ab" * 16, "SOLUSDT", now - timedelta(minutes=5), Decimal("-8"), Decimal("0"))
+            engine = Engine(cfg, RecordingBroker(live_account()), Research(), journal, Markets())
+            self.assertEqual(engine.cycle(), 0)
+            self.assertEqual(engine.broker.created, [])
+            self.assertEqual(engine.last_aegis[-1]["reasons"], ["daily_loss"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = live_cfg(tmp, trade_daily_loss=Decimal("0.5"), trade_drawdown=Decimal("0.5"), **loose)
+            journal = OrderJournal(cfg.db_path)
+            self.addCleanup(journal.close)
+            now = datetime.now(timezone.utc)
+            journal.set_setting("shared_account_since", (now - timedelta(days=1)).isoformat())
+            journal.set_setting("shared_day_start", now.date().isoformat() + "|200")
+            journal.set_setting("shared_equity_peak", (now - timedelta(hours=2)).isoformat() + "|200")
+            for index in (1, 2):
+                journal.record_realized(
+                    "warp3c-" + str(index) * 32, "SOLUSDT", now - timedelta(minutes=index), Decimal("-0.01"), Decimal("0")
+                )
+            engine = Engine(cfg, RecordingBroker(live_account()), Research(), journal, Markets())
+            self.assertEqual(engine.cycle(), 0)
+            self.assertEqual(engine.broker.created, [])
+            self.assertEqual(engine.last_aegis[-1]["reasons"], ["stop_streak"])
+
+    def test_strict_mode_does_not_require_the_ledger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = live_cfg(tmp, shared_account=False)
+            journal = OrderJournal(cfg.db_path)
+            self.addCleanup(journal.close)
+            _own(journal, "ccccccc1", "warp3c-" + "ff" * 16, status="closed")
+            engine = Engine(cfg, RecordingBroker(live_account(external=False)), Research(), journal, Markets())
+            engine.cycle()
+            self.assertEqual(journal.realized_pnl(), [])
+            self.assertNotEqual(engine.status.reason, "drawdown")
 
 
 if __name__ == "__main__":
