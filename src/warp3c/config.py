@@ -30,6 +30,14 @@ def _fraction(name: str, value: Decimal) -> None:
         raise ValueError(f"Invalid fraction: {name}")
 
 
+def research_retry_default(research_seconds: int) -> int:
+    """Unset WARP_RESEARCH_RETRY_SECONDS stays inside 30..research_seconds."""
+    raw = os.getenv("WARP_RESEARCH_RETRY_SECONDS")
+    if raw is None or not raw.strip():
+        return min(60, research_seconds)
+    return int(raw)
+
+
 def parse_groups(raw: str) -> tuple[tuple[str, str], ...]:
     """`majors:BTCUSDT|ETHUSDT,alts:SOLUSDT`. Empty means one shared book."""
     pairs: list[tuple[str, str]] = []
@@ -160,6 +168,10 @@ class Settings:
     shared_account: bool = False
     min_order_usdt: Decimal = Decimal("5")
     max_entry_signal_seconds: int = 300
+    research_retry_seconds: int = 60
+    dust_usdt: Decimal = Decimal("1.00")
+    stress_gap_share: Decimal = Decimal("0.50")
+    risk_decisions_keep: int = 5000
 
     def __post_init__(self) -> None:
         if self.mode not in {"observe", "paper", "live"}:
@@ -244,6 +256,14 @@ class Settings:
             raise ValueError("Invalid candidate cap")
         if min(self.scan_seconds, self.research_seconds, self.monitor_seconds, self.reconcile_seconds) < 30:
             raise ValueError("Invalid cadence")
+        if type(self.research_retry_seconds) is not int or not 30 <= self.research_retry_seconds <= self.research_seconds:
+            raise ValueError("Invalid WARP_RESEARCH_RETRY_SECONDS")
+        if not self.dust_usdt.is_finite() or not Decimal("0") < self.dust_usdt <= Decimal("5"):
+            raise ValueError("Invalid WARP_DUST_USDT")
+        if not self.stress_gap_share.is_finite() or not Decimal("0") <= self.stress_gap_share <= Decimal("1"):
+            raise ValueError("Invalid WARP_STRESS_GAP_SHARE")
+        if type(self.risk_decisions_keep) is not int or self.risk_decisions_keep < 100:
+            raise ValueError("Invalid WARP_RISK_DECISIONS_KEEP")
         if self.operator_token and len(self.operator_token) < 16:
             raise ValueError("Operator token must be at least 16 characters")
         if bool(self.telegram_bot_token) != bool(self.telegram_chat_id):
@@ -424,4 +444,8 @@ class Settings:
             shared_account=strict_flag("WARP_SHARED_ACCOUNT"),
             min_order_usdt=dec("WARP_MIN_ORDER_USDT", "5"),
             max_entry_signal_seconds=int(os.getenv("WARP_MAX_ENTRY_SIGNAL_SECONDS", "300")),
+            research_retry_seconds=research_retry_default(int(os.getenv("WARP_RESEARCH_SECONDS", "900"))),
+            dust_usdt=dec("WARP_DUST_USDT", "1.00"),
+            stress_gap_share=dec("WARP_STRESS_GAP_SHARE", "0.50"),
+            risk_decisions_keep=int(os.getenv("WARP_RISK_DECISIONS_KEEP", "5000")),
         )

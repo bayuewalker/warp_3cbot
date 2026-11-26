@@ -723,6 +723,8 @@ def _closed(client_id: str, *, entry: str = "10", exit_cost: str = "5") -> dict:
     row["totalEntryCost"] = entry
     row["totalExitCost"] = exit_cost
     row["totalExitAmount"] = "0.1"
+    row["totalEntryCommissionCost"] = "0"
+    row["totalExitCommissionCost"] = "0"
     return row
 
 
@@ -746,8 +748,15 @@ class RealizedLossTests(unittest.TestCase):
         net, fee = realized_pnl(_closed("warp3c-" + "ab" * 16, entry="20", exit_cost="5"))
         self.assertEqual((net, fee), (Decimal("-15"), Decimal("0")))
         charged = _closed("warp3c-" + "ab" * 16, entry="20", exit_cost="5")
+        charged.pop("totalEntryCommissionCost")
+        charged.pop("totalExitCommissionCost")
         charged["totalFee"] = "1"
         self.assertEqual(realized_pnl(charged)[0], Decimal("-16"))
+        missing_fee = _closed("warp3c-" + "ab" * 16, entry="20", exit_cost="5")
+        missing_fee.pop("totalEntryCommissionCost")
+        missing_fee.pop("totalExitCommissionCost")
+        with self.assertRaises(IntegrationError):
+            realized_pnl(missing_fee)
         for broken in ({}, {"totalEntryCost": "10"}, _closed("warp3c-" + "ab" * 16)):
             row = dict(broken)
             if "totalExitAmount" in row:

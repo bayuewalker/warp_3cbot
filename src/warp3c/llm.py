@@ -8,7 +8,7 @@ import re
 import threading
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 import httpx
 
@@ -95,26 +95,103 @@ def _response_texts(payload: object) -> list[str]:
 
 
 class _Budget:
+    """UTC-day call and USD caps. Usage is journaled so a restart does not reset it."""
+
     def __init__(self, calls: int, usd: Decimal, per_call: Decimal):
         self.calls = calls
         self.usd = usd
         self.per_call = per_call
         self._lock = threading.Lock()
+        self._journal = None
         self._day = ""
         self._used_calls = 0
         self._used_usd = Decimal("0")
 
-    def charge(self) -> None:
-        day = datetime.now(timezone.utc).date().isoformat()
+    def bind(self, journal) -> None:
         with self._lock:
-            if day != self._day:
-                self._day = day
-                self._used_calls = 0
-                self._used_usd = Decimal("0")
-            if self._used_calls >= self.calls or self._used_usd + self.per_call > self.usd:
+            self._journal = journal
+
+    def charge(self) -> None:
+        today = datetime.now(timezone.utc).date().isoformat()
+        with self._lock:
+            day, used_calls, used_usd = self._load(today)
+            if used_calls >= self.calls or used_usd + self.per_call > self.usd:
                 raise ResearchError("LLM daily cap reached")
-            self._used_calls += 1
-            self._used_usd += self.per_call
+            used_calls += 1
+            used_usd += self.per_call
+            self._store(day, used_calls, used_usd)
+            self._day = day
+            self._used_calls = used_calls
+            self._used_usd = used_usd
+
+    def snapshot(self) -> dict:
+        today = datetime.now(timezone.utc).date().isoformat()
+        with self._lock:
+            day, used_calls, used_usd = self._load(today)
+        return {
+            "day": day,
+            "calls_used": used_calls,
+            "calls_cap": self.calls,
+            "usd_used": format(used_usd, "f"),
+            "usd_cap": format(self.usd, "f"),
+        }
+
+    def _load(self, today: str) -> tuple[str, int, Decimal]:
+        if self._journal is not None:
+            raw = self._journal.get_setting("llm_budget")
+            if not raw:
+                return today, 0, Decimal("0")
+            try:
+                data = json.loads(raw)
+                if not isinstance(data, dict):
+                    raise ValueError
+                stored_day = str(data.get("day") or "")
+                if stored_day != today:
+                    return today, 0, Decimal("0")
+                calls = data.get("calls")
+                if type(calls) is not int or calls < 0:
+                    raise ValueError
+                usd = Decimal(str(data.get("usd")))
+                if not usd.is_finite() or usd < 0:
+                    raise ValueError
+            except (ValueError, TypeError, json.JSONDecodeError, InvalidOperation, ArithmeticError) as exc:
+                raise ResearchError("LLM budget unreadable") from exc
+            return today, calls, usd
+        if self._day != today:
+            self._day = today
+            self._used_calls = 0
+            self._used_usd = Decimal("0")
+        return self._day, self._used_calls, self._used_usd
+
+    def _store(self, day: str, calls: int, usd: Decimal) -> None:
+        if self._journal is None:
+            return
+        self._journal.set_setting(
+            "llm_budget",
+            json.dumps({"day": day, "calls": calls, "usd": format(usd, "f")}, separators=(",", ":")),
+        )
+
+
+def warn_budget_short(research_seconds: int, daily_calls: int) -> None:
+    """Log when the daily call cap cannot cover a full UTC day of screen+final runs."""
+    if getattr(warn_budget_short, "fired", False):
+        return
+    warn_budget_short.fired = True
+    if research_seconds <= 0:
+        return
+    # A healthy run charges screen + final (2). Fallback can charge both providers (4).
+    # The warning uses 2. It does not raise the cap.
+    needed = (Decimal(86400) / Decimal(research_seconds)) * Decimal(2)
+    if needed > Decimal(daily_calls):
+        log_event(
+            "llm_budget_short",
+            level=logging.WARNING,
+            research_seconds=research_seconds,
+            calls_cap=daily_calls,
+            calls_needed=format(needed, "f"),
+            assumed_calls_per_run=2,
+            fallback_calls_per_run=4,
+        )
 
 
 class LlmAnalyst:
@@ -147,6 +224,9 @@ class LlmAnalyst:
         self._until: dict[str, datetime] = {}
         self._reason: dict[str, str] = {}
         self.http = httpx.Client(timeout=timeout, transport=transport)
+
+    def bind_journal(self, journal) -> None:
+        self.budget.bind(journal)
 
     def close(self) -> None:
         self.http.close()
@@ -240,6 +320,10 @@ class LlmAnalyst:
         for name, url, model in self._providers(purpose):
             if self._cooling(name, now):
                 last = LlmError(f"{name} cooling down after {self._reason.get(name, 'HTTP error')}")
+                last.provider = name
+                reason = self._reason.get(name, "")
+                status_text = reason.removeprefix("HTTP ").strip()
+                last.http_status = int(status_text) if status_text.isdigit() else None
                 continue
             self.budget.charge()
             key = self.nvidia_key if name == "nvidia" else self.openrouter_key
@@ -260,18 +344,26 @@ class LlmAnalyst:
                 response = self.http.post(url, headers=headers, json=body)
             except httpx.TimeoutException as exc:
                 last = LlmError(f"{name} timed out")
+                last.provider = name
+                last.http_status = None
                 last.__cause__ = exc
                 continue
             except httpx.HTTPError as exc:
                 last = LlmError(f"{name} transport failed")
+                last.provider = name
+                last.http_status = None
                 last.__cause__ = exc
                 continue
             if response.status_code in GONE:
                 self._cool(name, model, response.status_code)
                 last = LlmError(f"{name} HTTP {response.status_code}")
+                last.provider = name
+                last.http_status = response.status_code
                 continue
             if response.status_code >= 400:
                 last = LlmError(f"{name} HTTP {response.status_code}")
+                last.provider = name
+                last.http_status = response.status_code
                 continue
             try:
                 return _response_texts(response.json())
@@ -320,24 +412,39 @@ class LlmAnalyst:
         )
         parsed = self._parsed("final", _messages(prompt), extract_decisions)
         decisions = parsed.get("decisions")
-        if not isinstance(decisions, list) or len(decisions) > len(symbols):
+        # The final model may answer for the 12-symbol universe after the screen
+        # kept fewer. Extra symbols are dropped. More than the universe cap is not.
+        if not isinstance(decisions, list) or len(decisions) > 12:
             raise ResearchError("LLM decisions are not a bounded list")
+        allowed = set(symbols)
         signals: list[Signal] = []
+        dropped = 0
         for item in decisions:
             if not isinstance(item, dict):
                 raise ResearchError("LLM decision is not an object")
             cleaned = strip_price_fields(item)
             symbol = str(cleaned.get("symbol", "")).upper().strip()
+            if symbol not in allowed:
+                dropped += 1
+                continue
             item_evidence = evidence.get(symbol)
             if item_evidence is None:
                 continue
             cleaned["as_of"] = item_evidence.as_of.isoformat()
             if len(str(cleaned.get("source") or "")) < 3:
                 cleaned["source"] = "llm evidence snapshot"
-            signal = Signal.parse(cleaned, set(symbols), max_age_minutes=max_age_minutes)
+            try:
+                signal = Signal.parse(cleaned, allowed, max_age_minutes=max_age_minutes)
+            except ValueError:
+                if symbol not in allowed:
+                    dropped += 1
+                    continue
+                raise
             if signal.action == "BUY" and not item_evidence.passed:
                 signal = replace(signal, action="WAIT")
             signals.append(signal)
+        if dropped:
+            log_event("llm_decisions_dropped", count=dropped)
         if len({item.symbol for item in signals}) != len(signals):
             raise ResearchError("Duplicate symbols in LLM response")
         return signals
