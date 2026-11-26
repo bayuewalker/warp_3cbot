@@ -484,7 +484,7 @@ class NoSecretInPayloadsTests(AuthedCase):
 POSTS = {
     "/api/login", "/api/logout", "/api/pause", "/api/resume", "/api/rules", "/api/accounts/budget",
     "/api/accounts/select", "/api/screener/filters", "/api/bots/template", "/api/bots/preview",
-    "/api/paper/roundtrip", "/api/warp-bots/action",
+    "/api/paper/roundtrip", "/api/warp-bots/action", "/api/alerts/test",
 }
 
 # Every call site in threecommas.py that is not a GET. Pinned from main at 91d3c38 (P4C).

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import fcntl
-import logging
 import os
 import signal
 import subprocess
@@ -19,12 +18,12 @@ from .config import Settings
 from .engine import Engine
 from .httpapi import dispatch
 from .market import MarketData
-from .notify import flush_alerts
+from .notify import Delivery, channel_configured, enqueue_incident, flush_alerts
 from .operator import HEALTH, publish
 from .schedule import Clocks
 from .state import OrderJournal
 from .supervisor import ResearchGate, once
-from .telemetry import log_event, send_alert, send_telegram
+from .telemetry import configure_logging, log_event, send_alert, send_telegram
 from .threecommas import IntegrationError, ThreeCommas
 from .vibe import VibeResearch
 
@@ -195,19 +194,37 @@ def start_vibe() -> subprocess.Popen | None:
 def _notify(cfg: Settings, journal: OrderJournal | None, event: str, detail: str) -> None:
     if journal is None:
         return
-    if journal.enqueue_alert(event, detail, now=datetime.now(timezone.utc)):
+    if enqueue_incident(
+        journal,
+        event,
+        detail,
+        now=datetime.now(timezone.utc),
+        channel=channel_configured(cfg),
+    ):
         log_event(event, detail=detail, mode=cfg.mode)
 
 
-def _deliver(cfg: Settings, event: str, detail: str) -> bool:
-    if not cfg.alert_webhook and not cfg.telegram_bot_token:
-        return True
+def _deliver(cfg: Settings, event: str, detail: str, *, transport=None) -> Delivery:
+    webhook = bool(cfg.alert_webhook)
+    telegram = bool(cfg.telegram_bot_token)
+    if not webhook and not telegram:
+        log_event("alert_skipped", reason="no_channel", alert_event=event)
+        return Delivery(skipped=True)
     ok = True
-    if cfg.alert_webhook:
-        ok = send_alert(cfg.alert_webhook, event, detail) and ok
-    if cfg.telegram_bot_token:
-        ok = send_telegram(cfg.telegram_bot_token, cfg.telegram_chat_id, event, detail) and ok
-    return ok
+    retry_after = None
+    if webhook:
+        ok = send_alert(cfg.alert_webhook, event, detail, transport=transport) and ok
+    if telegram:
+        sent = send_telegram(
+            cfg.telegram_bot_token, cfg.telegram_chat_id, event, detail, transport=transport
+        )
+        hinted = getattr(sent, "retry_after", None)
+        if type(hinted) is int:
+            retry_after = hinted
+        ok = bool(sent) and ok
+    if ok:
+        return Delivery(ok=True)
+    return Delivery(retry_after=retry_after)
 
 
 def _flush(cfg: Settings, journal: OrderJournal | None) -> None:
@@ -217,7 +234,7 @@ def _flush(cfg: Settings, journal: OrderJournal | None) -> None:
 
 
 def main():
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    configure_logging()
     cfg = Settings.from_env()
     HEALTH["mode"] = cfg.mode
     HEALTH["execution_permitted"] = False
