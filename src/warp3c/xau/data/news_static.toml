@@ -1,0 +1,205 @@
+# Static tier-1 backstop, 2026-12-01 through 2027-06-30.
+# FOMC decision 14:00 America/New_York: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+# CPI 08:30 America/New_York: https://www.bls.gov/schedule/news_release/cpi.htm
+# Non-Farm Payrolls 08:30 America/New_York: https://www.bls.gov/schedule/news_release/empsit.htm
+# GDP and PCE 08:30 America/New_York: https://www.bea.gov/news/schedule
+coverage_start = "2026-12-01"
+coverage_end = "2027-06-30"
+
+[[event]]
+title = "Non-Farm Payrolls"
+at = "2026-12-04T08:30:00-05:00"
+impact = "High"
+source = "https://www.bls.gov/schedule/news_release/empsit.htm"
+
+[[event]]
+title = "FOMC"
+at = "2026-12-09T14:00:00-05:00"
+impact = "High"
+source = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+
+[[event]]
+title = "CPI"
+at = "2026-12-10T08:30:00-05:00"
+impact = "High"
+source = "https://www.bls.gov/schedule/news_release/cpi.htm"
+
+[[event]]
+title = "GDP"
+at = "2026-12-23T08:30:00-05:00"
+impact = "High"
+source = "https://www.bea.gov/news/schedule"
+
+[[event]]
+title = "PCE"
+at = "2026-12-23T08:30:00-05:00"
+impact = "High"
+source = "https://www.bea.gov/news/schedule"
+
+[[event]]
+title = "Non-Farm Payrolls"
+at = "2027-01-08T08:30:00-05:00"
+impact = "High"
+source = "https://www.bls.gov/schedule/news_release/empsit.htm"
+
+[[event]]
+title = "CPI"
+at = "2027-01-13T08:30:00-05:00"
+impact = "High"
+source = "https://www.bls.gov/schedule/news_release/cpi.htm"
+
+[[event]]
+title = "FOMC"
+at = "2027-01-27T14:00:00-05:00"
+impact = "High"
+source = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+
+[[event]]
+title = "GDP"
+at = "2027-01-28T08:30:00-05:00"
+impact = "High"
+source = "https://www.bea.gov/news/schedule"
+
+[[event]]
+title = "PCE"
+at = "2027-01-28T08:30:00-05:00"
+impact = "High"
+source = "https://www.bea.gov/news/schedule"
+
+[[event]]
+title = "Non-Farm Payrolls"
+at = "2027-02-05T08:30:00-05:00"
+impact = "High"
+source = "https://www.bls.gov/schedule/news_release/empsit.htm"
+
+[[event]]
+title = "CPI"
+at = "2027-02-11T08:30:00-05:00"
+impact = "High"
+source = "https://www.bls.gov/schedule/news_release/cpi.htm"
+
+[[event]]
+title = "GDP"
+at = "2027-02-25T08:30:00-05:00"
+impact = "High"
+source = "https://www.bea.gov/news/schedule"
+
+[[event]]
+title = "PCE"
+at = "2027-02-25T08:30:00-05:00"
+impact = "High"
+source = "https://www.bea.gov/news/schedule"
+
+[[event]]
+title = "Non-Farm Payrolls"
+at = "2027-03-05T08:30:00-05:00"
+impact = "High"
+source = "https://www.bls.gov/schedule/news_release/empsit.htm"
+
+[[event]]
+title = "CPI"
+at = "2027-03-10T08:30:00-05:00"
+impact = "High"
+source = "https://www.bls.gov/schedule/news_release/cpi.htm"
+
+[[event]]
+title = "FOMC"
+at = "2027-03-17T14:00:00-04:00"
+impact = "High"
+source = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+
+[[event]]
+title = "GDP"
+at = "2027-03-31T08:30:00-04:00"
+impact = "High"
+source = "https://www.bea.gov/news/schedule"
+
+[[event]]
+title = "PCE"
+at = "2027-03-31T08:30:00-04:00"
+impact = "High"
+source = "https://www.bea.gov/news/schedule"
+
+[[event]]
+title = "Non-Farm Payrolls"
+at = "2027-04-02T08:30:00-04:00"
+impact = "High"
+source = "https://www.bls.gov/schedule/news_release/empsit.htm"
+
+[[event]]
+title = "CPI"
+at = "2027-04-13T08:30:00-04:00"
+impact = "High"
+source = "https://www.bls.gov/schedule/news_release/cpi.htm"
+
+[[event]]
+title = "FOMC"
+at = "2027-04-28T14:00:00-04:00"
+impact = "High"
+source = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+
+[[event]]
+title = "GDP"
+at = "2027-04-29T08:30:00-04:00"
+impact = "High"
+source = "https://www.bea.gov/news/schedule"
+
+[[event]]
+title = "PCE"
+at = "2027-04-29T08:30:00-04:00"
+impact = "High"
+source = "https://www.bea.gov/news/schedule"
+
+[[event]]
+title = "Non-Farm Payrolls"
+at = "2027-05-07T08:30:00-04:00"
+impact = "High"
+source = "https://www.bls.gov/schedule/news_release/empsit.htm"
+
+[[event]]
+title = "CPI"
+at = "2027-05-12T08:30:00-04:00"
+impact = "High"
+source = "https://www.bls.gov/schedule/news_release/cpi.htm"
+
+[[event]]
+title = "GDP"
+at = "2027-05-27T08:30:00-04:00"
+impact = "High"
+source = "https://www.bea.gov/news/schedule"
+
+[[event]]
+title = "PCE"
+at = "2027-05-27T08:30:00-04:00"
+impact = "High"
+source = "https://www.bea.gov/news/schedule"
+
+[[event]]
+title = "Non-Farm Payrolls"
+at = "2027-06-04T08:30:00-04:00"
+impact = "High"
+source = "https://www.bls.gov/schedule/news_release/empsit.htm"
+
+[[event]]
+title = "FOMC"
+at = "2027-06-09T14:00:00-04:00"
+impact = "High"
+source = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+
+[[event]]
+title = "CPI"
+at = "2027-06-10T08:30:00-04:00"
+impact = "High"
+source = "https://www.bls.gov/schedule/news_release/cpi.htm"
+
+[[event]]
+title = "GDP"
+at = "2027-06-25T08:30:00-04:00"
+impact = "High"
+source = "https://www.bea.gov/news/schedule"
+
+[[event]]
+title = "PCE"
+at = "2027-06-25T08:30:00-04:00"
+impact = "High"
+source = "https://www.bea.gov/news/schedule"

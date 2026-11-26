@@ -7,6 +7,19 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from urllib.parse import urlparse
 
+_XAU_FLAG_WARNED = False
+
+
+def _warn_xau_flag(raw: str) -> None:
+    """Unrecognized WARP_XAU_ENABLED is disabled. Log it once and do not raise."""
+    global _XAU_FLAG_WARNED
+    if _XAU_FLAG_WARNED:
+        return
+    _XAU_FLAG_WARNED = True
+    from .telemetry import log_event
+
+    log_event("xau_config_warning", value=raw[:40])
+
 
 def dec(name: str, fallback: str) -> Decimal:
     result = Decimal(os.getenv(name, fallback))
@@ -172,6 +185,7 @@ class Settings:
     dust_usdt: Decimal = Decimal("1.00")
     stress_gap_share: Decimal = Decimal("0.50")
     risk_decisions_keep: int = 5000
+    xau_enabled: bool = False
 
     def __post_init__(self) -> None:
         if self.mode not in {"observe", "paper", "live"}:
@@ -335,6 +349,9 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
+        xau_flag = os.getenv("WARP_XAU_ENABLED", "")
+        if xau_flag not in {"", "0", "1"}:
+            _warn_xau_flag(xau_flag)
         return cls(
             mode=os.getenv("TRADING_MODE", "observe").lower(),
             db_path=os.getenv("WARP_DB_PATH", "/data/warp.db"),
@@ -448,4 +465,5 @@ class Settings:
             dust_usdt=dec("WARP_DUST_USDT", "1.00"),
             stress_gap_share=dec("WARP_STRESS_GAP_SHARE", "0.50"),
             risk_decisions_keep=int(os.getenv("WARP_RISK_DECISIONS_KEEP", "5000")),
+            xau_enabled=xau_flag == "1",
         )

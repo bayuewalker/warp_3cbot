@@ -26,6 +26,7 @@ from .supervisor import ResearchGate, once
 from .telemetry import configure_logging, log_event, send_alert, send_telegram
 from .threecommas import IntegrationError, ThreeCommas
 from .vibe import VibeResearch
+from .xau.runner import start_xau
 
 STOP = threading.Event()
 
@@ -253,13 +254,28 @@ def main():
     port = int(os.getenv("PORT", "8080"))
     server = _start_http(port)
     vibe_process = None
-    broker = research = journal = market = screener = analyst = None
+    broker = research = journal = market = screener = analyst = xau = None
     try:
         vibe_process = start_vibe()
         broker = ThreeCommas(cfg.api_url, cfg.api_key, cfg.api_secret)
         research = VibeResearch(cfg.vibe_url, cfg.vibe_key)
         market = MarketData(cfg.market_data_url, cfg)
         journal = OrderJournal(cfg.db_path)
+        xau = None
+        if cfg.xau_enabled:
+            try:
+                xau = start_xau(
+                    cfg_db_path=cfg.db_path,
+                    alert_sink=lambda event, detail: enqueue_incident(
+                        journal,
+                        event,
+                        detail,
+                        now=datetime.now(timezone.utc),
+                        channel=channel_configured(cfg),
+                    ),
+                )
+            except Exception as exc:
+                log_event("xau_start_failed", error=exc.__class__.__name__)
         screener, analyst = _build_research(cfg)
         engine = Engine(cfg, broker, research, journal, market, screener=screener, analyst=analyst)
         import httpx
@@ -333,6 +349,11 @@ def main():
             research.close()
         if broker:
             broker.close()
+        try:
+            if xau:
+                xau.stop(timeout=2)
+        except Exception:
+            log_event("xau_stop_failed", error="xau_stop")
         if vibe_process and vibe_process.poll() is None:
             vibe_process.terminate()
             try:

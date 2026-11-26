@@ -280,6 +280,19 @@ def _card_expires_at(card: dict, now: datetime, max_age_minutes: int) -> datetim
         return datetime.max.replace(tzinfo=timezone.utc)
 
 
+def _xau_block() -> dict:
+    """Read the XAU snapshot. A failure becomes an unavailable block and nothing else changes."""
+    try:
+        from .xau.status import snapshot
+
+        block = snapshot()
+        if not isinstance(block, dict):
+            return {"enabled": False, "state": "unavailable"}
+        return block
+    except Exception:
+        return {"enabled": False, "state": "unavailable"}
+
+
 def publish(cfg, journal, engine) -> None:
     status = engine.status
     decision = getattr(engine, "last_decision", None)
@@ -343,6 +356,7 @@ def publish(cfg, journal, engine) -> None:
         "pipeline": pipeline,
         "published_at": now.isoformat(),
         "risk_decisions": journal.recent_risk_decisions(20),
+        "xau": _xau_block(),
     }
     SNAPSHOT["/api/risk"] = {
         "reason": status.reason,
