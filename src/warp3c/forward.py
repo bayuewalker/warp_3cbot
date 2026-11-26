@@ -13,9 +13,12 @@ from .market import MarketDataError
 
 HORIZONS = (("4h", 4), ("24h", 24), ("72h", 72))
 WAIT_BAND = Decimal("0.005")
-# Horizons whose price lookup failed in this process. The next cycle skips them
-# so a missing price does not consume the attempt cap again.
-_FAILED: set[tuple[int, int, str]] = set()
+# A failed lookup waits, then retries. The wait doubles and stops growing at an hour,
+# so one transient miss does not pin the row, and it does not take a cap slot every scan.
+_RETRY_BASE_SECONDS = 60
+_RETRY_MAX_SECONDS = 3600
+# key -> (failure count, next time the lookup may run)
+_FAILED: dict[tuple[str, int, str], tuple[int, datetime]] = {}
 
 
 def is_hit(verdict: str, move: Decimal) -> bool:
@@ -28,11 +31,27 @@ def is_hit(verdict: str, move: Decimal) -> bool:
     return False
 
 
+def _backoff_seconds(failures: int) -> int:
+    delay = _RETRY_BASE_SECONDS
+    for _ in range(max(0, failures - 1)):
+        if delay >= _RETRY_MAX_SECONDS:
+            return _RETRY_MAX_SECONDS
+        delay *= 2
+    return min(delay, _RETRY_MAX_SECONDS)
+
+
+def _mark_failed(key: tuple[str, int, str], moment: datetime) -> None:
+    prior = _FAILED.get(key)
+    failures = 1 if prior is None else prior[0] + 1
+    _FAILED[key] = (failures, moment + timedelta(seconds=_backoff_seconds(failures)))
+
+
 def evaluate_due(journal, price_at, now: datetime, *, limit: int = 20) -> int:
     """Fill horizons that are already due. ``limit`` counts price lookups, not only fills.
 
-    A missing price leaves the cell empty. A horizon that failed earlier in this
-    process is not requested again, so the backlog can move on to other rows.
+    A missing price leaves the cell empty. That horizon waits out a backoff before
+    the next lookup, and the wait counts against the same per-scan cap, so the
+    rest of the backlog still moves.
     """
     if price_at is None:
         return 0
@@ -57,32 +76,36 @@ def evaluate_due(journal, price_at, now: datetime, *, limit: int = 20) -> int:
             if moment < at:
                 continue
             due.append((label, at))
-        pending = [
-            (label, at)
-            for label, at in due
-            if (journal_key, int(row["id"]), label) not in _FAILED
-        ]
+        pending: list[tuple[str, datetime]] = []
+        for label, at in due:
+            key = (journal_key, int(row["id"]), label)
+            record = _FAILED.get(key)
+            if record is not None and moment < record[1]:
+                continue
+            pending.append((label, at))
         if due and not pending:
             continue
         for label, at in pending:
             if attempts >= limit:
                 break
+            key = (journal_key, int(row["id"]), label)
             attempts += 1
             try:
                 later = price_at(row["symbol"], at)
             except (MarketDataError, ValueError, ArithmeticError, TypeError, OSError):
                 later = None
             if later is None:
-                _FAILED.add((journal_key, int(row["id"]), label))
+                _mark_failed(key, moment)
                 continue
             try:
                 later_price = Decimal(str(later))
             except (ValueError, ArithmeticError, TypeError):
-                _FAILED.add((journal_key, int(row["id"]), label))
+                _mark_failed(key, moment)
                 continue
             if later_price <= 0:
-                _FAILED.add((journal_key, int(row["id"]), label))
+                _mark_failed(key, moment)
                 continue
+            _FAILED.pop(key, None)
             move = (later_price - decision) / decision
             journal.set_verdict_horizon(row["id"], label, later_price, move)
             filled += 1

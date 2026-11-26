@@ -303,6 +303,18 @@ def paced_research_seconds(cfg, now: datetime, remaining: int, per_run: int) -> 
     return max(base, math.ceil(paced))
 
 
+def _show_paced_next(gate: ResearchGate, engine, clocks: Clocks, interval: int) -> None:
+    """Publish the time the loop will actually wait. Backoff and budget_wait keep their own clock."""
+    if clocks.research is None:
+        return
+    with gate._lock:
+        if gate._state != "ok":
+            return
+        gate._next = clocks.research + timedelta(seconds=interval)
+        view = gate._status_locked()
+    engine.research_status = view
+
+
 def _score_forward(engine, moment: datetime) -> None:
     """Grade due forward rows at most once per scan interval. A failure stays inside the loop."""
     last = getattr(engine, "_forward_scored_at", None)
@@ -369,6 +381,7 @@ def once(engine, gate: ResearchGate, clocks: Clocks, *, now: datetime | None = N
         clocks = gate.settle(engine, clocks, moment, engine.cfg)
     if hold_for_budget and not gate.busy():
         gate.note_budget_wait(engine, moment)
+    _show_paced_next(gate, engine, clocks, interval)
     if engine._halted():
         return clocks
     pending = gate.take(engine.cfg.max_signal_age, moment)

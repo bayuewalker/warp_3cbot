@@ -8,6 +8,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+import httpx
 from test_core import evidence, sig
 from test_failures import ExplodingBroker, Markets, Research
 
@@ -22,8 +23,8 @@ from warp3c.engine import Engine
 from warp3c.forward import evaluate_due
 from warp3c.httpapi import dispatch
 from warp3c.llm import LlmAnalyst, _evidence_lines
-from warp3c.market import MarketDataError
-from warp3c.operator import HEALTH, _xau_block
+from warp3c.market import MarketData, MarketDataError, analyze, closed_candles
+from warp3c.operator import HEALTH, _research_view, _xau_block
 from warp3c.qualify import qualify
 from warp3c.schedule import Clocks
 from warp3c.state import OrderJournal
@@ -198,6 +199,100 @@ class ForwardTests(unittest.TestCase):
             self.assertEqual(len(failed), 1)
             journal.close()
 
+    def test_failed_lookup_retries_after_backoff_and_then_scores(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = OrderJournal(os.path.join(tmp, "warp.db"))
+            journal.record_verdict("BTCUSDT", "BUY", Decimal("0.8"), Decimal("100"), T0 - timedelta(hours=80))
+            calls = {"n": 0}
+
+            def price_at(_symbol, _moment):
+                calls["n"] += 1
+                if calls["n"] <= 3:
+                    return None
+                return Decimal("110")
+
+            self.assertEqual(evaluate_due(journal, price_at, T0, limit=20), 0)
+            self.assertEqual(calls["n"], 3)
+            self.assertEqual(evaluate_due(journal, price_at, T0 + timedelta(seconds=59), limit=20), 0)
+            self.assertEqual(calls["n"], 3)
+            self.assertEqual(evaluate_due(journal, price_at, T0 + timedelta(seconds=60), limit=20), 3)
+            self.assertEqual(calls["n"], 6)
+            row = journal.verdict_rows()[0]
+            self.assertIsNotNone(row["move_4h"])
+            self.assertIsNotNone(row["move_24h"])
+            self.assertIsNotNone(row["move_72h"])
+            journal.close()
+
+    def test_a_second_miss_doubles_the_backoff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = OrderJournal(os.path.join(tmp, "warp.db"))
+            journal.record_verdict("BTCUSDT", "BUY", Decimal("0.8"), Decimal("100"), T0 - timedelta(hours=80))
+            calls = {"n": 0}
+
+            def price_at(_symbol, _moment):
+                calls["n"] += 1
+                return None
+
+            evaluate_due(journal, price_at, T0, limit=20)
+            evaluate_due(journal, price_at, T0 + timedelta(seconds=60), limit=20)
+            self.assertEqual(calls["n"], 6)
+            evaluate_due(journal, price_at, T0 + timedelta(seconds=179), limit=20)
+            self.assertEqual(calls["n"], 6)
+            evaluate_due(journal, price_at, T0 + timedelta(seconds=180), limit=20)
+            self.assertEqual(calls["n"], 9)
+            journal.close()
+
+    def test_retry_after_backoff_stays_inside_the_lookup_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = OrderJournal(os.path.join(tmp, "warp.db"))
+            start = T0 - timedelta(hours=80)
+            for _ in range(10):
+                journal.record_verdict("BTCUSDT", "BUY", Decimal("0.8"), Decimal("100"), start)
+            calls = {"n": 0}
+
+            def price_at(_symbol, _moment):
+                calls["n"] += 1
+                return None
+
+            evaluate_due(journal, price_at, T0, limit=20)
+            self.assertEqual(calls["n"], 20)
+            evaluate_due(journal, price_at, T0 + timedelta(seconds=60), limit=20)
+            self.assertEqual(calls["n"], 40)
+            journal.close()
+
+    def test_a_later_scan_retries_a_transient_lookup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Settings(db_path=os.path.join(tmp, "warp.db"), scan_seconds=30, research_seconds=3600)
+            journal = OrderJournal(cfg.db_path)
+            journal.record_verdict("BTCUSDT", "BUY", Decimal("0.8"), Decimal("100"), T0 - timedelta(hours=80))
+            market = Markets()
+            calls = {"n": 0}
+
+            def price_at(_symbol, _moment):
+                calls["n"] += 1
+                if calls["n"] <= 3:
+                    raise MarketDataError("lookup failed")
+                return Decimal("110")
+
+            market.price_at = price_at
+            engine = Engine(cfg, ExplodingBroker(), Research(), journal, market)
+            engine.cycle = lambda: (_ for _ in ()).throw(AssertionError("cycle"))
+            engine.collect_research = lambda: []
+            gate = ResearchGate()
+            clocks = Clocks(research=T0, monitor=T0, reconcile=T0)
+            clocks = once(engine, gate, clocks, now=T0)
+            self.assertIsNone(journal.verdict_rows()[0]["move_4h"])
+            self.assertEqual(calls["n"], 3)
+            clocks = once(engine, gate, clocks, now=T0 + timedelta(seconds=30))
+            self.assertEqual(calls["n"], 3)
+            once(engine, gate, clocks, now=T0 + timedelta(seconds=60))
+            row = journal.verdict_rows()[0]
+            self.assertIsNotNone(row["move_4h"])
+            self.assertIsNotNone(row["move_24h"])
+            self.assertIsNotNone(row["move_72h"])
+            self.assertEqual(calls["n"], 6)
+            journal.close()
+
 
 class ResearchPaceTests(unittest.TestCase):
     def _engine(self, tmp, **overrides):
@@ -226,6 +321,28 @@ class ResearchPaceTests(unittest.TestCase):
             self.assertNotEqual(engine.research_status["state"] if engine.research_status else "", "budget_wait")
             analyst.close()
             journal.close()
+
+    def test_status_next_attempt_is_the_paced_time(self):
+        noon = datetime(2026, 11, 26, 12, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp:
+            _cfg, journal, engine = self._engine(tmp)
+            analyst = self._analyst(journal)
+            engine.analyst = analyst
+            self._store_budget(journal, 44)
+            started = noon - timedelta(hours=2)
+            journal.note_research_started(started)
+            engine.collect_research = lambda: []
+            try:
+                once(engine, ResearchGate(), clocks_from_journal(journal), now=noon)
+                expected = (started + timedelta(seconds=6 * 3600)).isoformat()
+                plain = (started + timedelta(seconds=3600)).isoformat()
+                self.assertNotEqual(expected, plain)
+                self.assertEqual(engine.research_status["next_attempt_at"], expected)
+                self.assertEqual(_research_view(engine)["next_attempt_at"], expected)
+                self.assertEqual(engine.research_status["state"], "ok")
+            finally:
+                analyst.close()
+                journal.close()
 
     def test_vibe_keeps_its_cadence_when_the_local_budget_is_spent(self):
         noon = datetime(2026, 11, 26, 12, tzinfo=timezone.utc)
@@ -569,6 +686,184 @@ class FaviconTests(unittest.TestCase):
         self.assertEqual(status, 204)
         self.assertEqual(body, b"")
         self.assertEqual(dispatch("GET", "/favicon.ico?v=1", {}, b"")[0], 204)
+
+
+def _raw_klines(count: int, now: datetime) -> list:
+    rows = []
+    price = 100.0
+    for i in range(count):
+        close_at = now - timedelta(minutes=15 * (count - i))
+        open_at = close_at - timedelta(minutes=15)
+        price += 0.4
+        rows.append(
+            [
+                int(open_at.timestamp() * 1000),
+                f"{price:.4f}",
+                f"{price + 1:.4f}",
+                f"{price - 1:.4f}",
+                f"{price:.4f}",
+                "1",
+                int(close_at.timestamp() * 1000),
+                "1000",
+                0,
+                "0",
+                "0",
+                "0",
+            ]
+        )
+    return rows
+
+
+def _spot_book(klines):
+    def handler(req):
+        if req.url.path.endswith("exchangeInfo"):
+            return httpx.Response(
+                200,
+                json={
+                    "symbols": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "status": "TRADING",
+                            "quoteAsset": "USDT",
+                            "isSpotTradingAllowed": True,
+                            "quoteAssetPrecision": 2,
+                            "filters": [{"filterType": "NOTIONAL", "minNotional": "5"}],
+                        }
+                    ]
+                },
+            )
+        if req.url.path.endswith("ticker/24hr"):
+            return httpx.Response(
+                200,
+                json={"symbol": "BTCUSDT", "quoteVolume": "5000000", "lastPrice": "130"},
+            )
+        if req.url.path.endswith("klines"):
+            return klines(req)
+        raise AssertionError(req.url.path)
+
+    return handler
+
+
+class CandleFetchTests(unittest.TestCase):
+    def test_five_hundred_configured_candles_reach_the_backtest(self):
+        now = datetime(2026, 11, 26, 12, tzinfo=timezone.utc)
+        series = _raw_klines(501, now)
+        seen = []
+
+        def klines(req):
+            limit = int(req.url.params["limit"])
+            seen.append(limit)
+            self.assertNotIn("endTime", req.url.params)
+            return httpx.Response(200, json=series[-limit:])
+
+        cfg = Settings(backtest_candles=500, rsi_max=Decimal("100"), research_seconds=3600)
+        data = MarketData(
+            "https://data-api.binance.vision",
+            cfg,
+            transport=httpx.MockTransport(_spot_book(klines)),
+        )
+        try:
+            item = data.scan(("BTCUSDT",), now=now)["BTCUSDT"]
+        finally:
+            data.close()
+        candles = data.last_candles["BTCUSDT"]
+        self.assertEqual(seen, [501])
+        self.assertEqual(len(candles), 500)
+        self.assertEqual(len(candles_for_backtest(candles, 500)), 500)
+        result = run_backtest(candles, Decimal("0.20"), Decimal("0.025"), min_trades=3)
+        self.assertNotEqual(result.reason, "not_enough_candles")
+        _gated, card = qualify(sig(), evidence(), candles, cfg)
+        self.assertNotEqual(card["backtest_reason"], "not_enough_candles")
+        recent = analyze(
+            "BTCUSDT",
+            closed_candles(series[-120:], now=now),
+            quote_volume_24h=Decimal("5000000"),
+            min_notional=Decimal("5"),
+            quote_precision=2,
+            tradable=True,
+            cfg=cfg,
+            now=now,
+        )
+        self.assertEqual(item.rsi, recent.rsi)
+        self.assertEqual(item.momentum, recent.momentum)
+
+    def test_default_scan_still_requests_120(self):
+        now = datetime(2026, 11, 26, 12, tzinfo=timezone.utc)
+        series = _raw_klines(120, now)
+        seen = []
+
+        def klines(req):
+            seen.append((int(req.url.params["limit"]), req.url.params.get("endTime")))
+            return httpx.Response(200, json=series)
+
+        cfg = Settings(research_seconds=3600)
+        data = MarketData(
+            "https://data-api.binance.vision",
+            cfg,
+            transport=httpx.MockTransport(_spot_book(klines)),
+        )
+        try:
+            data.scan(("BTCUSDT",), now=now)
+        finally:
+            data.close()
+        self.assertEqual(seen, [(120, None)])
+        self.assertEqual(len(data.last_candles["BTCUSDT"]), 120)
+
+    def test_a_window_past_the_exchange_page_asks_for_the_older_bars(self):
+        now = datetime(2026, 11, 26, 12, tzinfo=timezone.utc)
+        series = _raw_klines(1001, now)
+        seen = []
+
+        def klines(req):
+            limit = int(req.url.params["limit"])
+            end = req.url.params.get("endTime")
+            rows = series
+            if end is not None:
+                end_ms = int(end)
+                rows = [row for row in rows if row[0] <= end_ms]
+            seen.append((limit, end))
+            return httpx.Response(200, json=rows[-limit:])
+
+        cfg = Settings(backtest_candles=1000, research_seconds=3600)
+        data = MarketData(
+            "https://data-api.binance.vision",
+            cfg,
+            transport=httpx.MockTransport(_spot_book(klines)),
+        )
+        try:
+            data.scan(("BTCUSDT",), now=now)
+        finally:
+            data.close()
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(seen[0], (1000, None))
+        self.assertEqual(seen[1][0], 1)
+        self.assertIsNotNone(seen[1][1])
+        candles = data.last_candles["BTCUSDT"]
+        self.assertEqual(len(candles), 1000)
+        result = run_backtest(candles, Decimal("0.20"), Decimal("0.025"), min_trades=3)
+        self.assertNotEqual(result.reason, "not_enough_candles")
+
+    def test_a_short_fetch_fails_the_backtest_closed(self):
+        now = datetime(2026, 11, 26, 12, tzinfo=timezone.utc)
+        series = _raw_klines(120, now)
+
+        def klines(_req):
+            return httpx.Response(200, json=series)
+
+        cfg = Settings(backtest_candles=500, research_seconds=3600)
+        data = MarketData(
+            "https://data-api.binance.vision",
+            cfg,
+            transport=httpx.MockTransport(_spot_book(klines)),
+        )
+        try:
+            data.scan(("BTCUSDT",), now=now)
+        finally:
+            data.close()
+        candles = data.last_candles["BTCUSDT"]
+        self.assertLess(len(candles), 500)
+        _gated, card = qualify(sig(), evidence(), candles, cfg)
+        self.assertEqual(card["backtest_reason"], "not_enough_candles")
 
 
 class BacktestWindowTests(unittest.TestCase):

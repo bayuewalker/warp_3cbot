@@ -17,6 +17,10 @@ class MarketDataError(RuntimeError):
     """Candle, ticker, or exchange rule data is missing. Do not trade."""
 
 
+# Binance returns at most this many klines per request.
+_KLINE_PAGE = 1000
+
+
 def ema(values: list[Decimal], period: int) -> Decimal:
     if len(values) < period or period < 1:
         raise ValueError("Not enough closes for EMA")
@@ -358,17 +362,63 @@ class MarketData:
         except (httpx.HTTPError, ValueError) as exc:
             raise MarketDataError(f"Market data {path} failed") from exc
 
+    def _fetch_klines(self, symbol: str, interval: str, count: int) -> list:
+        """Most recent ``count`` klines, oldest first. Pages backward past the exchange cap."""
+        collected: list = []
+        seen: set[int] = set()
+        end_ms: int | None = None
+        while len(collected) < count:
+            limit = min(_KLINE_PAGE, count - len(collected))
+            params: dict = {"symbol": symbol, "interval": interval, "limit": limit}
+            if end_ms is not None:
+                params["endTime"] = end_ms
+            rows = self._get("/api/v3/klines", params)
+            if not isinstance(rows, list) or not rows:
+                break
+            older: list = []
+            for row in rows:
+                if not isinstance(row, list) or len(row) < 8:
+                    raise MarketDataError("Kline row is incomplete")
+                open_ms = int(row[0])
+                if end_ms is not None and (open_ms in seen or open_ms > end_ms):
+                    continue
+                seen.add(open_ms)
+                older.append(row)
+            if not older:
+                break
+            older.sort(key=lambda row: int(row[0]))
+            collected = older + collected
+            if len(rows) < limit:
+                break
+            end_ms = int(older[0][0]) - 1
+        collected.sort(key=lambda row: int(row[0]))
+        if len(collected) > count:
+            return collected[-count:]
+        return collected
+
     def _one(self, symbol: str, now: datetime) -> MarketEvidence:
         rules = self._rules(symbol)
         ticker = self._get("/api/v3/ticker/24hr", {"symbol": symbol})
         if not isinstance(ticker, dict):
             raise MarketDataError("Ticker payload is not an object")
-        klines = self._get("/api/v3/klines", {"symbol": symbol, "interval": "15m", "limit": 120})
-        candles = closed_candles(klines, now=now)
-        self.last_candles[symbol] = candles
+        need = int(getattr(self.cfg, "backtest_candles", 120) or 120)
+        if need < 120:
+            need = 120
+        # The default request stays 120. A longer window asks for one extra raw bar
+        # so the still-forming candle does not leave the closed series short.
+        raw_count = 120 if need == 120 else need + 1
+        klines = self._fetch_klines(symbol, "15m", raw_count)
+        closed = closed_candles(klines, now=now)
+        if need == 120:
+            self.last_candles[symbol] = closed
+            decision = closed
+        else:
+            # Regime and RSI stay on the same recent window the 120-candle scan used.
+            decision = closed_candles(klines[-120:], now=now)
+            self.last_candles[symbol] = closed[-need:] if len(closed) >= need else closed
         item = analyze(
             symbol,
-            candles,
+            decision,
             quote_volume_24h=positive(ticker.get("quoteVolume"), "24h quote volume"),
             min_notional=rules["min_notional"],
             quote_precision=rules["quote_precision"],

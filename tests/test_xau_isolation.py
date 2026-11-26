@@ -188,11 +188,15 @@ class SnapshotTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             runner = start_xau(os.path.join(tmp, "warp.db"), lambda _e, _d: True, cycle=slow)
-            self.addCleanup(lambda: runner.stop(timeout=0.2))
-            self.assertTrue(entered.wait(1))
-            started = time.perf_counter()
-            snapshot()
-            self.assertLess(time.perf_counter() - started, 0.01)
+            try:
+                self.assertTrue(entered.wait(1))
+                started = time.perf_counter()
+                snapshot()
+                self.assertLess(time.perf_counter() - started, 0.01)
+            finally:
+                # stop before the next test. A live heartbeat uses the wall clock, and the
+                # stall fixture is only a few minutes away from it.
+                runner.stop(timeout=2)
 
 
 class ContentionTests(unittest.TestCase):
