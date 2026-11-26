@@ -78,11 +78,12 @@ def prepare(raw: dict[str, list[Bar]], now: datetime) -> CleanBook:
             else:
                 unique.append(bar)
         if timeframe != "1d":
-            limit = timedelta(seconds=seconds + seconds // 2)
+            step = timedelta(seconds=seconds)
+            limit = step + step / 2
             for prev, nxt in zip(unique, unique[1:], strict=False):
                 delta = nxt.open_time - prev.open_time
-                # The daily 17:00–18:00 break removes one hour. That hole is not a gap.
-                if delta > limit and not _break_hole(prev.open_time, nxt.open_time):
+                # Weekend and the 17:00–18:00 break remove bars. Those holes are not gaps.
+                if delta > limit and not _scheduled_close(prev.open_time, nxt.open_time, step):
                     gaps.append(timeframe)
                     break
         cleaned[timeframe] = tuple(unique)
@@ -96,9 +97,18 @@ def prepare(raw: dict[str, list[Bar]], now: datetime) -> CleanBook:
     return CleanBook(cleaned, tuple(gaps), stale)
 
 
-def _break_hole(left: datetime, right: datetime) -> bool:
-    """True when the missing span is only the scheduled New York hour break."""
-    return market_closed(left + timedelta(minutes=30)) and (right - left) <= timedelta(hours=2)
+def _scheduled_close(left: datetime, right: datetime, step: timedelta) -> bool:
+    """True when every missing bar of this timeframe opens inside a K4 close."""
+    if step <= timedelta(0):
+        return False
+    cursor = left + step
+    if cursor >= right:
+        return False
+    while cursor < right:
+        if not market_closed(cursor):
+            return False
+        cursor += step
+    return True
 
 
 def shift(bars: tuple[Bar, ...] | list[Bar], basis: Decimal) -> tuple[Bar, ...]:

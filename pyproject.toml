@@ -18,6 +18,9 @@ dev = ["ruff>=0.8,<1"]
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"warp3c.xau" = ["profiles/*.toml", "data/*.toml"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

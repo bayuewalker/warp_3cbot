@@ -31,7 +31,7 @@ from warp3c.xau.news import NewsBook, parse_ff
 from warp3c.xau.outcome import Position, dump_tags, on_bar, position_from_row
 from warp3c.xau.profiles import ProfileError, example_lot, load_profile
 from warp3c.xau.riskbook import RiskBook
-from warp3c.xau.runner import start_xau
+from warp3c.xau.runner import _due_bars, start_xau
 from warp3c.xau.stats import expectancy
 from warp3c.xau.status import HUB, snapshot
 from warp3c.xau.store import XauStore, new_id
@@ -463,6 +463,10 @@ class GateAndRiskTests(unittest.TestCase):
         rows = [{"sent": "1", "status": "PENDING", "model": "S1", "engine": "SMC", "window": "London KZ"}]
         allowed, rule = RiskBook(rows, profile, now).allow("SMC", "S1", "London KZ")
         self.assertEqual((allowed, rule), (False, "E4"))
+        shadow = [{"sent": "0", "status": "PENDING", "model": "K1", "engine": "SCALP", "window": "NY KZ"}]
+        self.assertTrue(RiskBook(shadow, profile, now).allow("SMC", "S1", "London KZ")[0])
+        rejected = [{"sent": 0, "status": "PENDING", "model": "S1", "engine": "SMC", "window": "London KZ"}]
+        self.assertTrue(RiskBook(rejected, profile, now).allow("EMA", "EMA_TR", "London EMA")[0])
 
     def test_u_rules_and_m19_caps(self):
         profile = load_profile(PROFILE)
@@ -562,6 +566,19 @@ class OutcomeTests(unittest.TestCase):
         smc = on_bar(self._pos(), self._bar(0, 100, 100.5, 99.8, 100.2))
         partial = on_bar(smc, self._bar(1, 100.4, 100.6, 100.2, 100.5), news_cut=True)
         self.assertEqual(partial.remaining, D("0.5"))
+        key = "2026-11-26T08:30:00+00:00"
+        fresh_smc = on_bar(self._pos(), self._bar(0, 100, 100.5, 99.8, 100.2))
+        once = on_bar(fresh_smc, self._bar(1, 100.4, 100.6, 100.2, 100.5), news_cut=True, news_key=key)
+        again = on_bar(once, self._bar(2, 100.4, 100.6, 100.2, 100.5), news_cut=True, news_key=key)
+        self.assertEqual(again.remaining, D("0.5"))
+        self.assertEqual(again.status, "FILLED")
+        restored = position_from_row({
+            "direction": "long", "engine": "SMC", "entry": "100", "sl": "98", "tp1": "104",
+            "tp2": "110", "spread_assumed": "0.30", "status": "FILLED", "fill_price": "100",
+            "entry_type": "limit", "realized_r": str(once.realized_r), "tags_json": dump_tags(once, {}),
+        })
+        held = on_bar(restored, self._bar(3, 100.4, 100.6, 100.2, 100.5), news_cut=True, news_key=key)
+        self.assertEqual(held.remaining, D("0.5"))
 
     def test_restart_resumes_from_tags(self):
         pos = self._pos(status="TP1", fill_price=D("100"), tp1_done=True, remaining=D("0.5"))
@@ -686,6 +703,24 @@ class FeedTests(unittest.TestCase):
         fresh = prepare({"5m": [_bar(now - timedelta(minutes=10), 1, 2, 0.5, 1.5, "5m")]}, now)
         self.assertFalse(fresh.stale_m5)
 
+    def test_prepare_treats_weekend_and_the_daily_break_as_continuous(self):
+        start = datetime(2026, 11, 20, 14, tzinfo=UTC)  # Friday
+        end = datetime(2026, 11, 23, 20, tzinfo=UTC)  # Monday
+        bars = []
+        cursor = start
+        while cursor <= end:
+            bars.append(_bar(cursor, "1", "2", "0.5", "1.5", "1h"))
+            cursor += timedelta(hours=1)
+        now = end + timedelta(hours=2)
+        self.assertEqual(prepare({"1h": bars}, now).gaps, ())
+        missing = datetime(2026, 11, 23, 15, tzinfo=UTC)
+        holed = [bar for bar in bars if bar.open_time != missing]
+        self.assertEqual(prepare({"1h": holed}, now).gaps, ("1h",))
+        created = datetime(2026, 11, 23, 16, tzinfo=UTC)
+        due = _due_bars(bars, None, created)
+        self.assertTrue(due)
+        self.assertGreaterEqual(due[0].open_time, created)
+
     def test_fallback_uses_bybit_when_binance_fails(self):
         older = 1_700_000_000_000
         newer = older + 60_000
@@ -742,6 +777,26 @@ class BasisAndNewsTests(unittest.TestCase):
         self.assertIsNotNone(book.in_window(release + timedelta(minutes=18), "SMC"))
         self.assertTrue(book.cancel_pending(release - timedelta(minutes=25), release + timedelta(hours=1)))
         self.assertFalse(book.cancel_pending(release - timedelta(hours=2), release + timedelta(hours=1)))
+        born_after = release + timedelta(hours=1)
+        self.assertFalse(book.cancel_pending(release + timedelta(hours=3), release + timedelta(hours=4), born_after))
+        self.assertTrue(
+            book.cancel_pending(release - timedelta(minutes=25), release + timedelta(hours=1), release - timedelta(hours=2))
+        )
+        stale_release = NewsBook()
+        yesterday = release - timedelta(days=1)
+        stale_release.note_fetch(release, [
+            {"title": "GDP", "country": "USD", "date": yesterday.isoformat(), "impact": "High"},
+        ])
+        self.assertFalse(
+            stale_release.cancel_pending(release, release + timedelta(hours=2), release - timedelta(minutes=30))
+        )
+        self.assertTrue(
+            stale_release.cancel_pending(
+                yesterday - timedelta(minutes=20),
+                yesterday + timedelta(hours=1),
+                yesterday - timedelta(hours=2),
+            )
+        )
         stale = NewsBook()
         stale.note_fetch(datetime(2026, 11, 24, tzinfo=UTC), [])
         self.assertTrue(stale.view(datetime(2026, 11, 26, tzinfo=UTC)).blocked)

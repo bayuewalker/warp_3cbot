@@ -37,6 +37,7 @@ class Position:
     poi_high: D | None = None
     valid_until: datetime | None = None
     risk: D | None = None
+    news_cuts: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # 1R is the stop distance at the signal. Later SL moves must not rewrite it.
@@ -63,6 +64,7 @@ def on_bar(
     ema50: D | None = None,
     ema_recross: bool = False,
     news_cut: bool = False,
+    news_key: str = "",
     news_cancel: bool = False,
     window_ended: bool = False,
     lost_delivery: bool = False,
@@ -91,7 +93,9 @@ def on_bar(
     if pos.status in TERMINAL:
         return pos
     _mark_excursions(pos, bar)
-    if news_cut and not pos.tp1_done:
+    if news_cut and not pos.tp1_done and news_key not in pos.news_cuts:
+        if news_key:
+            pos.news_cuts.append(news_key)
         if pos.engine == "SMC":
             pos = _partial(pos, D("0.5"), bar.close, "NEWS_CUT")
             if pos.remaining <= 0:
@@ -294,6 +298,7 @@ def position_from_row(row: dict) -> Position:
         fill_price=None if not row.get("fill_price") else D(str(row["fill_price"])),
         tp1_done=bool(tags.get("tp1_done")),
         entry_type=str(row.get("entry_type") or "limit"),
+        news_cuts=[str(item) for item in tags.get("news_cuts") or []],
     )
     if row.get("filled_at"):
         pos.filled_at = _stamp(row["filled_at"])
@@ -317,4 +322,5 @@ def dump_tags(pos: Position, previous: dict) -> str:
     previous["remaining"] = str(pos.remaining)
     previous["tp1_done"] = pos.tp1_done
     previous["risk"] = str(pos.r)
+    previous["news_cuts"] = list(pos.news_cuts)
     return json.dumps(previous, sort_keys=True)

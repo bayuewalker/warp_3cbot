@@ -409,15 +409,17 @@ class XauRunner:
             return
         for row in self.store.open_signals():
             cursor = self.store.tracked_through(row["id"])
+            created = _stamp(row["created_at_utc"]) if row.get("created_at_utc") else None
             pos = position_from_row(row)
-            for bar in m1:
+            for bar in _due_bars(m1, cursor, created):
                 stamp = bar.open_time.isoformat()
-                if cursor and stamp <= cursor:
-                    continue
+                release = self.news.in_window(bar.open_time, pos.engine)
+                news_key = "" if release is None else release.at.isoformat()
                 pos = on_bar(
                     pos, bar,
-                    news_cancel=self.news.cancel_pending(bar.open_time, pos.valid_until),
-                    news_cut=self.news.in_window(bar.open_time, pos.engine) is not None,
+                    news_cancel=self.news.cancel_pending(bar.open_time, pos.valid_until, created),
+                    news_cut=bool(news_key),
+                    news_key=news_key,
                     window_ended=pos.valid_until is not None and bar.open_time >= pos.valid_until,
                     **_management(bars, bar, pos),
                 )
@@ -564,6 +566,19 @@ def _brief(row: dict) -> dict:
         "sl": row.get("sl"),
         "tp1": row.get("tp1"),
     }
+
+
+def _due_bars(bars, cursor: str | None, created_at: datetime | None):
+    """Bars strictly after the resume cursor and not before the signal existed."""
+    due = []
+    for bar in bars:
+        stamp = bar.open_time.isoformat()
+        if cursor and stamp <= cursor:
+            continue
+        if created_at is not None and bar.open_time < created_at:
+            continue
+        due.append(bar)
+    return due
 
 
 def _stamp(value) -> datetime:

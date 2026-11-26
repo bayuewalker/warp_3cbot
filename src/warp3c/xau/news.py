@@ -341,14 +341,23 @@ class NewsBook:
                 return release
         return None
 
-    def cancel_pending(self, moment: datetime, valid_until: datetime | None) -> bool:
-        """N3. Cancel at T−30 when a tier-1 release falls before the signal expires."""
+    def cancel_pending(
+        self,
+        moment: datetime,
+        valid_until: datetime | None,
+        created_at: datetime | None = None,
+    ) -> bool:
+        """N3. Cancel at T−30 when a tier-1 release falls inside this signal's life, before expiry."""
         if valid_until is None:
             return False
         for release in self.view(moment).tier1():
             trigger = release.at - timedelta(minutes=30)
-            if trigger <= moment and trigger <= valid_until and release.at <= valid_until:
-                return True
+            if trigger > moment or release.at > valid_until:
+                continue
+            # A release that already printed before the signal existed is not this signal's news.
+            if created_at is not None and release.at <= created_at:
+                continue
+            return True
         return False
 
     def next_tier1(self, moment: datetime) -> Release | None:

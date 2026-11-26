@@ -67,7 +67,11 @@ class RiskBook:
         return [row for row in rows if str(row.get("status")) in CLOSED]
 
     def _open(self) -> bool:
-        return any(str(row.get("status")) in OPEN for row in self.rows)
+        """E4 counts sent signals only. Shadow and rejected rows stay in the journal."""
+        return any(
+            str(row.get("status")) in OPEN and str(row.get("sent")) in {"1", "True"}
+            for row in self.rows
+        )
 
     def _attempts(self, window_key: str | None, day_start: datetime | None, engine: str | None) -> int:
         count = 0
