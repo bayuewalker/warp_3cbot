@@ -44,7 +44,7 @@ The live book is separate:
 
 ## forward_eval_failed
 
-Forward scoring runs on the scan clock, at most once per scan interval, with at most 20 price lookups per run. A lookup that fails waits 60 seconds, then 120, doubling up to one hour, and the retry counts against that same cap. The loop keeps running. The log is once per failure streak.
+Forward scoring runs on the scan clock, at most once per scan interval, with at most 20 price lookups per run. A lookup that fails waits 60 seconds, then 120, doubling up to one hour. Horizons that have never failed are looked up before those retries, and both count against the same cap of 20. The loop keeps running. The log is once per failure streak.
 
 ## Backtest window
 
