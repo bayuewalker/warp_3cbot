@@ -95,6 +95,7 @@ class XauRunner:
         self._basis_state = None
         self._spot_last: D | None = None
         self._spot_at: datetime | None = None
+        self._spot_state = "unavailable"
         self._perp_now: D | None = None
         self._perp_at: datetime | None = None
         self._last_signal_at: datetime | None = None
@@ -195,8 +196,14 @@ class XauRunner:
         m1 = cleaned.bars.get("1m", ())
         basis = self.basis.observe(perp_now, spot, now)
         self._live_feed = feed_name
-        self._spot_last = spot
-        self._spot_at = now if spot is not None else None
+        closed_market = market_closed(now)
+        if spot is not None:
+            self._spot_last = spot
+            if not closed_market or self._spot_at is None:
+                self._spot_at = now
+        self._spot_state = (
+            "unavailable" if self._spot_last is None else "market_closed" if closed_market else "live"
+        )
         self._perp_now = perp_now
         self._perp_at = now if perp_now is not None else None
         if m1:
@@ -235,6 +242,8 @@ class XauRunner:
             return "market_closed"
         if halt_global or halt_xau:
             return "halt"
+        if self._warming:
+            return "warming_up"
         if not basis.healthy:
             return "dirty_basis"
         if cleaned.gaps:
@@ -615,11 +624,15 @@ class XauRunner:
                 "recent": [
                     {
                         "reason": item["reason"],
+                        "count": item["count"],
                         "wib": format_wib(datetime.fromisoformat(item["at_utc"]), "%Y-%m-%d %H:%M"),
                     }
                     for item in raw["recent"]
                 ],
             }
+        stored_signal = self.store.latest_sent_at() if self.store._migrated else None
+        if stored_signal is None and self._last_signal_at is not None:
+            stored_signal = self._last_signal_at.isoformat()
         return {
             "enabled": True,
             "state": self.state,
@@ -650,9 +663,11 @@ class XauRunner:
             ),
             "spot_last": None if self._spot_last is None else format(self._spot_last, "f"),
             "spot_at": None if self._spot_at is None else self._spot_at.isoformat(),
+            "spot_state": self._spot_state,
             "perp_close": None if self._perp_now is None else format(self._perp_now, "f"),
+            "perp_at": None if self._perp_at is None else self._perp_at.isoformat(),
             "perp_bar_at": None if self._perp_at is None else self._perp_at.isoformat(),
-            "last_signal_at": None if self._last_signal_at is None else self._last_signal_at.isoformat(),
+            "last_signal_at": stored_signal,
             "funnel": funnel,
             "live_feed": self._live_feed,
             "last_bar_age_s": _bar_age(self._last_bar_at, now),

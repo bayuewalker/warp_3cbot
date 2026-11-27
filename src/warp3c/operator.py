@@ -462,6 +462,7 @@ def publish_postponed(cfg, journal) -> None:
     now = datetime.now(timezone.utc)
     block = _xau_block()
     postponed = {"state": "postponed"}
+    halted = Path(cfg.db_path).parent.joinpath("HALT").is_file()
     SNAPSHOT["/api/status"] = {
         "alive": True,
         "mode": cfg.mode,
@@ -473,7 +474,7 @@ def publish_postponed(cfg, journal) -> None:
         "execution_permitted": False,
         "opened": 0,
         "universe": [],
-        "halt": False,
+        "halt": halted,
         "pnl_today": dict(postponed),
         "equity": dict(postponed),
         "providers": {"threecommas": dict(postponed)},
@@ -502,7 +503,7 @@ def publish_postponed(cfg, journal) -> None:
     }
     SNAPSHOT["/api/alerts"] = {"alerts": journal.recent_alerts(30) if journal is not None else []}
     SNAPSHOT["/api/config"] = public_config(cfg)
-    SNAPSHOT["/api/breakers"] = {"reason": "spot_postponed", "halt": False, "risk_permitted": False}
+    SNAPSHOT["/api/breakers"] = {"reason": "spot_postponed", "halt": halted, "risk_permitted": False}
     RUNTIME["journal"] = journal
     RUNTIME["cfg"] = cfg
     RUNTIME["engine"] = None

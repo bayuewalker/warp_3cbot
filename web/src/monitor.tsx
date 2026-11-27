@@ -1,4 +1,4 @@
-import { currentPublication, spotPostponed, xauCard } from "./tradingdesk/room";
+import { currentPublication, spotPostponed } from "./tradingdesk/room";
 import { currentResumeAck, forgetResumeAck, recordResumeAck, requestPreferencesTab, resumeGate } from "./tradingdesk/activity-model";
 import { instant, sourceInstant } from "./tradingdesk/frames";
 import { TradingRoom } from "./tradingdesk/TradingRoom";
@@ -20,7 +20,7 @@ import {
   ShieldCheck,
   Wallet,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { api, type CardRow, type Status } from "./api";
 import { t, type Lang, type Key } from "./i18n";
 import { Badge, Button, Card, CardHead, Field, Loading, Problem, inputClass } from "./ui";
@@ -347,38 +347,15 @@ function useDeskTelemetry(status: StatusRead) {
   return { now, model, events };
 }
 
-function XauDesk({ lang, row }: { lang: Lang; row: Status }) {
-  const card = xauCard(row);
-  const line = (label: string, value: string, at?: string | null) =>
-    <li>{label}: {value}{at ? " · " + (fmtTime(at, lang, true) ?? t(lang, "unknown")) : ""}</li>;
-  return <Card>
-    <CardHead icon={CandlestickChart} title={t(lang, "xauDesk")} help={card.source} />
-    <ul className="symbols">
-      {line(t(lang, "ready"), card.ready ? t(lang, "ready") : card.reason, card.spotAt)}
-      {line(t(lang, "officeXauLive"), card.window + " · " + card.engine, card.spotAt)}
-      {line(t(lang, "xauNext"), card.next, card.spotAt)}
-      {line(card.source, card.spot, card.spotAt)}
-      {line("basis", card.basis, card.spotAt)}
-      {line(t(lang, "xauSignalOnly"), card.signal, card.spotAt)}
-      {line(t(lang, "xauToday"), card.today, card.spotAt)}
-      {line(t(lang, "xauFunnel"), card.funnel, card.spotAt)}
-    </ul>
-  </Card>;
-}
-
-function PostponedLane({ lang }: { lang: Lang }) {
-  return <Card>
-    <CardHead icon={Wallet} title={t(lang, "spotPostponed")} help={t(lang, "spotPostponedDetail")} />
-  </Card>;
-}
+const XauDesk = lazy(() => import("./tradingdesk/xau-desk").then(mod => ({ default: mod.XauDesk })));
 
 export function DeskPage({ lang, status }: { lang: Lang; status: StatusRead }) {
   const { now, model, events } = useDeskTelemetry(status);
   const postponed = spotPostponed(status.data);
   return <div className="control-desk">
-    {status.data && <XauDesk lang={lang} row={status.data} />}
+    {status.data && <Suspense fallback={null}><XauDesk lang={lang} row={status.data} /></Suspense>}
     <TradingRoom lang={lang} agents={model.agents} status={status.data} events={events.data?.events} now={now} />
-    {postponed ? <PostponedLane lang={lang} /> : <DeskMetrics lang={lang} model={model} />}
+    {postponed ? null : <DeskMetrics lang={lang} model={model} />}
     <div className="monitor-grid">
       {postponed ? null : <DeskResearch lang={lang} status={status} now={now} />}
       <EventLog lang={lang} loaded={events} now={now} />
@@ -468,9 +445,9 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
   const postponed = spotPostponed(row);
   return (
     <div className="overview">
-      <XauDesk lang={lang} row={row} />
+      <Suspense fallback={null}><XauDesk lang={lang} row={row} /></Suspense>
       {room}
-      {postponed ? <PostponedLane lang={lang} /> : <>
+      {postponed ? null : <>
       <DeskMetrics lang={lang} model={model} />
       <Evidence lang={lang} model={model} />
       <div className="monitor-grid">

@@ -125,7 +125,7 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
   }
 
   if (loaded.data && "state" in loaded.data && loaded.data.state === "postponed") {
-    return <Card><CardHead icon={Wallet} title={t(lang, "spotPostponed")} help={t(lang, "spotPostponedDetail")} /></Card>;
+    return null;
   }
 
   return (
@@ -723,7 +723,7 @@ export function WarpBotsPanel({ lang, status }: { lang: Lang; status: Status | n
   }
 
   if (accounts.data && "state" in accounts.data && (accounts.data as { state?: string }).state === "postponed") {
-    return <Card><CardHead icon={Bot} title={t(lang, "spotPostponed")} help={t(lang, "spotPostponedDetail")} /></Card>;
+    return null;
   }
 
   return (
@@ -866,7 +866,7 @@ export function ForwardPanel({ lang }: { lang: Lang }) {
   if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
   const stats = loaded.data;
   if (stats && "state" in stats && (stats as { state?: string }).state === "postponed") {
-    return <Card><CardHead icon={Target} title={t(lang, "spotPostponed")} help={t(lang, "spotPostponedDetail")} /></Card>;
+    return null;
   }
   if (!stats) return <Loading lang={lang} />;
   const empty = stats.scored === 0;

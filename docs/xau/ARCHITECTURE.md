@@ -29,7 +29,7 @@ The XAU thread does not write `HEALTH`. When the spot lane is postponed, the hos
 3. DXY is informational only.
 4. News is the Forex Factory weekly JSON, at most once an hour, with `data/news_static.toml` as the backstop.
 5. At each killzone open the selector locks SMC, SCALP, or NO_TRADE for that window. EMA runs only in the two K3 windows.
-6. The gate scores C1–C14. Only A+ and A with 14/14 are sent. Scalp is journaled with `sent=false`. Every cycle in an open window that does not send records one reason in `xau_funnel`: `market_closed`, `halt`, `dirty_basis`, `dirty_gaps`, `stale_m5`, `news_block`, `no_direction`, `engine_none`, `entry_closed`, `no_setup`, `gate_fail:<checks>`, or `risk_block:<rule>`. `/api/status` exposes today's counts, the current window's counts, and the last five reasons with their WIB time.
+6. The gate scores C1–C14. Only A+ and A with 14/14 are sent. Scalp is journaled with `sent=false`. Every cycle in an open window that does not send records one reason in `xau_funnel`: `market_closed`, `halt`, `warming_up`, `dirty_basis`, `dirty_gaps`, `stale_m5`, `news_block`, `no_direction`, `engine_none`, `entry_closed`, `no_setup`, `gate_fail:<checks>`, or `risk_block:<rule>`. Warm-up is `warming_up`, not `dirty_basis`. Rows older than 30 days are deleted on write. The table is indexed on `at_utc` and `window_key`. `/api/status` exposes today's counts, the current window's counts, and the last five reason runs with a count and WIB time. `last_signal_at` is the newest sent row in `xau_signals`.
 7. Outcome tracking uses closed M1 bars and resumes from the last bar stored for that signal.
 
 ## Tables

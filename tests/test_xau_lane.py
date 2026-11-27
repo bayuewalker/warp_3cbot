@@ -301,6 +301,47 @@ class FunnelTests(unittest.TestCase):
             for reason, _overrides in cases:
                 self.assertGreaterEqual(counts["today"].get(reason, 0), 1)
             self.assertIn("market_closed", counts["today"])
+            runner._warming = True
+            self.assertEqual(
+                runner._silence(LONDON, window, False, False, Basis(False), clean, view, False),
+                "warming_up",
+            )
+            self.assertEqual(
+                runner._silence(weekend, closed, False, False, Basis(False), clean, view, False),
+                "market_closed",
+            )
+
+    def test_funnel_collapses_runs_and_drops_rows_older_than_30_days(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runner, _clock, _feeds, _alerts = _runner(tmp, LONDON)
+            self.addCleanup(runner.store.close)
+            window = window_at(LONDON)
+            old = (LONDON - timedelta(days=31)).isoformat()
+            runner.store.db.execute(
+                "INSERT INTO xau_funnel(at_utc, window_key, reason) VALUES(?, ?, ?)",
+                (old, window.key, "dirty_basis"),
+            )
+            for _ in range(3):
+                runner.store.note_funnel(LONDON.isoformat(), window.key, "dirty_basis")
+            runner.store.note_funnel((LONDON + timedelta(minutes=1)).isoformat(), window.key, "halt")
+            counts = runner.store.funnel_counts(LONDON.isoformat(), window.key)
+            self.assertEqual(counts["today"]["dirty_basis"], 3)
+            self.assertEqual(counts["recent"][0]["reason"], "halt")
+            self.assertEqual(counts["recent"][0]["count"], 1)
+            self.assertEqual(counts["recent"][1]["reason"], "dirty_basis")
+            self.assertEqual(counts["recent"][1]["count"], 3)
+            left = [str(row["reason"]) for row in runner.store.db.execute("SELECT reason FROM xau_funnel")]
+            self.assertNotIn("stale", left)
+            self.assertEqual(left.count("dirty_basis"), 3)
+
+    def test_last_signal_at_comes_from_the_sent_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runner, _clock, _feeds, _alerts = _runner(tmp, LONDON)
+            self.addCleanup(runner.store.close)
+            runner.store.insert_signal(_open_row(LONDON))
+            runner._last_signal_at = None
+            block = runner._snapshot_body()
+            self.assertEqual(block["last_signal_at"], LONDON.isoformat())
 
     def test_engine_reasons_and_one_aplus_telegram(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -363,7 +404,9 @@ class FunnelTests(unittest.TestCase):
             block = runner._snapshot_body()
             self.assertEqual(block["feed"], "binance")
             self.assertIsNone(block["basis"])
-            self.assertIn("dirty_basis", block["funnel"]["today"])
+            self.assertIn("warming_up", block["funnel"]["today"])
+            self.assertNotIn("dirty_basis", block["funnel"]["today"])
+            self.assertEqual(block["spot_state"], "live")
             self.assertIn("ready", block)
             self.assertIn("basis_std", block)
             self.assertIn("spot_last", block)

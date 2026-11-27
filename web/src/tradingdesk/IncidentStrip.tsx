@@ -40,11 +40,11 @@ export function useStreamView(): StreamView {
 
 export const incidentKeys: Record<Incident["id"], Key> = {
   halt: "incHalt", risk: "incRisk", provider: "incProvider", stream: "incStream",
-  statusFailed: "incStatusFailed", statusStale: "incStatusStale",
+  statusFailed: "incStatusFailed", statusStale: "incStatusStale", xau: "incXau",
 };
 
 export function incidentDetail(lang: Lang, incident: Incident, health: RiskHealth) {
-  if (incident.id === "risk") return incident.detail ? words(incident.detail) : null;
+  if (incident.id === "risk" || incident.id === "xau") return incident.detail ? words(incident.detail) : null;
   if (incident.id !== "provider") return null;
   const provider = health.providers.find(row => incident.detail?.startsWith(row.name + " · "));
   return provider ? `${provider.name} · ${stateLabel(lang, provider.state ?? undefined)}` : incident.detail;

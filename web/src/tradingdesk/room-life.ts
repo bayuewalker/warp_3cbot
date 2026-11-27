@@ -144,33 +144,48 @@ function xauText(value: unknown) {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 }
 
+function xauAlert(xau: Record<string, unknown> | null, halted: boolean) {
+  if (halted) return true;
+  const state = xauText(xau?.state);
+  const reason = xauText(xau?.ready_reason);
+  const basis = xauText(xau?.basis_reason);
+  if (state === "warming" || reason === "warming" || reason === "market_closed" || state === "market_closed") return false;
+  if (state === "feed_unavailable" || state === "stalled" || state === "config_error") return true;
+  if (reason?.startsWith("basis_") || basis?.startsWith("basis_")) return true;
+  return false;
+}
+
 function xauRoom(input: { status: LifeStatus; events: unknown; now: number }): RoomLife {
   const status = input.status as (LifeStatus & { xau?: Record<string, unknown> }) | null;
   const xau = status?.xau && typeof status.xau === "object" ? status.xau : null;
-  const at = xauText(xau?.spot_at) ?? xauText(xau?.heartbeat_at) ?? status?.published_at ?? null;
-  const clock = at ? wibClock(at) : null;
+  const haltFile = xau && typeof xau.halt === "object" && xau.halt
+    ? (xau.halt as { global?: boolean; xau?: boolean }) : null;
+  const halted = status?.halt === true || haltFile?.global === true || haltFile?.xau === true;
   const state = xauText(xau?.state);
   const feed = xauText(xau?.feed);
   const engine = xauText(xau?.engine);
-  const windowName = xau && typeof xau.window === "object" && xau.window ? xauText((xau.window as { name?: string }).name) : null;
   const ready = xau?.ready === true;
   const reason = xauText(xau?.ready_reason);
   const open = xau && typeof xau.open_signal === "object" && xau.open_signal
     ? xauText((xau.open_signal as { direction?: string }).direction) : null;
-  const today = xau && typeof xau.today === "object" && xau.today
-    ? xauText(String((xau.today as { realized_r?: string }).realized_r ?? "")) : null;
+  const realized = xau && typeof xau.today === "object" && xau.today
+    ? Number((xau.today as { realized_r?: string }).realized_r) : NaN;
+  const book = Boolean(open) || (Number.isFinite(realized) && realized !== 0);
   const event = xauEvent(input.events, input.now);
+  const filled = event !== null && /^XAU FILLED\b/.test(event.event);
+  const alert = xauAlert(xau, halted);
+  const quiet = cue("idle", null, null);
   const stations = {
-    SCAN: cue(feed ? "working" : "sleep", feed ? clipBubble(feed) : "unknown", clock),
-    ANALYST: cue(engine ? "working" : "idle", clipBubble([engine, windowName].filter(Boolean).join(" ") || "unknown"), clock),
-    AEGIS: cue(ready ? "working" : state === "feed_unavailable" || reason ? "alert" : "idle", clipBubble(reason ?? state ?? "unknown"), clock),
-    EXECUTOR: cue(open ? "working" : "idle", clipBubble(open ? "XAU " + open : "signal only"), clock, Boolean(open)),
-    PORTFOLIO: cue(today ? "working" : "idle", today ? clipBubble(today + "R") : null, clock),
-    WATCHER: event
-      ? cue("working", clipBubble(event.event), wibClock(event.ts))
-      : cue(state ? "idle" : "sleep", state ? clipBubble("XAU " + state) : "unknown", clock),
+    SCAN: cue(feed ? "working" : "sleep", null, null),
+    ANALYST: cue(engine ? "working" : "idle", null, null),
+    AEGIS: alert ? cue("alert", clipBubble(reason ?? state ?? "halt"), null) : cue(ready ? "working" : "idle", null, null),
+    EXECUTOR: filled
+      ? cue("working", clipBubble(event?.event ?? ""), wibClock(event?.ts ?? ""), true)
+      : cue(open ? "working" : "idle", null, null),
+    PORTFOLIO: book ? { ...quiet, mood: "working" as Mood } : quiet,
+    WATCHER: event ? cue("working", clipBubble(event.event), wibClock(event.ts)) : cue(state ? "idle" : "sleep", null, null),
   } as Record<Station, LifeCue>;
-  return { halt: status?.halt === true, stations };
+  return { halt: halted, stations };
 }
 
 function xauEvent(events: unknown, now: number) {

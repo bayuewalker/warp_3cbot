@@ -6,6 +6,7 @@ import { fmtTime } from "../format";
 import { useLiveState } from "../snapshot";
 import { Badge } from "../ui";
 import { sourceInstant } from "./frames";
+import { navIds, spotPostponed } from "./room";
 
 const nav = [
   { id: "overview", short: "overview", icon: LayoutDashboard },
@@ -35,9 +36,12 @@ export function pageFromHash(): Page {
   return nav.find((item) => item.id === location.hash.slice(1))?.id ?? "overview";
 }
 
-export function TradingDeskNav({ lang, page, placement }: { lang: Lang; page: Page; placement: "rail" | "bottom" }) {
+export function TradingDeskNav({ lang, page, placement, postponed = false }: {
+  lang: Lang; page: Page; placement: "rail" | "bottom"; postponed?: boolean;
+}) {
   const mobile = placement === "bottom";
-  const items = mobile ? nav.filter(({ id }) => id !== "desk") : nav;
+  const allowed = new Set<string>(navIds(postponed, placement));
+  const items = nav.filter(({ id }) => allowed.has(id));
   const menu = (
     <nav aria-label={t(lang, "navigation")} className={mobile ? "bottom-nav" : undefined}>
       {items.map(({ id, short, icon: Icon }) => (
@@ -141,7 +145,7 @@ function Alerts({ lang, row, halted, error }: { lang: Lang; row: Status | null; 
   if (halted) messages.push("HALT · " + t(lang, "haltHelp"));
   if (error) messages.push(t(lang, "noSnapshot"));
   if (row?.market_data_fresh === false) messages.push(t(lang, "stale"));
-  if (!halted && row?.risk_permitted === false) messages.push(t(lang, "gateBlocked"));
+  if (!halted && row?.risk_permitted === false && !spotPostponed(row)) messages.push(t(lang, "gateBlocked"));
   return (
     <div className="alerts-tool" ref={root} onBlur={(event) => {
       if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);

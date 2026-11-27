@@ -287,7 +287,7 @@ export function takeRequestedTab(): PreferencesTab | null {
   return tab;
 }
 
-export type IncidentId = "halt" | "risk" | "provider" | "stream" | "statusFailed" | "statusStale";
+export type IncidentId = "halt" | "risk" | "provider" | "stream" | "statusFailed" | "statusStale" | "xau";
 export type Incident = { id: IncidentId; detail: string | null };
 export type WorkerState = "loading" | "awaiting" | "failed" | "stale" | "current" | "unknown";
 export type HealthLevel = "incident" | "awaiting" | "unverified" | "clear";
@@ -357,14 +357,15 @@ export function riskHealth(reads: RiskReads, stream: StreamView, now: number, re
   const providers: ProviderView[] = record(worker.providers) ? Object.entries(worker.providers).map(([name, value]) => {
     const row = record(value) ? value : {};
     const state = text(row.state);
-    return { name, state, incident: state === "cooldown" || (state !== null && state !== "ok" && state !== "unconfigured") };
+    return { name, state, incident: state === "cooldown" || (state !== null && state !== "ok" && state !== "unconfigured" && state !== "postponed") };
   }) : [];
 
   const incidents: Incident[] = [];
   const halted = statusHalt === true || breakerHalt === true;
   if (halted) incidents.push({ id: "halt", detail: null });
   const blocked = [[statusPermitted, worker.reason], [breakerPermitted, breakerBody.reason], [riskPermitted, riskBody.reason]]
-    .filter(([permitted]) => permitted === false).map(([, reason]) => text(reason));
+    .filter(([permitted]) => permitted === false).map(([, reason]) => text(reason))
+    .filter(reason => reason !== "spot_postponed");
   const observeGate = !halted && text(worker.mode) === "observe" && blocked.length > 0 &&
     blocked.every(reason => reason !== null && OBSERVE_REASONS.includes(reason));
   if (!halted && blocked.length > 0 && !observeGate) {
@@ -373,6 +374,13 @@ export function riskHealth(reads: RiskReads, stream: StreamView, now: number, re
   for (const provider of providers) {
     if (provider.incident) incidents.push({ id: "provider", detail: `${provider.name} · ${provider.state}` });
   }
+  const xau = record(worker.xau) ? worker.xau : null;
+  const xauState = text(xau?.state);
+  const xauReason = text(xau?.ready_reason);
+  const xauHalt = record(xau?.halt) ? xau?.halt as { global?: boolean; xau?: boolean } : null;
+  if (!halted && (xauHalt?.global === true || xauHalt?.xau === true)) incidents.push({ id: "xau", detail: "halt" });
+  else if (xauState === "feed_unavailable" || xauState === "stalled" || xauState === "config_error") incidents.push({ id: "xau", detail: xauState });
+  else if (xauState !== "warming" && xauReason?.startsWith("basis_")) incidents.push({ id: "xau", detail: xauReason });
   const streamDown = !stream.connected && stream.downSince !== null && now - stream.downSince >= STREAM_GRACE_MS;
   if (streamDown) incidents.push({ id: "stream", detail: null });
   if (workerState === "failed") incidents.push({ id: "statusFailed", detail: status.issue });
@@ -382,7 +390,7 @@ export function riskHealth(reads: RiskReads, stream: StreamView, now: number, re
   const clear = workerState === "current" && stream.connected && statusHalt === false && statusPermitted === true &&
     (reads.breakers === undefined || (readable(breakerRead) && breakerHalt === false && breakerPermitted === true)) &&
     (reads.risk === undefined || (readable(riskRead) && riskPermitted === true)) &&
-    providers.every(provider => provider.state === "ok" || provider.state === "unconfigured");
+    providers.every(provider => provider.state === "ok" || provider.state === "unconfigured" || provider.state === "postponed");
   const level: HealthLevel = incidents.length ? "incident" : resume === "awaiting" ? "awaiting" : clear ? "clear" : "unverified";
 
   return {

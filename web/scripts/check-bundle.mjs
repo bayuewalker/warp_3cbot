@@ -4,10 +4,11 @@ import { gzipSync } from "node:zlib";
 
 const dist = path.resolve("dist/assets");
 const KB = 1024;
-// gzipSync sizes of the entry chunks on main at f875695 (the #44 room), measured in kB as bytes/1024.
-const ENTRY_JS_BASE = 114232;
-const ENTRY_CSS_BASE = 14379;
-const MAX_GROWTH = 2 * KB;
+// gzipSync sizes of the entry chunks on main at bdd04e7. kB below is bytes/1024.
+const ENTRY_JS_BASE = 112583;
+const ENTRY_CSS_BASE = 14261;
+const MAX_JS_GROWTH = KB;
+const MAX_CSS_GROWTH = 2 * KB;
 
 function kb(bytes) {
   return (bytes / KB).toFixed(2) + " kB";
@@ -43,8 +44,11 @@ if (entryJs.some((file) => /from"\.\/room-alive-/.test(file.text))) {
 if (entryJs.some((file) => file.text.includes("Candidate observed"))) {
   failures.push("entry contains room-life copy; keep that module in the overlay chunk");
 }
-if (jsGrowth > MAX_GROWTH) failures.push("entry js grew " + kb(jsGrowth) + " (limit 2 kB)");
-if (cssGrowth > MAX_GROWTH) failures.push("entry css grew " + kb(cssGrowth) + " (limit 2 kB)");
+if (entryJs.some((file) => /from"\.\/xau-(lane|desk)-/.test(file.text))) {
+  failures.push("entry statically imports an XAU chunk");
+}
+if (jsGrowth > MAX_JS_GROWTH) failures.push("entry js grew " + kb(jsGrowth) + " (limit 1 kB)");
+if (cssGrowth > MAX_CSS_GROWTH) failures.push("entry css grew " + kb(cssGrowth) + " (limit 2 kB)");
 if (failures.length) {
   console.error(failures.join("\n"));
   process.exit(1);

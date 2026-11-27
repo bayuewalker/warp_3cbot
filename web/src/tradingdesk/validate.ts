@@ -7,8 +7,23 @@ const lists: Record<string, string> = {
   "/api/signals": "decisions", "/api/decisions": "decisions", "/api/screener": "hits", "/api/alerts": "alerts",
 };
 
+/** A postponed lane publishes exactly this object. It is a lane state, not a failed read. */
+export function lanePostponed(data: unknown): boolean {
+  return record(data) && data.state === "postponed" && Object.keys(data).length === 1;
+}
+
+/** Routes whose spot cards must render Postponed instead of a refresh failure. */
+export const POSTPONED_TAB_ROUTES = {
+  signals: ["/api/opportunities", "/api/signals", "/api/forward"],
+  manage: ["/api/warp-bots", "/api/accounts"],
+  positions: ["/api/positions", "/api/account-positions"],
+  template: ["/api/bots"],
+  screener: ["/api/screener", "/api/decisions"],
+} as const;
+
 export function payloadIssue(path: string, data: unknown): ReadIssue | null {
   if (!record(data)) return "malformed_payload";
+  if (lanePostponed(data)) return null;
   if (!Object.keys(data).length) return "awaiting_first_snapshot";
   const field = lists[path];
   if (field && (!Array.isArray(data[field]) || !data[field].every(record))) return "malformed_payload";

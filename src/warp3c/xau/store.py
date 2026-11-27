@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _DDL = (
@@ -103,6 +103,12 @@ _DDL = (
         window_key TEXT NOT NULL,
         reason TEXT NOT NULL
     )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS xau_funnel_at ON xau_funnel(at_utc)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS xau_funnel_window ON xau_funnel(window_key)
     """,
     """
     CREATE TABLE IF NOT EXISTS xau_feed_health (
@@ -265,10 +271,18 @@ class XauStore:
         )
 
     def note_funnel(self, at_utc: str, window_key: str, reason: str) -> None:
+        cutoff = (datetime.fromisoformat(at_utc) - timedelta(days=30)).isoformat()
+        self.db.execute("DELETE FROM xau_funnel WHERE at_utc < ?", (cutoff,))
         self.db.execute(
             "INSERT INTO xau_funnel(at_utc, window_key, reason) VALUES(?, ?, ?)",
             (at_utc, window_key, reason),
         )
+
+    def latest_sent_at(self) -> str | None:
+        row = self.db.execute(
+            "SELECT created_at_utc FROM xau_signals WHERE sent=1 ORDER BY created_at_utc DESC LIMIT 1"
+        ).fetchone()
+        return None if row is None else str(row["created_at_utc"])
 
     def funnel_counts(self, since_utc: str, window_key: str) -> dict:
         today = self.db.execute(
@@ -279,13 +293,22 @@ class XauStore:
             "SELECT reason, COUNT(*) AS n FROM xau_funnel WHERE window_key=? GROUP BY reason",
             (window_key,),
         ).fetchall()
-        recent = self.db.execute(
-            "SELECT at_utc, reason FROM xau_funnel ORDER BY id DESC LIMIT 5"
+        rows = self.db.execute(
+            "SELECT at_utc, reason FROM xau_funnel ORDER BY id DESC LIMIT 200"
         ).fetchall()
+        recent: list[dict] = []
+        for row in rows:
+            reason = str(row["reason"])
+            if recent and recent[-1]["reason"] == reason:
+                recent[-1]["count"] += 1
+                continue
+            recent.append({"at_utc": str(row["at_utc"]), "reason": reason, "count": 1})
+            if len(recent) == 5:
+                break
         return {
             "today": {str(row["reason"]): int(row["n"]) for row in today},
             "window": {str(row["reason"]): int(row["n"]) for row in window},
-            "recent": [{"at_utc": str(row["at_utc"]), "reason": str(row["reason"])} for row in recent],
+            "recent": recent,
         }
 
     def tracked_through(self, signal_id: str) -> str | None:

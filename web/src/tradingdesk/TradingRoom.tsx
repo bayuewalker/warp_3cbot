@@ -9,7 +9,7 @@ import { MarketWall } from "./MarketWall";
 import { record, sourceInstant } from "./frames";
 import {
   ambient, currentPublication, EVENT_WINDOW_MS, PUBLICATION_TTL_MS, publishedCount, roleHistory,
-  stationNames, stations, sweep, xauAgents, xauPrimary, type Station,
+  stationNames, stations, sweep, xauPrimary, type Station,
 } from "./room";
 import type { Mood } from "./room-life";
 import type { ObservedValue } from "./types";
@@ -56,9 +56,7 @@ function SourceRecords({ role, lang, primary }: { role: Station; lang: Lang; pri
   const { route, list, fields } = stations[role];
   const read = useLoad<Record<string, unknown>>(route, true);
   const data = read.data;
-  if (data && data.state === "postponed") {
-    return <p className="market-wait">{t(lang, "spotPostponed")} · WARP_SPOT_LANE_ENABLED</p>;
-  }
+  if (data && data.state === "postponed") return null;
   const rows = data?.[list];
   const rawAt = role === "SCAN" ? data?.fetched_at : data?.as_of;
   const at = sourceInstant(rawAt, Date.now());
@@ -143,7 +141,14 @@ export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
     document.addEventListener("visibilitychange", update);
     return () => { observer.disconnect(); document.removeEventListener("visibilitychange", update); };
   }, []);
-  const shown = xauPrimary(status) ? xauAgents(status, now) : agents;
+  const [xauSeats, setXauSeats] = useState<Record<Station, ObservedValue<string | null>> | null>(null);
+  useEffect(() => {
+    if (!xauPrimary(status)) { setXauSeats(null); return; }
+    let live = true;
+    void import("./xau-lane").then(mod => { if (live) setXauSeats(mod.xauAgents(status, now)); });
+    return () => { live = false; };
+  }, [status, now]);
+  const shown = xauPrimary(status) ? (xauSeats ?? agents) : agents;
   const logs = shown.WATCHER.state === "unauthorized" ? null : events;
   // Expire motion at its evidence deadline even between two Overview refreshes.
   const [expiredAt, setExpiredAt] = useState(now);

@@ -1,7 +1,7 @@
 import { DiscoveryPanel, Opportunities, ResearchPanel } from "./tradingdesk/opportunities";
 import { takeRequestedTab, type PreferencesTab } from "./tradingdesk/activity-model";
 import { IncidentStrip } from "./tradingdesk/IncidentStrip";
-import { spotPostponed } from "./tradingdesk/room";
+import { lanePage, spotPage, spotPostponed } from "./tradingdesk/room";
 import type { ReadInput } from "./tradingdesk/types";
 import { useCurrentRead } from "./account-read";
 import {
@@ -30,6 +30,7 @@ import { Key, Lang, t } from "./i18n";
 import { AccountsPanel, BudgetForm, ForwardPanel, PaperCheck, RulesPage, WarpBotsPanel } from "./desk";
 import { Badge, Button, Card, CardHead, Choice, Empty, Field, KV, Loading, Note, Problem, inputClass } from "./ui";
 import { DeskPage, Overview, Providers } from "./monitor";
+import { lanePostponed } from "./tradingdesk/validate";
 import { Age, ReceivedAge } from "./age";
 import { settingLabel, settingValue } from "./labels";
 import { zoneLabel, fmtCompact, fmtMoney, fmtPct01, fmtNumber, fmtTime } from "./format";
@@ -168,6 +169,9 @@ function TradingDeskLayout({
   const [logoutError, setLogoutError] = useState(false);
   const status = useLoad<Status>("/api/status", true);
   const row = status.error ? null : status.data;
+  const postponed = spotPostponed(status.data);
+  const hideSpot = postponed || (spotPage(page) && !status.data && !status.error);
+  const shown = (hideSpot ? lanePage(page, true) : page) as Page;
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
     function navigate() {
@@ -178,7 +182,11 @@ function TradingDeskLayout({
     window.addEventListener("hashchange", navigate);
     return () => window.removeEventListener("hashchange", navigate);
   }, []);
-  const title = t(lang, page === "overview" ? "portfolio" : page);
+  useEffect(() => {
+    if (!postponed || !spotPage(page) || location.hash === "#overview") return;
+    location.replace("#overview");
+  }, [postponed, page]);
+  const title = t(lang, shown === "overview" ? "portfolio" : shown);
   return (
     <div className="terminal">
       <a
@@ -191,11 +199,11 @@ function TradingDeskLayout({
       >
         {t(lang, "skipNav")}
       </a>
-      <TradingDeskNav lang={lang} page={page} placement="rail" />
+      <TradingDeskNav lang={lang} page={shown} placement="rail" postponed={postponed} />
       <div className="workarea">
-        <CommandBar lang={lang} page={page} row={status.issue ? null : row} halted={status.data?.halt === true} error={status.refreshFailed}
+        <CommandBar lang={lang} page={shown} row={status.issue ? null : row} halted={status.data?.halt === true} error={status.refreshFailed}
           language={language} onLogout={() => void logout().catch(() => setLogoutError(true))} />
-        <main id="workspace" className={page === "desk" ? "workspace desk-workspace" : "workspace"}>
+        <main id="workspace" className={shown === "desk" ? "workspace desk-workspace" : "workspace"}>
           {(status.error || logoutError) && (
             <div className="alert" role="alert">
               {status.error && (
@@ -232,21 +240,21 @@ function TradingDeskLayout({
               </button>
             </div>
           </div>
-          {page === "overview" && !spotPostponed(status.data) && <IncidentStrip lang={lang} status={status} />}
-          {page === "overview" && <Overview lang={lang} status={status} />}
-          {page === "desk" && <DeskPage lang={lang} status={status} />}
-          {page === "signals" && (
+          {shown === "overview" && <IncidentStrip lang={lang} status={status} />}
+          {shown === "overview" && <Overview lang={lang} status={status} />}
+          {shown === "desk" && <DeskPage lang={lang} status={status} />}
+          {shown === "signals" && (
             <div className="monitor-col">
               <Opportunities lang={lang} status={status} />
               <ForwardPanel lang={lang} />
             </div>
           )}
-          {page === "assets" && <AssetDesk lang={lang} status={row} />}
-          {page === "screener" && <ScreenerPage lang={lang} status={status} />}
-          {page === "preferences" && <Preferences lang={lang} status={row} read={status} />}
+          {shown === "assets" && <AssetDesk lang={lang} status={row} />}
+          {shown === "screener" && <ScreenerPage lang={lang} status={status} />}
+          {shown === "preferences" && <Preferences lang={lang} status={row} read={status} />}
         </main>
       </div>
-      <TradingDeskNav lang={lang} page={page} placement="bottom" />
+      <TradingDeskNav lang={lang} page={shown} placement="bottom" postponed={postponed} />
     </div>
   );
 }
@@ -281,7 +289,7 @@ function AssetDesk({ lang, status }: { lang: Lang; status: Status | null }) {
         value={tab}
         change={setTab}
       />
-      {tab === "manage" ? (
+      {spotPostponed(status) ? null : tab === "manage" ? (
         <WarpBotsPanel lang={lang} status={status} />
       ) : tab === "positions" ? (
         <Positions lang={lang} />
@@ -368,7 +376,7 @@ function Bots({ lang }: { lang: Lang }) {
   const [ask, setAsk] = useState(false);
   const [previewBusy, setPreviewBusy] = useState(false);
   useEffect(() => {
-    if (!loaded.data) return;
+    if (!loaded.data || lanePostponed(loaded.data)) return;
     setKind(loaded.data.template.kind);
     setPreset(loaded.data.template.preset);
     setStopOn(loaded.data.template.stop_enabled !== false);
@@ -428,6 +436,7 @@ function Bots({ lang }: { lang: Lang }) {
     setAsk(false);
     setNote(t(lang, "saved"));
   }
+  if (lanePostponed(loaded.data)) return null;
   if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
   if (!preview) return <Loading lang={lang} />;
   const weightSum = Object.values(weights).reduce((sum, value) => sum + Number(value), 0);
@@ -577,6 +586,7 @@ function Bots({ lang }: { lang: Lang }) {
 function Positions({ lang }: { lang: Lang }) {
   const loaded = useLoad<{ positions: Position[]; as_of?: string | null; error?: string | null }>("/api/positions", true);
   const fresh = useCurrentRead(loaded.data?.as_of, 300);
+  if (lanePostponed(loaded.data)) return null;
   if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
   if (!loaded.data) return <Loading lang={lang} />;
   const reported = Array.isArray(loaded.data.positions);
@@ -641,6 +651,7 @@ function ScreenerPage({ lang, status }: { lang: Lang; status: ReadInput }) {
     await api("/api/screener/filters", { method: "POST", body: JSON.stringify(form) });
     setNote(t(lang, "saved"));
   }
+  if (spotPostponed(status.data) || lanePostponed(loaded.data)) return null;
   return (
     <div className="monitor-col">
       <DiscoveryPanel lang={lang} status={status} />
