@@ -140,10 +140,18 @@
 }
 .office-seat {
   --seat-x: 19%; --seat-y: 29%;
-  position: absolute; left: var(--seat-x); top: var(--seat-y); transform: translate(-50%, -50%);
+  position: absolute; z-index: 2; left: var(--seat-x); top: var(--seat-y); transform: translate(-50%, -50%);
   width: 25%; height: 22%; min-height: 44px; padding: 0;
   display: flex; align-items: flex-start; justify-content: center; border-radius: 4px;
 }
+.seat-led {
+  display: inline-block; width: 5px; height: 5px; margin: 0 3px 1px 0; border-radius: 50%;
+  vertical-align: middle; background: color-mix(in srgb, var(--station, #73e9c7) 42%, #14202b);
+  box-shadow: 0 0 0 1px #050914;
+}
+.office-seat[data-mood=working] .seat-led { background: var(--station, #73e9c7); }
+.office-seat[data-mood=alert] .seat-led { background: #ff5d6c; }
+.office-seat[data-mood=sleep] .seat-led { background: #2c3844; }
 .office-seat[data-seat=ANALYST], .office-seat[data-seat=PORTFOLIO] { --seat-x: 50%; }
 .office-seat[data-seat=AEGIS], .office-seat[data-seat=WATCHER] { --seat-x: 81%; }
 .office-seat[data-seat=EXECUTOR], .office-seat[data-seat=PORTFOLIO], .office-seat[data-seat=WATCHER] { --seat-y: 57%; }

@@ -11,10 +11,12 @@ import {
   ambient, currentPublication, EVENT_WINDOW_MS, PUBLICATION_TTL_MS, publishedCount, roleHistory,
   stationNames, stations, sweep, type Station,
 } from "./room";
+import { alivePlayback, nextScan, roomLife, screeningKey, type ScanMemory } from "./room-life";
 import type { ObservedValue } from "./types";
 import "./room.css";
 
 const Office3D = lazy(() => import("./office3d/Office3D"));
+const RoomAlive = lazy(() => import("./room-alive"));
 
 let officeLogged = false;
 class OfficeBoundary extends Component<{ onFail: () => void; children: ReactNode }, { failed: boolean }> {
@@ -173,6 +175,13 @@ export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
   const [expiredAt, setExpiredAt] = useState(now);
   const motionNow = Math.max(now, expiredAt);
   const publicationFresh = currentPublication(status?.published_at, motionNow);
+  const scanRef = useRef<ScanMemory | null>(null);
+  const scan = nextScan(scanRef.current, screeningKey(status), motionNow);
+  scanRef.current = { key: scan.key, until: scan.until };
+  const life = roomLife({ agents, status, events: logs, now: motionNow, radar: scan.radar });
+  const play = alivePlayback({
+    reduced, hidden: document.hidden, offscreen: !visible, panel: selected !== null, text, motion,
+  });
   useEffect(() => {
     const clock = Date.now();
     const deadlines: number[] = [];
@@ -184,18 +193,21 @@ export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
     if (Array.isArray(logs)) {
       for (const entry of logs) if (record(entry)) addDeadline(entry.ts, EVENT_WINDOW_MS);
     }
+    if (scan.until > motionNow) deadlines.push(scan.until + 1);
     if (!deadlines.length) return;
     const timer = window.setTimeout(() => setExpiredAt(Date.now()), Math.max(0, Math.min(...deadlines) - clock));
     return () => window.clearTimeout(timer);
-  }, [logs, status?.published_at, motionNow]);
+  }, [logs, status?.published_at, motionNow, scan.until]);
   const show3d = view === "3d" && webgl && !lost;
   const floor = (
       <div className="office-layout">
         {!text && <div className="control-room-scene" role="group" aria-label={t(lang, "officeFloor")}>
+          <Suspense fallback={null}><RoomAlive life={life} play={play} /></Suspense>
           {stationNames.map(role => <button key={role} className="office-seat" data-seat={role}
+            data-mood={life.stations[role].mood}
             aria-label={t(lang, "officeFloor") + " · " + role} aria-haspopup="dialog"
             aria-describedby={'state-' + role} onClick={() => select(role)}>
-            <span>{role}</span>
+            <span><i className="seat-led" aria-hidden="true" />{role}</span>
           </button>)}
         </div>}
         <div className="office-instruments">
