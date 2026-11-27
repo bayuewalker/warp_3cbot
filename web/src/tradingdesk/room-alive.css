@@ -158,6 +158,53 @@
 @keyframes alive-led { 0%, 100% { opacity: .1; } 50% { opacity: .34; } }
 @keyframes alive-halt { from { opacity: .4; } to { opacity: .85; } }
 
+/* Small, feathered crops of the painted operators pivot at the neck.
+   The square scene is the query container, so each crop samples the same pixels
+   as the backdrop at every viewport size. */
+.alive-desk[data-desk=SCAN]      { --head-x: 16.8cqw; --head-y: 21.1cqw; --head-w: 6.6cqw; --head-h: 5.8cqw; --phase: -2s; }
+.alive-desk[data-desk=ANALYST]   { --head-x: 45cqw; --head-y: 20cqw; --head-w: 7.2cqw; --head-h: 6.8cqw; --phase: -7.4s; }
+.alive-desk[data-desk=AEGIS]     { --head-x: 74cqw; --head-y: 19.7cqw; --head-w: 8cqw; --head-h: 6.6cqw; --phase: -4.6s; }
+.alive-desk[data-desk=EXECUTOR]  { --head-x: 12.1cqw; --head-y: 45.6cqw; --head-w: 8.7cqw; --head-h: 6.8cqw; --phase: -9.5s; }
+.alive-desk[data-desk=PORTFOLIO] { --head-x: 43.5cqw; --head-y: 43cqw; --head-w: 9.4cqw; --head-h: 7.4cqw; --phase: -.6s; }
+.alive-desk[data-desk=WATCHER]   { --head-x: 74.5cqw; --head-y: 43.1cqw; --head-w: 11.2cqw; --head-h: 8.2cqw; --phase: -6s; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .room-alive[data-play=on][data-halt=off] .alive-desk:is([data-mood=idle], [data-mood=working])::before {
+    content: "";
+    position: absolute;
+    left: var(--head-x); top: var(--head-y);
+    width: var(--head-w); height: var(--head-h);
+    background-image: url("./art/control-room.webp");
+    background-size: 100cqw 100cqw;
+    background-position: calc(0px - var(--head-x)) calc(0px - var(--head-y));
+    mask-image: radial-gradient(ellipse, black 53%, transparent 74%);
+    transform-origin: 50% 92%;
+    animation: alive-glance 12s ease-in-out var(--phase) infinite;
+  }
+  .room-alive[data-play=on][data-halt=off] .alive-desk[data-mood=working]::before {
+    animation-duration: 5.2s;
+  }
+
+  /* Steam above the mug at the right edge of the EXECUTOR desk. */
+  .room-alive[data-play=on]::after {
+    content: "";
+    position: absolute; left: 28.1%; top: 45.8%; width: 1.9%; height: 3.8%;
+    background: radial-gradient(ellipse at 55% 67%, #e6e6ef80, transparent 56%);
+    mix-blend-mode: screen;
+    animation: alive-steam 4.6s ease-out infinite;
+  }
+}
+@keyframes alive-glance {
+  0%, 25%, 66%, 100% { transform: none; }
+  38%, 49% { transform: rotate(4deg) translateY(.08cqw); }
+  57% { transform: rotate(1deg); }
+}
+@keyframes alive-steam {
+  0% { opacity: 0; transform: translateY(38%) scale(.65); }
+  32% { opacity: .52; }
+  100% { opacity: 0; transform: translate(-35%, -58%) scale(1.25); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .room-alive, .room-alive * { animation: none !important; }
 }
