@@ -1,9 +1,26 @@
 .office-stage { position: relative; min-height: 68dvh; }
 .pixel-office { background: #100e22; }
 .pixel-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding: 8px 8px 4px; }
-.pixel-card { min-width: 0; padding: 6px 6px 5px; background: #161427; color: #f4f1ea; border: 2px solid #3d8bff; border-radius: 8px; text-align: left; }
-.pixel-card span { display: block; font-size: 9px; letter-spacing: .04em; color: #d7c4ff; }
-.pixel-card strong { display: block; margin-top: 2px; font-size: 14px; font-weight: 700; }
+.pixel-card {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  column-gap: 4px;
+  row-gap: 2px;
+  align-items: center;
+  min-width: 0;
+  padding: 5px 4px 4px;
+  background: #161427;
+  border: 1px solid #3d8bff;
+  border-left-width: 3px;
+  border-radius: 8px;
+  text-align: left;
+}
+.pixel-mark { grid-row: 1; grid-column: 1; display: block; image-rendering: pixelated; }
+.pixel-card-name { grid-column: 2; font-size: 9px; font-weight: 700; letter-spacing: .04em; }
+.pixel-card strong { grid-column: 1 / -1; color: #f4f1ea; font-size: 13px; font-weight: 700; line-height: 1.1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pixel-bar { grid-column: 1 / -1; display: block; height: 3px; background: #2a2438; }
+.pixel-bar span { display: block; height: 3px; }
+.pixel-card em { grid-column: 1 / -1; color: #b7b0c9; font-size: 8px; font-style: normal; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pixel-office canvas { display: block; width: calc(100% - 16px); height: auto; margin: 4px 8px 8px; image-rendering: pixelated; image-rendering: crisp-edges; touch-action: manipulation; background: #100e22; }
 .pixel-bubble { margin: 0 8px 8px; padding: 8px 10px; background: #0e1720; color: #f4f8fb; border: 1px solid #ff4fd8; border-radius: 8px; font-size: 13px; line-height: 1.4; white-space: pre-wrap; }
 .office-a11y { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); }

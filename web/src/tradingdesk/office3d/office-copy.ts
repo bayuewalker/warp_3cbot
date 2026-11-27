@@ -27,6 +27,23 @@ export function deskLabel(lang: Lang, id: DeskId) {
   return t(lang, ROLE[id]);
 }
 
+/** One line under the card value. A portfolio dash says there is no data. */
+export function cardSentence(lang: Lang, id: DeskId, desk: DeskState, value: string) {
+  if (id === "PORTFOLIO" && value === "—") return lang === "id" ? "Tidak ada data" : "No data";
+  return t(lang, desk.bubble);
+}
+
+export const PLATE: Record<DeskId, string> = {
+  SCAN: "SCAN",
+  ANALYST: "ANALYST",
+  AEGIS: "AEGIS",
+  EXECUTOR: "CHIEF",
+  PORTFOLIO: "PORTFOLIO",
+  WATCHER: "WATCHER",
+  XAU: "XAU",
+  FORWARD: "FORWARD",
+};
+
 export function fmtWib(value: string | null, lang: Lang): string | null {
   if (!value) return null;
   const date = new Date(value);

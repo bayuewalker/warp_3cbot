@@ -3,20 +3,20 @@
  */
 import { record } from "../frames.ts";
 import { EVENT_WINDOW_MS } from "../room.ts";
-import { DESKS, type DeskId, type DeskState } from "./office-state.ts";
+import { alertFailed, BASIS_READY, DESKS, type DeskId, type DeskState } from "./office-state.ts";
 
 export const CHIEF: DeskId = "EXECUTOR";
 
-/** Seat pixels in the live-office bitmap. The chief seat is the delivery target. */
+/** Sprite origin in the live-office bitmap. The chief seat is the delivery target. */
 export const SEAT: Record<DeskId, { x: number; y: number }> = {
-  SCAN: { x: 22, y: 104 },
-  ANALYST: { x: 74, y: 104 },
-  EXECUTOR: { x: 132, y: 100 },
-  PORTFOLIO: { x: 22, y: 154 },
-  XAU: { x: 74, y: 154 },
-  WATCHER: { x: 132, y: 154 },
-  AEGIS: { x: 22, y: 204 },
-  FORWARD: { x: 132, y: 204 },
+  SCAN: { x: 44, y: 184 },
+  ANALYST: { x: 148, y: 184 },
+  EXECUTOR: { x: 250, y: 176 },
+  PORTFOLIO: { x: 44, y: 286 },
+  XAU: { x: 148, y: 286 },
+  WATCHER: { x: 250, y: 286 },
+  AEGIS: { x: 52, y: 386 },
+  FORWARD: { x: 210, y: 386 },
 };
 
 export type DeliveryKind = "signal" | "proposal" | "order";
@@ -78,14 +78,53 @@ function fieldValue(desk: DeskState, name: string): string | null {
   return row.value;
 }
 
+function finite(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export type WatcherCardRow = { id: number; state: string; event: string; error: string | null; attempts: number | null };
+
+/**
+ * Failed-alert count when any row failed, otherwise the newest event, otherwise a dash.
+ * The length of the alerts window is not a card value.
+ */
+export function watcherCardValue(rows: WatcherCardRow[] | null): string {
+  if (!rows) return "—";
+  const failed = rows.filter((row) => alertFailed(row)).length;
+  if (failed > 0) return String(failed);
+  let newest: WatcherCardRow | null = null;
+  for (const row of rows) if (!newest || row.id > newest.id) newest = row;
+  return newest?.event ? newest.event : "—";
+}
+
+/** Both ends of a real ratio, or null. The bar is omitted when either number is missing. */
+export function cardRatio(id: DeskId, desk: DeskState, status: Record<string, unknown> | null): { used: number; cap: number } | null {
+  if (desk.freshness === "stale" || desk.pose === "unknown") return null;
+  if (id === "ANALYST") {
+    const providers = status && record(status.providers) ? status.providers : null;
+    const budget = providers && record(providers.budget) ? providers.budget : null;
+    const used = finite(budget?.calls_used);
+    const cap = finite(budget?.calls_cap);
+    if (used == null || cap == null || cap <= 0) return null;
+    return { used, cap };
+  }
+  if (id === "XAU") {
+    const xau = status && record(status.xau) ? status.xau : null;
+    const samples = finite(xau?.basis_samples);
+    if (samples == null) return null;
+    return { used: samples, cap: BASIS_READY };
+  }
+  return null;
+}
+
 /** A real number or token, or a dash. Never a guessed metric. */
-export function cardValue(id: DeskId, desk: DeskState, status: Record<string, unknown> | null, pending: number | null, alertCount: number | null): string {
+export function cardValue(id: DeskId, desk: DeskState, status: Record<string, unknown> | null, pending: number | null, alerts: WatcherCardRow[] | null): string {
   if (id === "FORWARD") return pending == null ? "—" : String(pending);
   if (desk.freshness === "stale" || desk.pose === "unknown") return "—";
   if (id === "SCAN") {
     const pipeline = status && record(status.pipeline) ? status.pipeline : null;
     const screening = pipeline && record(pipeline.screening) ? pipeline.screening : null;
-    const count = screening && typeof screening.count === "number" && Number.isFinite(screening.count) ? screening.count : null;
+    const count = finite(screening?.count);
     return count == null ? "—" : String(count);
   }
   if (id === "ANALYST") return fieldValue(desk, "state") ?? "—";
@@ -96,6 +135,7 @@ export function cardValue(id: DeskId, desk: DeskState, status: Record<string, un
   }
   if (id === "EXECUTOR") return fieldValue(desk, "mode") ?? "—";
   if (id === "XAU") return desk.facts.window ?? desk.facts.state ?? "—";
-  if (id === "WATCHER") return alertCount == null ? "—" : String(alertCount);
+  if (id === "WATCHER") return watcherCardValue(alerts);
+  if (id === "PORTFOLIO") return fieldValue(desk, "value") ?? fieldValue(desk, "state") ?? "—";
   return "—";
 }

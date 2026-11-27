@@ -13,14 +13,14 @@ export const LAYOUT: Record<DeskId, { x: number; z: number }> = {
 };
 
 export const DESK_COLOR: Record<DeskId, string> = {
-  SCAN: "#73e9c7",
-  ANALYST: "#bbabff",
-  AEGIS: "#ffd17e",
-  EXECUTOR: "#ffa88b",
-  PORTFOLIO: "#91cfff",
-  WATCHER: "#f7a9ca",
-  XAU: "#e2c56a",
-  FORWARD: "#9ad7ff",
+  SCAN: "#ff5d6c",
+  ANALYST: "#ff7eb6",
+  AEGIS: "#ff9a3c",
+  EXECUTOR: "#d5e6ff",
+  PORTFOLIO: "#4db2ff",
+  WATCHER: "#3ddc86",
+  XAU: "#f0c14a",
+  FORWARD: "#c084fc",
 };
 
 export const LAMP_COLOR = {

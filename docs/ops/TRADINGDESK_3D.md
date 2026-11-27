@@ -6,11 +6,11 @@ Read-only view inside the existing Trading Room. Classic stays the default. The 
 
 The room header has a `Classic | Live` switch, next to the existing display settings. The choice is stored in `localStorage` under `warp.room.view` (`2d` by default, `3d` for the live office). The live view is a pixel-art canvas and does not need WebGL. While that chunk loads, and if the canvas throws, the classic room is shown. A render error returns to classic for the rest of the page session and logs once to the console. The saved preference is not cleared, so a reload can try the live view again.
 
-Eight status cards sit above the room. A value is a real field, or a dash when that field is missing or the read is stale or unknown. Tap a card or a desk to open the existing room detail for SCAN, ANALYST, AEGIS, EXECUTOR, PORTFOLIO and WATCHER. XAU and Scorer open a read-only drawer listing the fields the pose used. A visually hidden list of desk buttons repeats the role, the bubble text and the time.
+Eight status cards sit above the room. Each card has a role mark, a value, a one-line sentence, and a ratio bar only when both numbers exist (`calls_used/calls_cap`, or XAU `basis_samples/10`). A value is a real field, or a dash when that field is missing or the read is stale or unknown. PORTFOLIO shows the observation value when the read is fresh, and a dash with "No data" when it is not. WATCHER shows the failed-alert count, or the newest alert event when none failed, never the length of the alerts window. Tap a card or a desk to open the existing room detail for SCAN, ANALYST, AEGIS, EXECUTOR, PORTFOLIO and WATCHER. XAU and Scorer open a read-only drawer listing the fields the pose used. A visually hidden list of desk buttons repeats the role, the bubble text and the time.
 
 ## Truthfulness
 
-Every pose, lamp, prop and number comes from a field on an already loaded read, or from a change between two consecutive frames of that read. The first frame after load, including the first frame after a read goes from loading to present, shows the steady pose. There is no `Math.random` and no `setInterval` in `web/src/tradingdesk/office3d/`. While room motion is on, the render clock only adds idle shimmer, a plant sway, blinking server lights, breathing and blinking. Those offsets do not read or change the pose, the lamp or the bubble. Reduced motion, a hidden tab, or an open detail leaves the poses static. A character types only when the pose is already typing or thinking. A signal flag, an observe paper ticket, or an order flag walks a paper to the chief seat. The phone, the risk alarm, XAU sleep, and the scorer stamp come from those poses and props. The wall chart is the retained last-price series from `/api/prices`. One sample is a label, not a drawn candle.
+Every pose, lamp, prop and number comes from a field on an already loaded read, or from a change between two consecutive frames of that read. The first frame after load, including the first frame after a read goes from loading to present, shows the steady pose. There is no `Math.random` and no `setInterval` in `web/src/tradingdesk/office3d/`. While room motion is on, the render clock only adds idle shimmer, a plant sway, blinking server lights, breathing and blinking. Those offsets do not read or change the pose, the lamp or the bubble. Reduced motion, a hidden tab, or an open detail leaves the poses static. A character types only when the pose is already typing or thinking. A signal flag, an observe paper ticket, or an order flag walks a paper to the chief seat. The phone, the risk alarm, XAU sleep, and the scorer stamp come from those poses and props. The wall chart is the retained last-price series for the first `status.universe` symbol from `/api/prices`, labelled with that symbol and "session". Fewer than two samples says "collecting quotes" and does not draw a candle.
 
 A stale or unauthorized read wins over an active pose: the character goes to the unknown posture and the lamp goes off. `mode: "observe"` never shows an order flag. An observe candidate inside the 12 second event window is a paper ticket stamped OBSERVE.
 
@@ -32,13 +32,13 @@ Screening "new publication" is a change in `pipeline.screening` (`state`, `count
 ## Performance
 
 - The live room is one `canvas` bitmap, scaled with `image-rendering: pixelated`. It does not load three.js.
-- While motion is on, a due draw waits a full 1/30 s before the next frame. It does not draw while the document is hidden, the room is off screen, reduced motion is on, or a detail drawer is open.
+- While motion is on, a due draw waits a full 1/8 s before the next frame (8 fps, inside the 6–10 fps band). It does not draw while the document is hidden, the room is off screen, reduced motion is on, or a detail drawer is open. Walk progress is computed in that paint from `Date.now()` and the event `sourceAt`. The paint loop keeps the latest scene in a ref, so a new render does not restart it.
 - Day is fully bright 06:00–18:00 WIB. 05:30–06:00 and 18:00–18:30 blend. Night tints the windows darker. The phase is computed from `Asia/Jakarta` on the room clock.
 - `prefers-reduced-motion` or `warp.room.motion === false` leaves poses static.
 
 ## Assets
 
-Characters, desks, plants, the server rack and the neon strips are original pixel rectangles in `pixel.ts`. No texture, model or font is fetched at runtime. No third-party sprite is committed.
+Characters, desks, plants, the lounge, the safe, the satellite, the rocket, the server rack and the neon strips are original pixel rectangles in `pixel.ts`. The bitmap is 320×468, scaled with nearest-neighbor. No texture, model or font is fetched at runtime. No third-party sprite is committed.
 
 ## Research `running` (T2)
 
@@ -48,4 +48,4 @@ Characters, desks, plants, the server rack and the neon strips are original pixe
 
 ## Checks
 
-`cd web && npm run check:bundle` gzips `dist/assets` in the same decimal kB Vite prints (bytes / 1000). It fails if the entry JavaScript grows more than 1 kB over 113.01 kB, the entry CSS grows more than 1 kB over 14.28 kB, the lazy `Office3D` chunk exceeds 600 kB, or the entry statically imports that chunk. Those baselines are the merged office bundle. The dev harness at `web/dev/office3d-harness.html` is not an entry in `vite build`. The live chunk does not import three.js.
+`cd web && npm run check:bundle` gzips `dist/assets` in the same decimal kB Vite prints (bytes / 1000). It fails if the entry JavaScript grows more than 1 kB over 113.01 kB, the entry CSS grows more than 1 kB over 14.28 kB, the lazy live-office chunk (script, its CSS, and any sprite sheet) exceeds 150 kB, or the entry statically imports that chunk. Those baselines are the merged office bundle. The dev harness at `web/dev/office3d-harness.html` is not an entry in `vite build`. The live chunk does not import three.js.

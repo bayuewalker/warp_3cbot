@@ -20,10 +20,10 @@ export function ambientFrameDelay(nowSeconds: number, deadlineSeconds: number, p
 export function ambientShift(seconds: number): { bob: number; sway: number; flicker: number; blink: boolean; step: number } {
   const t = Number.isFinite(seconds) ? seconds : 0;
   return {
-    bob: Math.sin(t * 2.1) * 1,
-    sway: Math.sin(t * 1.3) * 1,
+    bob: Math.sin(t * 2.1) * 2,
+    sway: Math.sin(t * 1.3) * 2,
     flicker: 0.72 + Math.sin(t * 5.5) * 0.28,
     blink: t % 3.4 < 0.12,
-    step: Math.floor(t * 6),
+    step: Math.floor(t * 8),
   };
 }

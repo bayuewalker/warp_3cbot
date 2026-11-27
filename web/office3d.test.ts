@@ -3,9 +3,9 @@ import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { ambientFrameDelay, ambientShift } from "./src/tradingdesk/office3d/ambient.ts";
-import { cardValue, officeCues, walkPosition, CHIEF, SEAT } from "./src/tradingdesk/office3d/life.ts";
+import { cardRatio, cardValue, deliveryProgress, officeCues, walkPosition, CHIEF, SEAT } from "./src/tradingdesk/office3d/life.ts";
 import { wibLight } from "./src/tradingdesk/office3d/lighting.ts";
-import { bubbleText, fmtWib } from "./src/tradingdesk/office3d/office-copy.ts";
+import { bubbleText, cardSentence, fmtWib } from "./src/tradingdesk/office3d/office-copy.ts";
 import { officeState, paperStack, type DeskId, type OfficeInput } from "./src/tradingdesk/office3d/office-state.ts";
 import type { ObservedValue } from "./src/tradingdesk/types.ts";
 
@@ -444,7 +444,7 @@ test("ambient motion never changes pose", () => {
   const early = ambientShift(0.4);
   const late = ambientShift(3.1);
   assert.notEqual(early.bob, late.bob);
-  assert.ok(Math.abs(early.bob) <= 1);
+  assert.ok(Math.abs(early.bob) <= 2);
   assert.ok(early.flicker >= 0.44 && early.flicker <= 1);
   const stateSource = readFileSync(fileURLToPath(new URL("./src/tradingdesk/office3d/office-state.ts", import.meta.url)), "utf8");
   const ambientSource = readFileSync(fileURLToPath(new URL("./src/tradingdesk/office3d/ambient.ts", import.meta.url)), "utf8");
@@ -493,7 +493,7 @@ test("walk, phone, stamp and alarm fire only on the real deltas", () => {
   assert.deepEqual(start, SEAT.XAU);
   assert.deepEqual(end, SEAT[CHIEF]);
   assert.equal(walkPosition(CHIEF, 0.4).x, SEAT[CHIEF].x);
-  assert.equal(cardValue("PORTFOLIO", quiet.desks.PORTFOLIO, null, null, null), "—");
+  assert.equal(cardValue("PORTFOLIO", quiet.desks.PORTFOLIO, null, null, null), "reported");
   assert.equal(cardValue("SCAN", officeState(input({ status: null }), NOW).desks.SCAN, null, null, null), "—");
 });
 
@@ -502,4 +502,58 @@ test("paper stack is a capped log of the real pending count", () => {
   assert.equal(paperStack(1), 1);
   assert.equal(paperStack(25), 2);
   assert.equal(paperStack(1000), 4);
+});
+
+test("the watcher card shows failed alerts or the newest event, not the window length", () => {
+  const desk = officeState(input(), NOW).desks.WATCHER;
+  const delivered = [
+    { id: 1, state: "delivered", event: "old_note", error: null, attempts: null },
+    { id: 4, state: "delivered", event: "new_halt", error: null, attempts: null },
+    { id: 3, state: "resolved", event: "mid_note", error: null, attempts: null },
+    { id: 2, state: "pending", event: "earlier", error: null, attempts: null },
+  ];
+  assert.equal(cardValue("WATCHER", desk, null, null, delivered), "new_halt");
+  assert.notEqual(cardValue("WATCHER", desk, null, null, delivered), String(delivered.length));
+  const failed = [
+    { id: 9, state: "pending", event: "halt", error: "no channel", attempts: 2 },
+    { id: 8, state: "delivered", event: "note", error: null, attempts: null },
+    { id: 7, state: "delivered", event: "other", error: null, attempts: null },
+  ];
+  assert.equal(cardValue("WATCHER", desk, null, null, failed), "1");
+  assert.equal(cardValue("WATCHER", desk, null, null, []), "—");
+  assert.equal(cardValue("WATCHER", desk, null, null, null), "—");
+});
+
+test("the portfolio card shows the read value, or a dash when the read is missing", () => {
+  const fresh = officeState(input(), NOW);
+  assert.equal(cardValue("PORTFOLIO", fresh.desks.PORTFOLIO, null, null, null), "reported");
+  assert.equal(cardSentence("en", "PORTFOLIO", fresh.desks.PORTFOLIO, "reported"), "Confirmed");
+  const missing = officeState(input({
+    agents: agents({ PORTFOLIO: agent(null, { state: "stale", freshness: "stale", value: null }) }),
+  }), NOW);
+  assert.equal(cardValue("PORTFOLIO", missing.desks.PORTFOLIO, null, null, null), "—");
+  assert.equal(cardSentence("en", "PORTFOLIO", missing.desks.PORTFOLIO, "—"), "No data");
+  const ratio = cardRatio("ANALYST", fresh.desks.ANALYST, status());
+  assert.deepEqual(ratio, { used: 4, cap: 48 });
+  assert.equal(cardRatio("ANALYST", fresh.desks.ANALYST, status({ providers: { budget: { calls_used: 4 } } })), null);
+  const live = officeState(input({ status: status({ xau: xau({ basis_samples: 3 }) }) }), NOW);
+  assert.deepEqual(cardRatio("XAU", live.desks.XAU, status({ xau: xau({ basis_samples: 3 }) })), { used: 3, cap: 10 });
+  assert.equal(cardRatio("XAU", live.desks.XAU, status({ xau: xau({ basis_samples: null }) })), null);
+});
+
+test("walk progress moves inside the event window as the clock advances", () => {
+  const sourceAt = new Date(NOW).toISOString();
+  assert.equal(deliveryProgress(sourceAt, NOW), 0);
+  assert.ok(Math.abs(deliveryProgress(sourceAt, NOW + 6000) - 0.5) < 1e-9);
+  assert.equal(deliveryProgress(sourceAt, NOW + 12000), 1);
+  const early = walkPosition("XAU", deliveryProgress(sourceAt, NOW + 1000));
+  const later = walkPosition("XAU", deliveryProgress(sourceAt, NOW + 1200));
+  assert.notDeepEqual(early, later);
+  const source = readFileSync(fileURLToPath(new URL("./src/tradingdesk/office3d/Office3D.tsx", import.meta.url)), "utf8");
+  assert.match(source, /deliveryProgress\(row\.sourceAt, Date\.now\(\)\)/);
+  assert.equal(source.includes("[live, cues"), false);
+  const pixel = readFileSync(fileURLToPath(new URL("./src/tradingdesk/office3d/pixel.ts", import.meta.url)), "utf8");
+  assert.equal(pixel.includes("collecting quotes"), true);
+  assert.equal(pixel.includes("\"DAY\""), false);
+  assert.equal(pixel.includes("\"NIGHT\""), false);
 });
