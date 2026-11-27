@@ -4,7 +4,7 @@ import { roomLife } from "./src/tradingdesk/room-life.ts";
 import { lanePage, navIds, spotPostponed } from "./src/tradingdesk/room.ts";
 import {
   agentCards, analysisChip, basisRead, chipLabel, deskRows, eventLabel, historyRows, isWarming,
-  playbookLines, preferenceTabs, stationFor, stripLine, tickerChip,
+  playbookLines, postponedShowsLog, preferenceTabs, stationFor, stripLine, tickerChip,
   xauAgents, xauCard, xauReason, xauTape,
 } from "./src/tradingdesk/xau-lane.ts";
 import { POSTPONED_TAB_ROUTES, payloadIssue } from "./src/tradingdesk/validate.ts";
@@ -182,6 +182,10 @@ test("a missing basis is unavailable in both languages", () => {
   assert.equal(basisRead("en", row).text, "Unavailable");
   assert.equal(basisRead("id", row).text, "Tidak tersedia");
   assert.equal(historyRows("en", row), null);
+  const brief = historyRows("en", status("running", { recent: [{ direction: "long", entry: "2301" }] }));
+  assert.equal(brief?.[0].time, "Not reported");
+  assert.equal(brief?.[0].result, "Not reported");
+  assert.equal(brief?.[0].direction, "long");
   assert.equal(playbookLines("en", row), null);
   assert.match(stripLine("en", status("running", { ready: true, ready_reason: "ok", today: { signals_sent: 0 } })), /0 signals today/);
   assert.match(stripLine("en", row), /W\/L not reported/);
@@ -207,6 +211,8 @@ test("desk log maps events to stations and filters them", () => {
 
 test("postponed settings hide the spot panels and an active lane restores them", () => {
   assert.deepEqual(preferenceTabs(true), []);
+  assert.equal(postponedShowsLog("activity"), true);
+  assert.equal(postponedShowsLog("venues"), false);
   assert.deepEqual(preferenceTabs(false), ["venues", "rules", "configuration", "activity", "risk"]);
   assert.ok(navIds(true, "bottom").length <= 5);
   assert.deepEqual(navIds(false, "bottom"), ["overview", "signals", "assets", "screener", "preferences"]);

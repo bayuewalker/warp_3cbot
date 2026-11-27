@@ -231,6 +231,11 @@ export function preferenceTabs(postponed: boolean) {
   return postponed ? [] : [...MAIN_PREFERENCE_TABS];
 }
 
+/** The postponed page has no spot Activity tab. Open Activity asks for the desk log instead. */
+export function postponedShowsLog(tab: string | null) {
+  return tab === "activity";
+}
+
 export function deskCopy(lang: Lang) {
   const id = lang === "id";
   return {

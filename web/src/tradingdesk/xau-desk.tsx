@@ -9,7 +9,7 @@ import { requestPreferencesTab } from "./activity-model";
 import { roomLife } from "./room-life";
 import {
   agentCards, analysisChip, basisRead, chipLabel, deskCopy, deskRows, historyRows, openSignalFields,
-  playbookLines, quoteChange, stripLine, tickerChip, whyQuiet, xauCard, xauLabels, xauReason, xauTape,
+  playbookLines, postponedShowsLog, quoteChange, stripLine, tickerChip, whyQuiet, xauCard, xauLabels, xauReason, xauTape,
   type LogInput, type LogStation, type StationName,
 } from "./xau-lane";
 import "./xau-board.css";
@@ -133,7 +133,6 @@ export function XauBoard({
   const prices = useLoad<{ symbols?: Record<string, { last?: string; change_pct?: string | null }> }>("/api/prices", true);
   const alerts = useLoad<{ alerts?: LogInput[] }>("/api/alerts", true);
   const loadedEvents = useLoad<{ events?: LogInput[] }>("/api/events", true);
-  const [station, setStation] = useState<LogStation>("all");
   const life = roomLife({ agents: {}, status: row, events: loadedEvents.data?.events, now, radar: false });
   const moods = Object.fromEntries(ROLES.map(role => [role, life.stations[role].mood])) as Partial<Record<StationName, "working" | "idle" | "alert" | "sleep">>;
   const alertRows = Array.isArray(alerts.data?.alerts) ? alerts.data.alerts : [];
@@ -142,7 +141,6 @@ export function XauBoard({
   const open = openSignalFields(lang, row);
   const book = playbookLines(lang, row);
   const merged = [...(loadedEvents.data?.events ?? []), ...alertRows];
-  const log = deskRows(lang, merged, station);
   const symbols = prices.data?.symbols ?? {};
   return <div className="xau-board">
     <section data-section="ticker" aria-label="XAUUSD">
@@ -186,20 +184,7 @@ export function XauBoard({
           <li key={index}><span>{item.time} · {item.direction}</span><b>{item.entry} · {item.result}</b></li>
         ))}</ul> : <p className="xau-status">{copy.noSignalsYet}</p>}
       </Card></div>
-      <div data-section="log"><Card>
-        <CardHead title={copy.log} help={copy.logHelp} />
-        <div className="xau-filters" role="group" aria-label={copy.log}>
-          {(["all", ...ROLES] as LogStation[]).map(item => (
-            <button type="button" key={item} aria-pressed={station === item} onClick={() => setStation(item)}>
-              {item === "all" ? copy.all : item}
-            </button>
-          ))}
-        </div>
-        {log.length ? <ul className="xau-log">{log.map((item, index) => (
-          <li key={item.event + item.time + index}><time>{item.when}</time> <span>{item.label}</span></li>
-        ))}</ul> : <p className="xau-status">{copy.emptyFilter}</p>}
-        <a className="desk-link" href="#preferences" onClick={() => requestPreferencesTab("activity")}>{copy.openActivity}</a>
-      </Card></div>
+      <DeskLog lang={lang} rows={merged} link />
       <div data-section="playbook"><Card>
         <CardHead title={copy.playbook} />
         {book ? <ul className="xau-fields xau-playbook">{book.map(([label, value]) => (
@@ -211,7 +196,34 @@ export function XauBoard({
   </div>;
 }
 
-export function XauSettings({ lang, row }: { lang: Lang; row: Status | null }) {
+function DeskLog({ lang, rows, link }: { lang: Lang; rows: LogInput[]; link: boolean }) {
+  const copy = deskCopy(lang);
+  const [station, setStation] = useState<LogStation>("all");
+  const log = deskRows(lang, rows, station);
+  return <div data-section="log"><Card>
+    <CardHead title={copy.log} help={copy.logHelp} />
+    <div className="xau-filters" role="group" aria-label={copy.log}>
+      {(["all", ...ROLES] as LogStation[]).map(item => (
+        <button type="button" key={item} aria-pressed={station === item} onClick={() => setStation(item)}>
+          {item === "all" ? copy.all : item}
+        </button>
+      ))}
+    </div>
+    {log.length ? <ul className="xau-log">{log.map((item, index) => (
+      <li key={item.event + item.time + index}><time>{item.when}</time> <span>{item.label}</span></li>
+    ))}</ul> : <p className="xau-status">{copy.emptyFilter}</p>}
+    {link && <a className="desk-link" href="#preferences" onClick={() => requestPreferencesTab("activity")}>{copy.openActivity}</a>}
+  </Card></div>;
+}
+
+function ActivityFeed({ lang }: { lang: Lang }) {
+  const events = useLoad<{ events?: LogInput[] }>("/api/events", true);
+  const alerts = useLoad<{ alerts?: LogInput[] }>("/api/alerts", true);
+  const rows = [...(events.data?.events ?? []), ...(Array.isArray(alerts.data?.alerts) ? alerts.data.alerts : [])];
+  return <DeskLog lang={lang} rows={rows} link={false} />;
+}
+
+export function XauSettings({ lang, row, showLog = false }: { lang: Lang; row: Status | null; showLog?: boolean }) {
   const copy = deskCopy(lang);
   const alerts = useLoad<{ alerts?: unknown[] }>("/api/alerts", true);
   const count = Array.isArray(alerts.data?.alerts) ? String(alerts.data.alerts.length) : copy.notReported;
@@ -221,6 +233,7 @@ export function XauSettings({ lang, row }: { lang: Lang; row: Status | null }) {
   const halt = xau?.halt;
   const yesNo = (value: boolean | undefined) => value == null ? copy.notReported : value ? copy.yes : copy.no;
   return <div className="xau-board">
+    {postponedShowsLog(showLog ? "activity" : null) && <ActivityFeed lang={lang} />}
     <p className="xau-note" data-section="settings">{copy.settingsHelp}</p>
     <Card>
       <CardHead title={copy.mode} />

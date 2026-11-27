@@ -306,7 +306,7 @@ function Preferences({ lang, status, read }: { lang: Lang; status: Status | null
   const [tab, setTab] = useState<PreferencesTab>(() => takeRequestedTab() ?? "venues");
   const [selected, setSelected] = useState("");
   if (spotPostponed(status)) {
-    return <Suspense fallback={<Loading lang={lang} />}><XauSettings lang={lang} row={status} /></Suspense>;
+    return <Suspense fallback={<Loading lang={lang} />}><XauSettings lang={lang} row={status} showLog={tab === "activity"} /></Suspense>;
   }
   return (
     <>
