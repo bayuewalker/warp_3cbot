@@ -309,7 +309,15 @@ class OrderJournal:
                 """
                 SELECT id, event, detail, attempts FROM alerts
                  WHERE state='pending' AND next_attempt_at<=?
-                 ORDER BY id
+                 ORDER BY CASE
+                   WHEN event LIKE 'XAU BUY %' OR event LIKE 'XAU SELL %' THEN 0
+                   WHEN event LIKE 'XAU TP1 %' OR event LIKE 'XAU TP2 %' OR event LIKE 'XAU SL %'
+                     OR event LIKE 'XAU BE %' OR event LIKE 'XAU TIME %' OR event LIKE 'XAU RUNNER %'
+                     OR event LIKE 'XAU NEWS_CUT %' OR event LIKE 'XAU EXPIRED %'
+                     OR event LIKE 'XAU INVALIDATED %' OR event LIKE 'XAU CANCELLED_NEWS %'
+                     OR event LIKE 'XAU FILLED %' THEN 1
+                   ELSE 2
+                 END, id
                 """,
                 (moment,),
             )

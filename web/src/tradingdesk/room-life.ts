@@ -140,6 +140,51 @@ function cue(mood: Mood, bubble: string | null, time: string | null, stamp = fal
   return { mood, bubble, time, stamp, radar: false };
 }
 
+function xauText(value: unknown) {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
+function xauRoom(input: { status: LifeStatus; events: unknown; now: number }): RoomLife {
+  const status = input.status as (LifeStatus & { xau?: Record<string, unknown> }) | null;
+  const xau = status?.xau && typeof status.xau === "object" ? status.xau : null;
+  const at = xauText(xau?.spot_at) ?? xauText(xau?.heartbeat_at) ?? status?.published_at ?? null;
+  const clock = at ? wibClock(at) : null;
+  const state = xauText(xau?.state);
+  const feed = xauText(xau?.feed);
+  const engine = xauText(xau?.engine);
+  const windowName = xau && typeof xau.window === "object" && xau.window ? xauText((xau.window as { name?: string }).name) : null;
+  const ready = xau?.ready === true;
+  const reason = xauText(xau?.ready_reason);
+  const open = xau && typeof xau.open_signal === "object" && xau.open_signal
+    ? xauText((xau.open_signal as { direction?: string }).direction) : null;
+  const today = xau && typeof xau.today === "object" && xau.today
+    ? xauText(String((xau.today as { realized_r?: string }).realized_r ?? "")) : null;
+  const event = xauEvent(input.events, input.now);
+  const stations = {
+    SCAN: cue(feed ? "working" : "sleep", feed ? clipBubble(feed) : "unknown", clock),
+    ANALYST: cue(engine ? "working" : "idle", clipBubble([engine, windowName].filter(Boolean).join(" ") || "unknown"), clock),
+    AEGIS: cue(ready ? "working" : state === "feed_unavailable" || reason ? "alert" : "idle", clipBubble(reason ?? state ?? "unknown"), clock),
+    EXECUTOR: cue(open ? "working" : "idle", clipBubble(open ? "XAU " + open : "signal only"), clock, Boolean(open)),
+    PORTFOLIO: cue(today ? "working" : "idle", today ? clipBubble(today + "R") : null, clock),
+    WATCHER: event
+      ? cue("working", clipBubble(event.event), wibClock(event.ts))
+      : cue(state ? "idle" : "sleep", state ? clipBubble("XAU " + state) : "unknown", clock),
+  } as Record<Station, LifeCue>;
+  return { halt: status?.halt === true, stations };
+}
+
+function xauEvent(events: unknown, now: number) {
+  if (!Array.isArray(events)) return null;
+  let best: { event: string; ts: string; time: number } | null = null;
+  for (const row of events) {
+    if (!record(row) || typeof row.event !== "string" || !row.event.startsWith("XAU ") || typeof row.ts !== "string") continue;
+    const time = sourceInstant(row.ts, now);
+    if (time === null || Math.max(0, now - time) > EVENT_WINDOW_MS) continue;
+    if (!best || time >= best.time) best = { event: row.event, ts: row.ts, time };
+  }
+  return best;
+}
+
 export function roomLife(input: {
   agents: Partial<Record<Station, ObservedValue<string | null>>>;
   status: LifeStatus;
@@ -147,6 +192,8 @@ export function roomLife(input: {
   now: number;
   radar: boolean;
 }): RoomLife {
+  const lanes = input.status as (LifeStatus & { lanes?: { primary?: string } }) | null;
+  if (lanes?.lanes?.primary === "xau") return xauRoom(input);
   const { status, now } = input;
   const published = currentPublication(status?.published_at, now);
   const halt = published && status?.halt === true;

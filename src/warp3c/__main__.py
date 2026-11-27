@@ -19,7 +19,7 @@ from .engine import Engine
 from .httpapi import dispatch
 from .market import MarketData
 from .notify import Delivery, channel_configured, enqueue_incident, flush_alerts
-from .operator import HEALTH, publish
+from .operator import HEALTH, publish, publish_postponed
 from .state import OrderJournal
 from .supervisor import ResearchGate, clocks_from_journal, once
 from .telemetry import configure_logging, log_event, send_alert, send_telegram
@@ -305,6 +305,74 @@ def _flush(cfg: Settings, journal: OrderJournal | None) -> None:
     flush_alerts(journal, lambda event, detail: _deliver(cfg, event, detail))
 
 
+def _xau_state() -> str | None:
+    from .operator import _xau_block
+
+    block = _xau_block()
+    return block.get("state") if isinstance(block, dict) else None
+
+
+def _start_xau(cfg: Settings, journal: OrderJournal):
+    if not cfg.xau_enabled:
+        return None
+    try:
+        return start_xau(
+            cfg_db_path=cfg.db_path,
+            alert_sink=lambda event, detail: enqueue_incident(
+                journal,
+                event,
+                detail,
+                now=datetime.now(timezone.utc),
+                channel=channel_configured(cfg),
+            ),
+        )
+    except Exception as exc:
+        log_event("xau_start_failed", error=exc.__class__.__name__)
+        return None
+
+
+def postponed_host_pass(cfg, journal, market, live_at, broker=None) -> None:
+    """One postponed host pass. A constructed broker is never called."""
+    del broker
+    publish_postponed(cfg, journal)
+    HEALTH["lane"] = "postponed"
+    HEALTH["host_ok"] = True
+    HEALTH["last_cycle_ok"] = True
+    HEALTH["dependencies_healthy"] = True
+    HEALTH["execution_permitted"] = False
+    HEALTH["risk_permitted"] = False
+    HEALTH["reason"] = "spot_postponed"
+    HEALTH["xau_state"] = _xau_state()
+    _flush(cfg, journal)
+    _refresh_live(None, market, cfg, live_at)
+
+
+def run_spot_iteration(cfg, engine, gate, clocks, journal, market, block_tracker, live_at):
+    """Today's DCA pass. Used only when WARP_SPOT_LANE_ENABLED is exactly 1."""
+    try:
+        clocks = once(engine, gate, clocks)
+        HEALTH["last_cycle_ok"] = engine.status.dependencies_healthy
+        HEALTH["dependencies_healthy"] = engine.status.dependencies_healthy
+        HEALTH["market_data_fresh"] = engine.status.market_data_fresh
+        HEALTH["execution_permitted"] = engine.status.execution_permitted
+        HEALTH["risk_permitted"] = engine.status.risk_permitted
+        HEALTH["reason"] = engine.status.reason
+        HEALTH["lane"] = "active"
+        publish(cfg, journal, engine)
+        note_cycle_recovered(cfg, journal, block_tracker)
+        if engine.status.reason in {"ok", "observe_without_account"}:
+            journal.clear_alert()
+        elif not engine.status.risk_permitted:
+            _notify(cfg, journal, engine.status.reason, "new entries are paused")
+    except Exception as exc:
+        note_blocked_cycle(cfg, journal, exc, block_tracker, datetime.now(timezone.utc))
+    finally:
+        if journal is not None:
+            _flush(cfg, journal)
+        _refresh_live(engine, market, cfg, live_at)
+    return clocks
+
+
 def main():
     configure_logging()
     cfg = Settings.from_env()
@@ -327,26 +395,30 @@ def main():
     vibe_process = None
     broker = research = journal = market = screener = analyst = xau = None
     try:
+        if not cfg.spot_lane_enabled:
+            journal = OrderJournal(cfg.db_path)
+            market = MarketData(cfg.market_data_url, cfg)
+            broker = ThreeCommas(cfg.api_url, cfg.api_key, cfg.api_secret)
+            xau = _start_xau(cfg, journal)
+            live_at = {"price": 0.0, "screen": time.monotonic(), "accounts_at": ""}
+            publish_postponed(cfg, journal)
+            log_event("spot_lane_postponed", flag="WARP_SPOT_LANE_ENABLED")
+            log_event("worker_started", mode=cfg.mode, symbols=",".join(cfg.symbols), discovery=cfg.discovery)
+            while not STOP.is_set():
+                try:
+                    postponed_host_pass(cfg, journal, market, live_at, broker)
+                except Exception:
+                    HEALTH["host_ok"] = False
+                    HEALTH["last_cycle_ok"] = False
+                    log_event("host_loop_failed", error="host")
+                STOP.wait(min(3, cfg.monitor_seconds))
+            return
         vibe_process = start_vibe()
         broker = ThreeCommas(cfg.api_url, cfg.api_key, cfg.api_secret)
         research = VibeResearch(cfg.vibe_url, cfg.vibe_key)
         market = MarketData(cfg.market_data_url, cfg)
         journal = OrderJournal(cfg.db_path)
-        xau = None
-        if cfg.xau_enabled:
-            try:
-                xau = start_xau(
-                    cfg_db_path=cfg.db_path,
-                    alert_sink=lambda event, detail: enqueue_incident(
-                        journal,
-                        event,
-                        detail,
-                        now=datetime.now(timezone.utc),
-                        channel=channel_configured(cfg),
-                    ),
-                )
-            except Exception as exc:
-                log_event("xau_start_failed", error=exc.__class__.__name__)
+        xau = _start_xau(cfg, journal)
         screener, analyst = _build_research(cfg)
         engine = Engine(cfg, broker, research, journal, market, screener=screener, analyst=analyst)
         import httpx
@@ -374,26 +446,7 @@ def main():
         while not STOP.is_set():
             if vibe_process and vibe_process.poll() is not None:
                 raise RuntimeError("Vibe API exited; supervisor restarting")
-            try:
-                clocks = once(engine, gate, clocks)
-                HEALTH["last_cycle_ok"] = engine.status.dependencies_healthy
-                HEALTH["dependencies_healthy"] = engine.status.dependencies_healthy
-                HEALTH["market_data_fresh"] = engine.status.market_data_fresh
-                HEALTH["execution_permitted"] = engine.status.execution_permitted
-                HEALTH["risk_permitted"] = engine.status.risk_permitted
-                HEALTH["reason"] = engine.status.reason
-                publish(cfg, journal, engine)
-                note_cycle_recovered(cfg, journal, block_tracker)
-                if engine.status.reason in {"ok", "observe_without_account"}:
-                    journal.clear_alert()
-                elif not engine.status.risk_permitted:
-                    _notify(cfg, journal, engine.status.reason, "new entries are paused")
-            except Exception as exc:
-                note_blocked_cycle(cfg, journal, exc, block_tracker, datetime.now(timezone.utc))
-            finally:
-                if journal is not None:
-                    _flush(cfg, journal)
-                _refresh_live(engine, market, cfg, live_at)
+            clocks = run_spot_iteration(cfg, engine, gate, clocks, journal, market, block_tracker, live_at)
             STOP.wait(min(3, cfg.monitor_seconds))
     finally:
         HEALTH["alive"] = False

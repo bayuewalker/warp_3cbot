@@ -8,6 +8,7 @@ from decimal import Decimal
 from urllib.parse import urlparse
 
 _XAU_FLAG_WARNED = False
+_SPOT_LANE_WARNED = False
 
 
 def _warn_xau_flag(raw: str) -> None:
@@ -19,6 +20,17 @@ def _warn_xau_flag(raw: str) -> None:
     from .telemetry import log_event
 
     log_event("xau_config_warning", value=raw[:40])
+
+
+def _warn_spot_lane(raw: str) -> None:
+    """Unrecognized WARP_SPOT_LANE_ENABLED stays postponed. Log it once and do not raise."""
+    global _SPOT_LANE_WARNED
+    if _SPOT_LANE_WARNED:
+        return
+    _SPOT_LANE_WARNED = True
+    from .telemetry import log_event
+
+    log_event("spot_lane_config_warning", value=raw[:40])
 
 
 def dec(name: str, fallback: str) -> Decimal:
@@ -200,6 +212,7 @@ class Settings:
     stress_gap_share: Decimal = Decimal("0.50")
     risk_decisions_keep: int = 5000
     xau_enabled: bool = False
+    spot_lane_enabled: bool = False
 
     def __post_init__(self) -> None:
         if self.mode not in {"observe", "paper", "live"}:
@@ -368,6 +381,9 @@ class Settings:
         xau_flag = os.getenv("WARP_XAU_ENABLED", "")
         if xau_flag not in {"", "0", "1"}:
             _warn_xau_flag(xau_flag)
+        spot_flag = os.getenv("WARP_SPOT_LANE_ENABLED", "")
+        if spot_flag not in {"", "0", "1"}:
+            _warn_spot_lane(spot_flag)
         return cls(
             mode=os.getenv("TRADING_MODE", "observe").lower(),
             db_path=os.getenv("WARP_DB_PATH", "/data/warp.db"),
@@ -483,4 +499,5 @@ class Settings:
             stress_gap_share=dec("WARP_STRESS_GAP_SHARE", "0.50"),
             risk_decisions_keep=int(os.getenv("WARP_RISK_DECISIONS_KEEP", "5000")),
             xau_enabled=xau_flag == "1",
+            spot_lane_enabled=spot_flag == "1",
         )

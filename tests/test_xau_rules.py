@@ -1061,7 +1061,7 @@ class StatusBlockTests(unittest.TestCase):
                 "alive", "mode", "shared_account", "reason", "market_data_fresh",
                 "dependencies_healthy", "risk_permitted", "execution_permitted", "opened",
                 "universe", "halt", "pnl_today", "equity", "providers", "research",
-                "pipeline", "published_at", "risk_decisions", "xau",
+                "pipeline", "published_at", "risk_decisions", "xau", "lanes",
             }
             self.assertEqual(set(SNAPSHOT["/api/status"]), keys)
             self.assertEqual(SNAPSHOT["/api/status"]["xau"], {"enabled": False, "state": "disabled"})

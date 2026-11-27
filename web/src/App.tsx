@@ -1,6 +1,7 @@
 import { DiscoveryPanel, Opportunities, ResearchPanel } from "./tradingdesk/opportunities";
 import { takeRequestedTab, type PreferencesTab } from "./tradingdesk/activity-model";
 import { IncidentStrip } from "./tradingdesk/IncidentStrip";
+import { spotPostponed } from "./tradingdesk/room";
 import type { ReadInput } from "./tradingdesk/types";
 import { useCurrentRead } from "./account-read";
 import {
@@ -231,7 +232,7 @@ function TradingDeskLayout({
               </button>
             </div>
           </div>
-          {page === "overview" && <IncidentStrip lang={lang} status={status} />}
+          {page === "overview" && !spotPostponed(status.data) && <IncidentStrip lang={lang} status={status} />}
           {page === "overview" && <Overview lang={lang} status={status} />}
           {page === "desk" && <DeskPage lang={lang} status={status} />}
           {page === "signals" && (

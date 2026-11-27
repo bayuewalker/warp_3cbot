@@ -1,4 +1,4 @@
-import { currentPublication } from "./tradingdesk/room";
+import { currentPublication, spotPostponed, xauCard } from "./tradingdesk/room";
 import { currentResumeAck, forgetResumeAck, recordResumeAck, requestPreferencesTab, resumeGate } from "./tradingdesk/activity-model";
 import { instant, sourceInstant } from "./tradingdesk/frames";
 import { TradingRoom } from "./tradingdesk/TradingRoom";
@@ -347,13 +347,40 @@ function useDeskTelemetry(status: StatusRead) {
   return { now, model, events };
 }
 
+function XauDesk({ lang, row }: { lang: Lang; row: Status }) {
+  const card = xauCard(row);
+  const line = (label: string, value: string, at?: string | null) =>
+    <li>{label}: {value}{at ? " · " + (fmtTime(at, lang, true) ?? t(lang, "unknown")) : ""}</li>;
+  return <Card>
+    <CardHead icon={CandlestickChart} title={t(lang, "xauDesk")} help={card.source} />
+    <ul className="symbols">
+      {line(t(lang, "ready"), card.ready ? t(lang, "ready") : card.reason, card.spotAt)}
+      {line(t(lang, "officeXauLive"), card.window + " · " + card.engine, card.spotAt)}
+      {line(t(lang, "xauNext"), card.next, card.spotAt)}
+      {line(card.source, card.spot, card.spotAt)}
+      {line("basis", card.basis, card.spotAt)}
+      {line(t(lang, "xauSignalOnly"), card.signal, card.spotAt)}
+      {line(t(lang, "xauToday"), card.today, card.spotAt)}
+      {line(t(lang, "xauFunnel"), card.funnel, card.spotAt)}
+    </ul>
+  </Card>;
+}
+
+function PostponedLane({ lang }: { lang: Lang }) {
+  return <Card>
+    <CardHead icon={Wallet} title={t(lang, "spotPostponed")} help={t(lang, "spotPostponedDetail")} />
+  </Card>;
+}
+
 export function DeskPage({ lang, status }: { lang: Lang; status: StatusRead }) {
   const { now, model, events } = useDeskTelemetry(status);
+  const postponed = spotPostponed(status.data);
   return <div className="control-desk">
+    {status.data && <XauDesk lang={lang} row={status.data} />}
     <TradingRoom lang={lang} agents={model.agents} status={status.data} events={events.data?.events} now={now} />
-    <DeskMetrics lang={lang} model={model} />
+    {postponed ? <PostponedLane lang={lang} /> : <DeskMetrics lang={lang} model={model} />}
     <div className="monitor-grid">
-      <DeskResearch lang={lang} status={status} now={now} />
+      {postponed ? null : <DeskResearch lang={lang} status={status} now={now} />}
       <EventLog lang={lang} loaded={events} now={now} />
     </div>
   </div>;
@@ -438,9 +465,12 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
   if (status.error) return <>{room}<Problem lang={lang} retry={status.reload} /></>;
   if (!status.data) return <>{room}<Loading lang={lang} /></>;
   const row = status.data;
+  const postponed = spotPostponed(row);
   return (
     <div className="overview">
+      <XauDesk lang={lang} row={row} />
       {room}
+      {postponed ? <PostponedLane lang={lang} /> : <>
       <DeskMetrics lang={lang} model={model} />
       <Evidence lang={lang} model={model} />
       <div className="monitor-grid">
@@ -511,6 +541,7 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
           <EventLog lang={lang} loaded={events} now={now} />
         </div>
       </div>
+      </>}
     </div>
   );
 }

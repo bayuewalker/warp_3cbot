@@ -119,6 +119,19 @@ def window_at(moment: datetime) -> Window:
     return Window("off", "off", "", start, end, f"{local.date().isoformat()} off")
 
 
+def next_trade_window(moment: datetime) -> Window | None:
+    """The next London or New York killzone or EMA window that has not started."""
+    local = wib(moment)
+    current = window_at(moment).key
+    cursor = local
+    for _ in range(8 * 24 * 60):
+        cursor += timedelta(minutes=1)
+        window = window_at(cursor)
+        if window.kind in {"kz", "ema"} and window.key != current and window.start_wib > local:
+            return window
+    return None
+
+
 def scalp_entry_open(moment: datetime) -> bool:
     """K2. Execution is 14:15–16:15 and 20:15–22:15. Friday NY closes at 21:45."""
     if market_closed(moment):

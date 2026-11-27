@@ -136,9 +136,20 @@ def dispatch(method: str, path: str, headers, body: bytes) -> tuple[int, list[tu
     return _json(404, {"error": "not_found"})
 
 
+def _ready_code() -> int:
+    """Spot-active keeps the worker predicate. Postponed readiness is the XAU desk."""
+    if HEALTH.get("lane") == "postponed":
+        state = HEALTH.get("xau_state")
+        host_ok = bool(HEALTH.get("alive") and HEALTH.get("host_ok") and HEALTH.get("last_cycle_ok"))
+        if host_ok and state in {"running", "warming", "degraded"}:
+            return 200
+        return 503
+    return 200 if HEALTH.get("dependencies_healthy") and HEALTH.get("last_cycle_ok") else 503
+
+
 def _health(path: str) -> tuple[int, list[tuple[str, str]], bytes]:
     if path == "/ready":
-        code = 200 if HEALTH.get("dependencies_healthy") and HEALTH.get("last_cycle_ok") else 503
+        code = _ready_code()
     else:
         code = 200
     public = {key: value for key, value in dict(HEALTH).items() if key not in {"mode", "halt_path"}}

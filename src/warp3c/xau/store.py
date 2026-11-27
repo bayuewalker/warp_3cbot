@@ -97,6 +97,14 @@ _DDL = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS xau_funnel (
+        id INTEGER PRIMARY KEY,
+        at_utc TEXT NOT NULL,
+        window_key TEXT NOT NULL,
+        reason TEXT NOT NULL
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS xau_feed_health (
         id INTEGER PRIMARY KEY,
         at_utc TEXT NOT NULL,
@@ -255,6 +263,30 @@ class XauStore:
             "INSERT INTO xau_feed_health(at_utc, feed, ok, detail) VALUES(?, ?, ?, ?)",
             (at_utc, feed, 1 if ok else 0, detail),
         )
+
+    def note_funnel(self, at_utc: str, window_key: str, reason: str) -> None:
+        self.db.execute(
+            "INSERT INTO xau_funnel(at_utc, window_key, reason) VALUES(?, ?, ?)",
+            (at_utc, window_key, reason),
+        )
+
+    def funnel_counts(self, since_utc: str, window_key: str) -> dict:
+        today = self.db.execute(
+            "SELECT reason, COUNT(*) AS n FROM xau_funnel WHERE at_utc>=? GROUP BY reason",
+            (since_utc,),
+        ).fetchall()
+        window = self.db.execute(
+            "SELECT reason, COUNT(*) AS n FROM xau_funnel WHERE window_key=? GROUP BY reason",
+            (window_key,),
+        ).fetchall()
+        recent = self.db.execute(
+            "SELECT at_utc, reason FROM xau_funnel ORDER BY id DESC LIMIT 5"
+        ).fetchall()
+        return {
+            "today": {str(row["reason"]): int(row["n"]) for row in today},
+            "window": {str(row["reason"]): int(row["n"]) for row in window},
+            "recent": [{"at_utc": str(row["at_utc"]), "reason": str(row["reason"])} for row in recent],
+        }
 
     def tracked_through(self, signal_id: str) -> str | None:
         return self.meta_get("track:" + signal_id)

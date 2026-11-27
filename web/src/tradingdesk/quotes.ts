@@ -40,6 +40,29 @@ export function retainQuotes(history: QuoteHistory, prices: ReturnType<typeof de
   }));
 }
 
+export function xauTape(status: {
+  lanes?: { primary?: string };
+  xau?: { spot_last?: string | null; spot_at?: string | null; cycle_seconds?: number; ready_reason?: string | null; state?: string } | null;
+} | null | undefined, now: number) {
+  const xau = status?.xau;
+  const last = xau && typeof xau.spot_last === "string" && Number(xau.spot_last) > 0 ? xau.spot_last : null;
+  const at = xau?.spot_at ?? null;
+  const time = at ? Date.parse(at) : NaN;
+  const cycle = xau?.cycle_seconds;
+  const limit = (typeof cycle === "number" && cycle > 0 ? cycle : 30) * 2 * 1000;
+  const fresh = last !== null && Number.isFinite(time) && Math.max(0, now - time) <= limit;
+  const reason = xau?.ready_reason || xau?.state || "missing";
+  return {
+    symbol: "XAUUSD",
+    last,
+    at,
+    fresh,
+    reason,
+    source: "OANDA:XAUUSD via TradingView (spot)",
+    active: status?.lanes?.primary === "xau" || last !== null,
+  };
+}
+
 /** The wall and the miniature PC displays share one time-scaled line. */
 export function quoteTrace(points: QuotePoint[]) {
   const first = points[0], last = points.at(-1);
