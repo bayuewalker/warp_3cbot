@@ -196,10 +196,11 @@ export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
   }, [logs, status?.published_at, motionNow]);
   const show3d = view === "3d" && webgl && !lost;
   const floor = (
+    <MarketWall lang={lang} now={now}>{(panel, monitorLine) =>
       <div className="office-layout">
         {!text && <div className="control-room-scene" role="group" aria-label={t(lang, "officeFloor")}>
           <Suspense fallback={null}>
-            <RoomAlive agents={agents} status={status} events={logs} now={motionNow} flags={aliveFlags} onMoods={setMoods} />
+            <RoomAlive monitorLine={monitorLine} agents={agents} status={status} events={logs} now={motionNow} flags={aliveFlags} onMoods={setMoods} />
           </Suspense>
           {stationNames.map(role => <button key={role} className="office-seat" data-seat={role}
             data-mood={moods[role] ?? "idle"}
@@ -209,7 +210,7 @@ export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
           </button>)}
         </div>}
         <div className="office-instruments">
-          <MarketWall lang={lang} now={now} />
+          {panel}
           <dl>{stationNames.map(role => {
             const item = agents[role];
             const event = roleHistory(role, logs, now).latest;
@@ -235,7 +236,8 @@ export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
             </div>;
           })}</dl>
         </div>
-      </div>
+      </div>}
+    </MarketWall>
   );
   return <>
     <section ref={room} className="room-summary trading-room" aria-labelledby="room-title" data-text={text ? "on" : "off"}
