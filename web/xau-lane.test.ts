@@ -2,7 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { roomLife } from "./src/tradingdesk/room-life.ts";
 import { lanePage, navIds, spotPostponed } from "./src/tradingdesk/room.ts";
-import { xauAgents, xauCard, xauReason, xauTape } from "./src/tradingdesk/xau-lane.ts";
+import {
+  agentCards, analysisChip, basisRead, chipLabel, deskRows, eventLabel, historyRows, isWarming,
+  playbookLines, preferenceTabs, stationFor, stripLine, tickerChip,
+  xauAgents, xauCard, xauReason, xauTape,
+} from "./src/tradingdesk/xau-lane.ts";
 import { POSTPONED_TAB_ROUTES, payloadIssue } from "./src/tradingdesk/validate.ts";
 
 const now = Date.parse("2026-11-27T07:30:00Z");
@@ -128,4 +132,82 @@ test("bots preset tab treats a postponed payload as a lane, not a failed read", 
 
 test("screener tab treats a postponed payload as a lane, not a failed read", () => {
   for (const path of POSTPONED_TAB_ROUTES.screener) assert.equal(payloadIssue(path, { state: "postponed" }), null, path);
+});
+
+const moods = { SCAN: "working", ANALYST: "working", AEGIS: "idle", EXECUTOR: "idle", PORTFOLIO: "idle", WATCHER: "idle" } as const;
+
+test("basis stays a value after warm-up even when the funnel still says warming_up", () => {
+  const row = status("running", {
+    ready: true, ready_reason: "ok", warming: false, basis: "1.20", basis_value: "1.20",
+    basis_healthy: true, basis_samples: 15,
+    funnel: { recent: [{ reason: "warming_up", count: 2 }] },
+  });
+  assert.equal(isWarming(row), false);
+  assert.equal(basisRead("en", row).text, "1.20 · Healthy");
+  assert.equal(basisRead("id", row).text, "1.20 · Sehat");
+  assert.equal(basisRead("en", row).bar, null);
+  assert.equal(analysisChip(row), "waiting");
+  assert.equal(chipLabel("en", "waiting"), "Waiting for a setup");
+  assert.equal(chipLabel("en", "waiting").includes("Ready:"), false);
+});
+
+test("warming, closed, stale, halted, and an open signal each have one chip", () => {
+  const warming = status("warming", { warming: true, ready_reason: "warming", basis_samples: 4 });
+  assert.equal(basisRead("en", warming).text, "Warming up (4/10)");
+  assert.equal(analysisChip(warming), "warming");
+  const closed = status("market_closed", { spot_state: "market_closed", spot_last: "2300" });
+  assert.equal(analysisChip(closed), "closed");
+  assert.equal(tickerChip("en", closed, now).id, "closed");
+  const stale = status("running", { spot_last: "2300", spot_at: "2026-11-27T07:00:00Z", spot_state: "live" });
+  assert.equal(tickerChip("en", stale, now).id, "stale");
+  const halted = status("running", { halt: { global: true, xau: false } });
+  assert.equal(analysisChip(halted), "halted");
+  const open = status("running", {
+    ready: true, ready_reason: "ok", spot_last: "2300", spot_state: "live",
+    open_signal: { direction: "long", entry: "2301", sl: "2290", tp1: "2320", tp2: null, grade: "A" },
+  });
+  assert.equal(analysisChip(open), "open");
+  const cards = agentCards("en", open, now, moods, 0);
+  assert.equal(cards.find(item => item.role === "EXECUTOR")?.status.includes("long"), true);
+  assert.equal(cards.find(item => item.role === "EXECUTOR")?.value, "A");
+  const empty = agentCards("en", status("running", { ready: true, ready_reason: "ok" }), now, moods, null);
+  assert.equal(empty.find(item => item.role === "EXECUTOR")?.status, "No open signal");
+  assert.equal(empty.find(item => item.role === "SCAN")?.value, "0s");
+  const quiet = agentCards("en", { lanes: { primary: "xau" }, xau: { ready: true, ready_reason: "ok" } }, now, moods, null);
+  assert.equal(quiet.find(item => item.role === "SCAN")?.value, "Not reported");
+});
+
+test("a missing basis is unavailable in both languages", () => {
+  const row = status("running", { ready: true, ready_reason: "ok", basis: null, basis_value: null });
+  assert.equal(basisRead("en", row).text, "Unavailable");
+  assert.equal(basisRead("id", row).text, "Tidak tersedia");
+  assert.equal(historyRows("en", row), null);
+  assert.equal(playbookLines("en", row), null);
+  assert.match(stripLine("en", status("running", { ready: true, ready_reason: "ok", today: { signals_sent: 0 } })), /0 signals today/);
+  assert.match(stripLine("en", row), /W\/L not reported/);
+});
+
+test("desk log maps events to stations and filters them", () => {
+  assert.equal(stationFor("market_data_blocked"), "SCAN");
+  assert.equal(stationFor("halt"), "AEGIS");
+  assert.equal(stationFor("XAU BUY GOLD"), "EXECUTOR");
+  assert.equal(stationFor("XAU cycle note"), "WATCHER");
+  assert.equal(eventLabel("en", "alert_skipped"), "Alert skipped");
+  assert.equal(eventLabel("en", "bad_json"), "Unreadable message");
+  assert.equal(eventLabel("en", "mystery_event"), "Logged event");
+  const rows = [
+    { event: "halt", ts: "2026-11-27T07:31:00Z" },
+    { event: "market_data_blocked", ts: "2026-11-27T07:32:00Z" },
+  ];
+  assert.equal(deskRows("en", rows, "SCAN").length, 1);
+  assert.equal(deskRows("en", rows, "SCAN")[0].label, "Market data blocked");
+  assert.equal(deskRows("id", rows, "all")[0].label, "Data pasar terblokir");
+  assert.equal(deskRows("en", rows, "PORTFOLIO").length, 0);
+});
+
+test("postponed settings hide the spot panels and an active lane restores them", () => {
+  assert.deepEqual(preferenceTabs(true), []);
+  assert.deepEqual(preferenceTabs(false), ["venues", "rules", "configuration", "activity", "risk"]);
+  assert.ok(navIds(true, "bottom").length <= 5);
+  assert.deepEqual(navIds(false, "bottom"), ["overview", "signals", "assets", "screener", "preferences"]);
 });

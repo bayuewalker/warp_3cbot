@@ -34,8 +34,12 @@ New signals stop. Open signals keep being tracked. Remove the file to resume.
 
 ## Read status
 
-`GET /api/status` includes `xau` and `lanes` when the operator is authenticated. The XAU block has `enabled`, `state`, `ready`, `ready_reason`, `heartbeat_at`, `window`, `next_window`, `engine`, `feed`, `basis`, `basis_std`, `basis_samples`, `spot_last`, `spot_at`, `spot_state`, `funnel`, `last_signal_at`, `today`, `open_signal`, `recent`, and `stats30`. `feed` and `basis` are the live book, including before the first signal. `spot_state` is `market_closed` through the weekend and the daily 17:00–18:00 New York break, and that quote is not fresh. `last_signal_at` is read from `xau_signals` and survives a restart.
+`GET /api/status` includes `xau` and `lanes` when the operator is authenticated. The XAU block has `enabled`, `state`, `ready`, `ready_reason`, `heartbeat_at`, `window`, `next_window`, `engine`, `feed`, `basis`, `basis_std`, `basis_samples`, `spot_last`, `spot_at`, `spot_state`, `funnel`, `last_signal_at`, `today`, `open_signal`, `recent`, `stats30`, and `playbook`. `feed` and `basis` are the live book, including before the first signal. `spot_state` is `market_closed` through the weekend and the daily 17:00–18:00 New York break, and that quote is not fresh. `last_signal_at` is read from `xau_signals` and survives a restart.
 
 `state` is `feed_unavailable` when no candle source answers. `/live` and `/health` stay process checks. `/ready` follows the spot lane when that lane is active, and follows XAU when the spot lane is postponed.
 
 Alerts go out through the existing Telegram outbox. Every XAU event starts with `XAU `. The desk does not add a bot token or a chat id.
+
+## Desk layout
+
+While the spot lane is postponed, the desk leads with the gold tape, the XAU signal card, the room, six station cards, signal history, a filtered log, and a read-only playbook. `xau.playbook` repeats the rules version, windows, cycle, basis max, spread, gate-check count, and the profile this process already loaded. Change those rules in the repo. `WARP_SPOT_LANE_ENABLED=1` restores the spot pages.

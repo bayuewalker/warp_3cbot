@@ -88,6 +88,13 @@ export type Status = {
     last_signal_at?: string | null;
     heartbeat_at?: string | null;
     basis_healthy?: boolean;
+    warming?: boolean;
+    basis_samples?: number | null;
+    basis_value?: string | null;
+    last_bar_age_s?: number | null;
+    halt?: { global?: boolean; xau?: boolean };
+    recent?: Record<string, unknown>[];
+    playbook?: Record<string, unknown> | null;
   } | null;
 };
 

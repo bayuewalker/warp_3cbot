@@ -1,17 +1,14 @@
 import { currentPublication, spotPostponed } from "./tradingdesk/room";
 import { currentResumeAck, forgetResumeAck, recordResumeAck, requestPreferencesTab, resumeGate } from "./tradingdesk/activity-model";
-import { instant, sourceInstant } from "./tradingdesk/frames";
+import { sourceInstant } from "./tradingdesk/frames";
 import { TradingRoom } from "./tradingdesk/TradingRoom";
 import { overviewTelemetry } from "./tradingdesk/adapters";
 import { Evidence, readLabel, roleLabel } from "./tradingdesk/Evidence";
 import {
   Activity,
   ChevronRight,
-  Bot,
-  Boxes,
   CandlestickChart,
   ScrollText,
-  CircleDollarSign,
   Cpu,
   Crosshair,
   Layers3,
@@ -21,12 +18,12 @@ import {
   Wallet,
 } from "lucide-react";
 import { lazy, Suspense, useEffect, useState } from "react";
-import { api, type CardRow, type Status } from "./api";
+import { api, type Status } from "./api";
 import { t, type Lang, type Key } from "./i18n";
 import { Badge, Button, Card, CardHead, Field, Loading, Problem, inputClass } from "./ui";
 import { Age } from "./age";
 import { useLoad } from "./snapshot";
-import { fmtMoney, fmtNumber, fmtPct, fmtPrice, fmtTime, sourceLabel } from "./format";
+import { fmtNumber, fmtPct, fmtPrice, fmtTime, sourceLabel } from "./format";
 
 type StatusRead = ReturnType<typeof useLoad<Status>>;
 export function stateLabel(lang: Lang, state?: string) {
@@ -347,95 +344,36 @@ function useDeskTelemetry(status: StatusRead) {
   return { now, model, events };
 }
 
-const XauDesk = lazy(() => import("./tradingdesk/xau-desk").then(mod => ({ default: mod.XauDesk })));
+const loadSpot = () => import("./tradingdesk/spot-panels");
+const SpotMetrics = lazy(() => loadSpot().then(mod => ({ default: mod.SpotMetrics })));
+const SpotResearch = lazy(() => loadSpot().then(mod => ({ default: mod.SpotResearch })));
+const loadXau = () => import("./tradingdesk/xau-desk");
+const XauDesk = lazy(() => loadXau().then(mod => ({ default: mod.XauDesk })));
+export const XauSettings = lazy(() => loadXau().then(mod => ({ default: mod.XauSettings })));
 
 export function DeskPage({ lang, status }: { lang: Lang; status: StatusRead }) {
   const { now, model, events } = useDeskTelemetry(status);
   const postponed = spotPostponed(status.data);
+  const room = <TradingRoom lang={lang} agents={model.agents} status={status.data} events={events.data?.events} now={now} />;
+  if (postponed && status.data) {
+    return <div className="control-desk"><Suspense fallback={null}><XauDesk lang={lang} row={status.data} full>{room}</XauDesk></Suspense></div>;
+  }
   return <div className="control-desk">
     {status.data && <Suspense fallback={null}><XauDesk lang={lang} row={status.data} /></Suspense>}
-    <TradingRoom lang={lang} agents={model.agents} status={status.data} events={events.data?.events} now={now} />
-    {postponed ? null : <DeskMetrics lang={lang} model={model} />}
+    {room}
+    <Suspense fallback={null}><SpotMetrics lang={lang} model={model} /></Suspense>
     <div className="monitor-grid">
-      {postponed ? null : <DeskResearch lang={lang} status={status} now={now} />}
+      <Suspense fallback={null}><SpotResearch lang={lang} status={status} now={now} /></Suspense>
       <EventLog lang={lang} loaded={events} now={now} />
     </div>
   </div>;
 }
 
-function DeskResearch({ lang, status, now }: { lang: Lang; status: StatusRead; now: number }) {
-  const loaded = useLoad<{ cards: CardRow[] }>("/api/opportunities", true);
-  const card = loaded.data?.cards?.[0];
-  const [checkedAt, setCheckedAt] = useState(0);
-  const clock = Math.max(now, checkedAt);
-  const current = !status.issue && currentPublication(status.data?.published_at, clock);
-  const evidenceAt = sourceInstant(card?.evidence_as_of, clock);
-  const signalAt = sourceInstant(card?.as_of, clock);
-  const expiresAt = instant(card?.expires_at);
-  const expired = expiresAt !== null && clock > expiresAt;
-  const fresh = current && !loaded.issue && card?.fresh === true && signalAt !== null &&
-    evidenceAt !== null && expiresAt !== null && !expired;
-  useEffect(() => {
-    if (!fresh || expiresAt === null) return;
-    const delay = Math.max(0, expiresAt + 1 - Date.now());
-    // Longer deadlines are still checked by the desk clock.
-    if (delay > 2_147_483_647) return;
-    const timer = window.setTimeout(() => setCheckedAt(Date.now()), delay);
-    return () => window.clearTimeout(timer);
-  }, [fresh, expiresAt]);
-  const verdict = card && ["BUY", "WAIT", "SKIP"].includes(card.action) ? card.action : t(lang, "unknown");
-  const state = loaded.issue ? t(lang, "refreshError") : !loaded.data ? t(lang, "loading") :
-    !current || card?.fresh === false || expired ? t(lang, "readStale") : !card ? t(lang, "readEmpty") :
-    fresh ? t(lang, "readFresh") : t(lang, "freshnessUnknown");
-  return <Card className="desk-research">
-    <CardHead icon={Cpu} title={t(lang, "deskResearch")} aside={<Badge tone={fresh ? "info" : "neutral"}>{state}</Badge>} />
-    {card ? <div className="desk-research-body">
-      <strong>{card.symbol} · {verdict}</strong>
-      <p>{(lang === "id" ? card.why_id : card.thesis) || t(lang, "unknown")}</p>
-      <small>{t(lang, "marketTime")} · {fmtTime(evidenceAt, lang, true) ?? t(lang, "unknown")}</small>
-    </div> : loaded.data && !loaded.issue ? <p>{t(lang, "deskNoResearch")}</p> : null}
-    <a className="desk-link" href="#signals">{t(lang, "signals")} <ChevronRight size={16} /></a>
-  </Card>;
-}
-
-function DeskMetrics({ lang, model }: { lang: Lang; model: ReturnType<typeof overviewTelemetry> }) {
-  const metrics = [
-    { title: "equity", icon: Wallet, detail: "accountMark", unit: "USDT" },
-    { title: "pnl", icon: CircleDollarSign, detail: "todayUTC", unit: "USDT" },
-    { title: "activeBots", icon: Bot, detail: "owned" },
-    { title: "open", icon: Boxes, detail: "listPositions" },
-  ] as const;
-  return (
-      <div className="metrics">
-        {metrics.map((m) => {
-          const observation = model.metrics[m.title];
-          const value = observation.value;
-          return (
-            <Card key={m.title} className="kpi">
-              <div>
-                <span>{t(lang, m.title)}</span>
-                <m.icon size={16} />
-              </div>
-              <strong className={value == null ? "kpi-missing" : undefined}>
-                {value == null
-                  ? t(lang, "unknown")
-                  : "unit" in m
-                    ? fmtMoney(value, lang) ?? t(lang, "unknown")
-                    : fmtNumber(value, lang, 0)}{" "}
-                {value != null && "unit" in m && <small>{m.unit}</small>}
-              </strong>
-              <small>{t(lang, m.detail)} · {readLabel(lang, observation.state)}</small>
-            </Card>
-          );
-        })}
-      </div>
-  );
-}
-
 export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
   const { now, model, events } = useDeskTelemetry(status);
+  const scene = <TradingRoom lang={lang} agents={model.agents} status={status.data} events={events.data?.events} now={now} />;
   const room = <div className="control-desk overview-room">
-    <TradingRoom lang={lang} agents={model.agents} status={status.data} events={events.data?.events} now={now} />
+    {scene}
     <a className="desk-link overview-room-link" href="#desk">{t(lang, "roomEntry")} <ChevronRight size={16} /></a>
   </div>;
   if (status.issue === "awaiting_first_snapshot") return <>{room}<p role="status">{t(lang, "awaitingWorker")}</p></>;
@@ -443,12 +381,14 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
   if (!status.data) return <>{room}<Loading lang={lang} /></>;
   const row = status.data;
   const postponed = spotPostponed(row);
+  if (postponed) {
+    return <div className="overview"><Suspense fallback={null}><XauDesk lang={lang} row={row} full>{scene}</XauDesk></Suspense></div>;
+  }
   return (
     <div className="overview">
       <Suspense fallback={null}><XauDesk lang={lang} row={row} /></Suspense>
       {room}
-      {postponed ? null : <>
-      <DeskMetrics lang={lang} model={model} />
+      <Suspense fallback={null}><SpotMetrics lang={lang} model={model} /></Suspense>
       <Evidence lang={lang} model={model} />
       <div className="monitor-grid">
         <div className="monitor-col">
@@ -518,7 +458,6 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
           <EventLog lang={lang} loaded={events} now={now} />
         </div>
       </div>
-      </>}
     </div>
   );
 }

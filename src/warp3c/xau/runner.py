@@ -8,6 +8,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from warp3c.telemetry import log_event
 
@@ -42,7 +43,7 @@ from .engines.ema import evaluate_ema
 from .engines.scalp import evaluate_scalp
 from .engines.smc import evaluate_smc
 from .feeds import FeedUnavailable, HttpFeeds
-from .gate import GateContext, evaluate
+from .gate import CHECKS, GateContext, evaluate
 from .news import NewsBook
 from .outcome import dump_tags, on_bar, position_from_row
 from .profiles import ProfileError, example_lot, load_profile, risk_pct
@@ -62,6 +63,62 @@ def _clock_of(clock):
     if callable(clock):
         return clock
     return clock.now
+
+
+def _plain(value: Decimal | float | int) -> str:
+    return format(Decimal(str(value)), "f")
+
+
+def _trade_windows() -> list[dict]:
+    """Windows the clock already publishes. The Monday probe is not a trading parameter."""
+    cursor = datetime(2026, 11, 23, 0, 30, tzinfo=ZoneInfo("Asia/Jakarta"))
+    found: list[dict] = []
+    names: set[str] = set()
+    for _ in range(24 * 60):
+        window = window_at(cursor)
+        if window.kind in {"kz", "ema"} and window.name not in names:
+            names.add(window.name)
+            found.append({
+                "name": window.name,
+                "engine": window.engine_slot,
+                "start_wib": format_wib(window.start_wib, "%H:%M"),
+                "end_wib": format_wib(window.end_wib, "%H:%M"),
+            })
+        cursor += timedelta(minutes=1)
+    return found
+
+
+def _playbook(settings: XauSettings, profile) -> dict:
+    """Read-only desk copy of the settings and profile this process already loaded."""
+    windows = _trade_windows()
+    engines: list[str] = []
+    for row in windows:
+        engine = row["engine"]
+        if engine and engine not in engines:
+            engines.append(engine)
+    if "SCALP" not in engines:
+        engines.append("SCALP")
+    book = {
+        "rules_version": settings.rules_version,
+        "engines": engines,
+        "windows": windows,
+        "cycle_seconds": settings.cycle_seconds,
+        "basis_max": _plain(settings.basis_max),
+        "spread_assumed": _plain(settings.spread_assumed),
+        "gate_checks": len(CHECKS),
+    }
+    if profile is None:
+        return book
+    book.update({
+        "profile_name": profile.name,
+        "profile_type": profile.account_type,
+        "max_risk_per_trade_pct": _plain(profile.max_risk_per_trade_pct),
+        "daily_dd_pct": _plain(profile.daily_dd_pct),
+        "max_dd_pct": _plain(profile.max_dd_pct),
+        "news_rule": profile.news_rule,
+        "news_window_min": profile.news_window_min,
+    })
+    return book
 
 
 class XauRunner:
@@ -642,6 +699,7 @@ class XauRunner:
             "last_error": self._error[:120],
             "rules_version": self.settings.rules_version,
             "cycle_seconds": self.settings.cycle_seconds,
+            "playbook": _playbook(self.settings, self.profile),
             "window": {
                 "name": window.name,
                 "start_wib": format_wib(window.start_wib, "%Y-%m-%d %H:%M"),
