@@ -70,7 +70,7 @@ test("newest timestamp wins even when it is the first row", () => {
   ];
   const life = roomLife({ agents: agents(), status: { ...status, mode: "paper" }, events, now, radar: false });
   assert.equal(life.stations.EXECUTOR.mood, "working");
-  assert.equal(life.stations.EXECUTOR.bubble, "observe_candidate");
+  assert.equal(life.stations.EXECUTOR.bubble, "Candidate observed");
   assert.equal(life.stations.EXECUTOR.stamp, false);
 });
 
@@ -80,7 +80,7 @@ test("a paper fill stamps, and an equal-time later row replaces the earlier one"
     { event: "strategy_confirmed", ts, alert_event: "ignored on a fill" },
   ];
   const life = roomLife({ agents: agents(), status: { ...status, mode: "paper" }, events, now, radar: false });
-  assert.equal(life.stations.EXECUTOR.bubble, "strategy_confirmed");
+  assert.equal(life.stations.EXECUTOR.bubble, "Strategy confirmed");
   assert.equal(life.stations.EXECUTOR.stamp, true);
   const live = roomLife({ agents: agents(), status: { ...status, mode: "live" }, events, now, radar: false });
   assert.equal(live.stations.EXECUTOR.stamp, true);
@@ -129,7 +129,7 @@ test("a fresh halt tints the room and a risk block alerts AEGIS", () => {
   assert.equal(blocked.stations.AEGIS.bubble, "budget");
 });
 
-test("stale, loading and missing desks sleep, and a denial stays idle", () => {
+test("stale and missing desks sleep, loading stays idle, and a denial stays idle", () => {
   const life = roomLife({
     agents: withAgents({
       SCAN: item({ freshness: "stale", state: "stale" }),
@@ -140,7 +140,8 @@ test("stale, loading and missing desks sleep, and a denial stays idle", () => {
   });
   assert.equal(life.stations.SCAN.mood, "sleep");
   assert.equal(life.stations.SCAN.bubble, "zzz");
-  assert.equal(life.stations.ANALYST.mood, "sleep");
+  assert.equal(life.stations.ANALYST.mood, "idle");
+  assert.equal(life.stations.ANALYST.bubble, null);
   assert.equal(life.stations.PORTFOLIO.mood, "idle");
   assert.equal(life.stations.WATCHER.mood, "idle");
   const missing = roomLife({ agents: {}, status, events: [], now, radar: false });
@@ -153,7 +154,7 @@ test("a fresh event beats a stale observation", () => {
     status, events: [{ event: "duplicate_skipped", ts }], now, radar: false,
   });
   assert.equal(life.stations.EXECUTOR.mood, "working");
-  assert.equal(life.stations.EXECUTOR.bubble, "duplicate_skipped");
+  assert.equal(life.stations.EXECUTOR.bubble, "Duplicate skipped");
 });
 
 test("bubble text stops at 28 characters and clocks are WIB", () => {

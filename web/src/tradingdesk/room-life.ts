@@ -44,7 +44,22 @@ const ALERT_EVENT = new Set([
   "alert_failed", "cycle_blocked",
 ]);
 
-const SLEEP_STATE = new Set(["stale", "unavailable", "error", "loading", "awaiting_first_snapshot"]);
+const SLEEP_STATE = new Set(["stale", "unavailable", "error", "awaiting_first_snapshot"]);
+
+const EVENT_COPY: Record<string, string> = {
+  market_data_blocked: "Market data blocked",
+  research_blocked: "Research blocked",
+  llm_provider_unhealthy: "Provider unhealthy",
+  halt: "Halted",
+  entries_paused: "Entries paused",
+  observe: "Observing",
+  observe_candidate: "Candidate observed",
+  duplicate_skipped: "Duplicate skipped",
+  strategy_confirmed: "Strategy confirmed",
+  alert_failed: "Alert failed",
+  cycle_blocked: "Cycle blocked",
+  blocked: "Blocked",
+};
 const ROLES: Station[] = ["SCAN", "ANALYST", "AEGIS", "EXECUTOR", "PORTFOLIO", "WATCHER"];
 
 export function clipBubble(text: string, limit = 28) {
@@ -94,9 +109,13 @@ function named(value: unknown) {
   return typeof value === "string" && value.trim() !== "" && value.trim().toLowerCase() !== "ok" ? value.trim() : null;
 }
 
+function human(text: string) {
+  return EVENT_COPY[text] ?? text;
+}
+
 function sentence(row: Record<string, unknown>) {
   const alert = row.event === "alert_failed" || row.event === "cycle_blocked" ? named(row.alert_event) : null;
-  return named(row.reason) ?? alert ?? String(row.event);
+  return human(named(row.reason) ?? alert ?? String(row.event));
 }
 
 function asleep(item: ObservedValue<string | null> | undefined) {
@@ -144,7 +163,7 @@ export function roomLife(input: {
       stations[role] = cue("working", clipBubble(sentence(event.row)), wibClock(event.ts), stamp);
     } else if (role === "AEGIS" && (halt || blocked)) {
       const text = named(status?.reason) ?? named(risk?.reason) ?? (halt ? "halt" : "blocked");
-      stations[role] = cue("alert", clipBubble(text), status?.published_at ? wibClock(status.published_at) : null);
+      stations[role] = cue("alert", clipBubble(human(text)), status?.published_at ? wibClock(status.published_at) : null);
     } else if (asleep(input.agents[role])) {
       stations[role] = cue("sleep", "zzz", null);
     } else {

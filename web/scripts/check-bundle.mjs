@@ -4,8 +4,9 @@ import { gzipSync } from "node:zlib";
 
 const dist = path.resolve("dist/assets");
 const KB = 1024;
-const ENTRY_JS_BASE = 111.25 * KB;
-const ENTRY_CSS_BASE = 14.15 * KB;
+// gzipSync sizes of the entry chunks on main at f875695 (the #44 room), measured in kB as bytes/1024.
+const ENTRY_JS_BASE = 114232;
+const ENTRY_CSS_BASE = 14379;
 const MAX_GROWTH = 2 * KB;
 const OFFICE_MAX = 600 * KB;
 
@@ -41,6 +42,12 @@ if (entryCss.length !== 1) failures.push("expected one index-*.css entry chunk")
 if (!officeJs.length) failures.push("expected an Office3D-*.js or office3d-*.js chunk");
 if (entryJs.some((file) => /from"\.\/office3d-/.test(file.text) || /from"\.\/Office3D-/.test(file.text))) {
   failures.push("entry statically imports the 3D chunk");
+}
+if (entryJs.some((file) => /from"\.\/room-alive-/.test(file.text))) {
+  failures.push("entry statically imports the room overlay chunk");
+}
+if (entryJs.some((file) => file.text.includes("Candidate observed"))) {
+  failures.push("entry contains room-life copy; keep that module in the overlay chunk");
 }
 if (jsGrowth > MAX_GROWTH) failures.push("entry js grew " + kb(jsGrowth) + " (limit 2 kB)");
 if (cssGrowth > MAX_GROWTH) failures.push("entry css grew " + kb(cssGrowth) + " (limit 2 kB)");
