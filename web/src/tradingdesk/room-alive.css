@@ -1,4 +1,5 @@
-/* Overlays use percentages of .control-room-scene (the 1152 art). Motion is transform and opacity. */
+/* Overlays use percentages of .control-room-scene (the 1152 art). Motion is transform and opacity.
+   Nothing opaque is painted on the monitor glass. Glows are screen-blended and stay faint. */
 .room-alive { position: absolute; inset: 0; z-index: 1; pointer-events: none; overflow: hidden; }
 .alive-desk { --station: #73e9c7; }
 .alive-desk[data-desk=ANALYST] { --station: #bbabff; }
@@ -8,58 +9,69 @@
 .alive-desk[data-desk=WATCHER] { --station: #f7a9ca; }
 
 /* Window band, measured on the art: glass from about 7% to 95% across, 5% to 21% down. */
-.alive-rain { position: absolute; left: 7%; top: 5%; width: 88%; height: 16%; overflow: hidden; }
+.alive-rain {
+  position: absolute; left: 7%; top: 5%; width: 88%; height: 16%; overflow: hidden;
+  mix-blend-mode: screen; opacity: .42;
+}
 .alive-rain i {
   position: absolute; inset: -80% 0 auto; height: 260%;
-  background: repeating-linear-gradient(98deg, transparent 0 14px, rgb(198 236 255 / 45%) 14px 15px);
-  opacity: .45;
+  background: repeating-linear-gradient(98deg, transparent 0 22px, rgb(210 236 255 / 30%) 22px 22.5px);
+  opacity: .4;
 }
 .alive-neon {
-  position: absolute; left: 10%; top: 7%; width: 82%; height: 11%; opacity: .16; mix-blend-mode: screen;
+  position: absolute; left: 10%; top: 7%; width: 82%; height: 11%; opacity: .08; mix-blend-mode: screen;
   background:
-    radial-gradient(circle at 18% 62%, #ff4fd8 0 5px, transparent 9px),
-    radial-gradient(circle at 46% 38%, #49e0ff 0 5px, transparent 9px),
-    radial-gradient(circle at 74% 58%, #ffd15a 0 4px, transparent 8px);
+    radial-gradient(circle at 18% 62%, #ff4fd8 0 4px, transparent 10px),
+    radial-gradient(circle at 46% 38%, #49e0ff 0 4px, transparent 10px),
+    radial-gradient(circle at 74% 58%, #ffd15a 0 3px, transparent 9px);
 }
 
 .alive-monitor {
   position: absolute; left: var(--mx); top: var(--my); width: var(--mw); height: var(--mh);
-  overflow: hidden; border-radius: 2px; opacity: 1;
-  box-shadow: 0 0 10px 1px color-mix(in srgb, var(--station) 65%, transparent);
+  overflow: hidden; border-radius: 6px;
 }
-.alive-scrim { position: absolute; inset: 0; background: #000; opacity: .4; }
-.alive-scroll {
-  position: absolute; left: 0; right: 0; top: 0; height: 220%; opacity: .55;
-  background:
-    repeating-linear-gradient(180deg, transparent 0 3px, color-mix(in srgb, var(--station) 75%, white) 3px 4px),
-    repeating-linear-gradient(90deg, transparent 0 7px, color-mix(in srgb, var(--station) 50%, transparent) 7px 9px);
+.alive-glow, .alive-sheen, .alive-sweep, .alive-radar, .alive-stamp { position: absolute; mix-blend-mode: screen; }
+.alive-glow {
+  inset: 0; opacity: .1;
+  background: radial-gradient(circle at 50% 46%, color-mix(in srgb, var(--station) 80%, white), transparent 70%);
 }
-.alive-sweep, .alive-radar, .alive-stamp { position: absolute; inset: 0; opacity: 0; }
+.alive-sheen {
+  left: 0; right: 0; top: 0; height: 28%; opacity: 0;
+  background: linear-gradient(180deg, transparent, rgb(255 255 255 / 55%), transparent);
+}
+.alive-sweep { top: 10%; bottom: 10%; left: 0; width: 36%; opacity: 0;
+  background: linear-gradient(90deg, transparent, rgb(255 96 112 / 75%), transparent);
+}
 .alive-radar {
-  border-radius: 50%;
-  background: conic-gradient(from 0deg, transparent 0 300deg, color-mix(in srgb, var(--station) 85%, white) 360deg);
+  inset: 10%; border-radius: 50%; opacity: 0;
+  background: conic-gradient(from 0deg, transparent 0 312deg, color-mix(in srgb, var(--station) 75%, white) 360deg);
+}
+.alive-stamp {
+  left: 50%; top: 48%; width: 52%; height: 64%; opacity: 0; border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(circle, rgb(255 236 196 / 85%), transparent 68%);
 }
 .alive-eye {
-  position: absolute; left: var(--ex); top: var(--ey); width: 1.7%; height: 1.7%;
-  border-radius: 50%; background: var(--station); box-shadow: 0 0 6px 2px var(--station);
-  opacity: .55; transform: translate(-50%, -50%);
+  position: absolute; left: var(--ex); top: var(--ey); width: 1.5%; height: 1.5%;
+  border-radius: 50%; background: var(--station); box-shadow: 0 0 5px 1px var(--station);
+  opacity: .1; transform: translate(-50%, -50%); mix-blend-mode: screen;
 }
 .alive-lamp {
-  position: absolute; left: var(--lx); top: var(--ly); width: 5%; height: 5%;
-  transform: translate(-50%, -50%); mix-blend-mode: screen; opacity: .34;
-  background: radial-gradient(circle, rgb(255 196 120 / 90%), transparent 68%);
+  position: absolute; left: var(--lx); top: var(--ly); width: 4.2%; height: 4.2%;
+  transform: translate(-50%, -50%); mix-blend-mode: screen; opacity: .1;
+  background: radial-gradient(circle, rgb(255 196 120 / 80%), transparent 70%);
 }
 .alive-desk[data-desk=PORTFOLIO] .alive-lamp {
-  background: radial-gradient(circle, rgb(90 220 255 / 85%), transparent 68%);
+  background: radial-gradient(circle, rgb(90 220 255 / 75%), transparent 70%);
 }
 .alive-keys {
-  position: absolute; left: var(--kx); top: var(--ky); width: 7%; height: 2.2%; opacity: 0;
+  position: absolute; left: var(--kx); top: var(--ky); width: 6%; height: 1.8%; opacity: 0;
+  mix-blend-mode: screen;
   background:
-    radial-gradient(circle at 18% 50%, #fff 0 1px, transparent 1.6px),
-    radial-gradient(circle at 50% 50%, #fff 0 1px, transparent 1.6px),
-    radial-gradient(circle at 82% 50%, #fff 0 1px, transparent 1.6px);
+    radial-gradient(circle at 18% 50%, #fff 0 .7px, transparent 1.4px),
+    radial-gradient(circle at 50% 50%, #fff 0 .7px, transparent 1.4px),
+    radial-gradient(circle at 82% 50%, #fff 0 .7px, transparent 1.4px);
 }
-.alive-stamp { box-shadow: inset 0 0 0 2px #fff6; }
 .alive-bubble {
   position: absolute; left: var(--bx); top: var(--by); max-width: 26%;
   padding: 1px 4px; border-radius: 4px; background: #080e17f2; color: #f4f7f8;
@@ -69,34 +81,34 @@
 .alive-desk:is([data-desk=SCAN], [data-desk=ANALYST], [data-desk=AEGIS]) .alive-bubble { max-width: 20%; }
 .alive-bubble small { display: block; font-weight: 500; color: #c5d4df; }
 .alive-floor {
-  position: absolute; left: 8%; top: 63%; width: 84%; height: 14%; opacity: .35;
-  background: linear-gradient(180deg, rgb(150 230 255 / 28%), transparent 70%);
+  position: absolute; left: 8%; top: 63%; width: 84%; height: 14%; opacity: .08;
+  mix-blend-mode: screen;
+  background: linear-gradient(180deg, rgb(150 230 255 / 40%), transparent 72%);
 }
 .alive-led {
-  position: absolute; width: 1.6%; height: 1.6%; border-radius: 50%;
-  transform: translate(-50%, -50%); opacity: .55;
+  position: absolute; width: 1.2%; height: 1.2%; border-radius: 50%;
+  transform: translate(-50%, -50%); opacity: .22; mix-blend-mode: screen;
 }
-.alive-led[data-led=a] { left: 21%; top: 95.5%; background: #ff7a3c; box-shadow: 0 0 6px #ff7a3c; }
-.alive-led[data-led=b] { left: 38%; top: 90%; background: #3de0ff; box-shadow: 0 0 6px #3de0ff; }
-.alive-led[data-led=c] { left: 72%; top: 89%; background: #3de0ff; box-shadow: 0 0 6px #3de0ff; }
-.alive-led[data-led=d] { left: 88%; top: 94%; background: #ff8a3d; box-shadow: 0 0 6px #ff8a3d; }
-.alive-halt { position: absolute; inset: 0; background: rgb(150 8 20 / 32%); opacity: .85; }
+.alive-led[data-led=a] { left: 21%; top: 95.5%; background: #ff7a3c; box-shadow: 0 0 4px #ff7a3c; }
+.alive-led[data-led=b] { left: 38%; top: 90%; background: #3de0ff; box-shadow: 0 0 4px #3de0ff; }
+.alive-led[data-led=c] { left: 72%; top: 89%; background: #3de0ff; box-shadow: 0 0 4px #3de0ff; }
+.alive-led[data-led=d] { left: 88%; top: 94%; background: #ff8a3d; box-shadow: 0 0 4px #ff8a3d; }
+.alive-halt { position: absolute; inset: 0; background: rgb(150 8 20 / 28%); opacity: .7; }
 
-.alive-desk[data-mood=working] .alive-scrim { opacity: 0; }
-.alive-desk[data-mood=working] .alive-monitor { box-shadow: 0 0 14px 2px color-mix(in srgb, var(--station) 75%, white); }
-.alive-desk[data-mood=alert] .alive-scrim { opacity: .28; background: #4a0010; }
-.alive-desk[data-mood=sleep] .alive-scrim { opacity: .92; }
-.alive-desk[data-mood=sleep] .alive-scroll { opacity: 0; }
-.alive-desk[data-mood=sleep] .alive-eye { opacity: .12; }
-.alive-desk[data-mood=alert] .alive-eye { background: #ff5d6c; box-shadow: 0 0 6px 2px #ff5d6c; }
-.alive-desk[data-mood=working] .alive-keys { opacity: .85; }
+.alive-desk[data-mood=working] .alive-glow { opacity: .26; }
+.alive-desk[data-mood=alert] .alive-glow {
+  opacity: .16;
+  background: radial-gradient(circle at 50% 46%, color-mix(in srgb, #ff6a78 75%, white), transparent 70%);
+}
+.alive-desk[data-mood=sleep] .alive-glow { opacity: 0; }
+.alive-desk[data-mood=sleep] .alive-eye { opacity: .04; }
+.alive-desk[data-mood=alert] .alive-eye { background: #ff5d6c; box-shadow: 0 0 5px 1px #ff5d6c; opacity: .4; }
+.alive-desk[data-mood=working] .alive-keys { opacity: .4; }
 .alive-desk[data-mood=alert] .alive-bubble { border-color: #ff6b78; color: #ffd7db; }
 .alive-desk[data-mood=sleep] .alive-bubble { border-color: #6a7c8c; color: #d5e0e8; letter-spacing: .14em; }
-.alive-desk[data-radar=on] .alive-radar { opacity: .8; }
-.alive-desk[data-stamp=on] .alive-stamp { opacity: .7; }
-.alive-desk[data-mood=alert]:is([data-desk=AEGIS], [data-desk=WATCHER]) .alive-sweep {
-  opacity: .5; background: rgb(255 48 68 / 40%);
-}
+.alive-desk[data-radar=on] .alive-radar { opacity: .16; }
+.alive-desk[data-stamp=on] .alive-stamp { opacity: .28; }
+.alive-desk[data-mood=alert]:is([data-desk=AEGIS], [data-desk=WATCHER]) .alive-sweep { opacity: .16; }
 
 /* Monitor glass, eyes, lamps and keyboards. Percents of the 1152 scene. */
 .alive-desk[data-desk=SCAN] { --mx: 18.2%; --my: 21.6%; --mw: 8.6%; --mh: 7.2%; --ex: 17.6%; --ey: 28%; --lx: 11.4%; --ly: 23.4%; --kx: 20.5%; --ky: 31.6%; --bx: 4%; --by: 29.2%; }
@@ -106,35 +118,45 @@
 .alive-desk[data-desk=PORTFOLIO] { --mx: 46.6%; --my: 42.2%; --mw: 11.4%; --mh: 8.6%; --ex: 49.4%; --ey: 51%; --lx: 43.6%; --ly: 46.8%; --kx: 52%; --ky: 53.8%; --bx: 36%; --by: 58%; }
 .alive-desk[data-desk=WATCHER] { --mx: 78.6%; --my: 42.6%; --mw: 11.2%; --mh: 8.4%; --ex: 78.2%; --ey: 50.2%; --lx: 73.8%; --ly: 42.2%; --kx: 83%; --ky: 53.6%; --bx: 66%; --by: 57.5%; }
 
-.room-alive[data-play=on] .alive-rain i { animation: alive-rain 1.5s linear infinite; }
-.room-alive[data-play=on] .alive-neon { animation: alive-neon 2.6s ease-in-out infinite; }
-.room-alive[data-play=on] .alive-desk:not([data-mood=sleep]) .alive-scroll { animation: alive-tape 3.2s linear infinite; }
-.room-alive[data-play=on] .alive-desk[data-mood=idle] .alive-scrim { animation: alive-dim 2.8s ease-in-out infinite alternate; }
-.room-alive[data-play=on] .alive-desk:not([data-mood=sleep]) .alive-eye { animation: alive-eye 2.8s ease-in-out infinite alternate; }
-.room-alive[data-play=on] .alive-lamp { animation: alive-lamp 1.8s ease-in-out infinite alternate; }
-.room-alive[data-play=on] .alive-desk[data-mood=working] .alive-keys { animation: alive-type .4s steps(2, end) infinite; }
-.room-alive[data-play=on] .alive-desk[data-mood=alert]:is([data-desk=AEGIS], [data-desk=WATCHER]) .alive-sweep { animation: alive-sweep 1.6s linear infinite; }
-.room-alive[data-play=on] .alive-desk[data-radar=on] .alive-radar { animation: alive-spin 1.8s linear infinite; }
-.room-alive[data-play=on] .alive-desk[data-stamp=on] .alive-stamp { animation: alive-stamp .9s ease-out infinite; }
-.room-alive[data-play=on] .alive-floor { animation: alive-floor 3.2s ease-in-out infinite alternate; }
-.room-alive[data-play=on] .alive-led { animation: alive-led 1.2s steps(2, end) infinite; }
+.room-alive[data-play=on] .alive-rain i { animation: alive-rain 1.8s linear infinite; }
+.room-alive[data-play=on] .alive-neon { animation: alive-neon 3.2s ease-in-out infinite; }
+.room-alive[data-play=on] .alive-desk[data-mood=idle] .alive-glow { animation: alive-glow 4.4s ease-in-out infinite alternate; }
+.room-alive[data-play=on] .alive-desk[data-mood=working] .alive-glow { animation: alive-glow-hot 2.8s ease-in-out infinite alternate; }
+.room-alive[data-play=on] .alive-desk:not([data-mood=sleep]) .alive-sheen { animation: alive-sheen 6s ease-in-out infinite; }
+.room-alive[data-play=on] .alive-desk:not([data-mood=sleep]) .alive-eye { animation: alive-eye 3.2s ease-in-out infinite alternate; }
+.room-alive[data-play=on] .alive-lamp { animation: alive-lamp 2.4s ease-in-out infinite alternate; }
+.room-alive[data-play=on] .alive-desk[data-mood=working] .alive-keys { animation: alive-type .45s steps(2, end) infinite; }
+.room-alive[data-play=on] .alive-desk[data-mood=alert]:is([data-desk=AEGIS], [data-desk=WATCHER]) .alive-sweep { animation: alive-sweep 4.5s linear infinite; }
+.room-alive[data-play=on] .alive-desk[data-radar=on] .alive-radar { animation: alive-spin 2.4s linear infinite; }
+.room-alive[data-play=on] .alive-desk[data-stamp=on] .alive-stamp { animation: alive-stamp 1.6s ease-out infinite; }
+.room-alive[data-play=on] .alive-floor { animation: alive-floor 4s ease-in-out infinite alternate; }
+.room-alive[data-play=on] .alive-led { animation: alive-led 1.6s steps(2, end) infinite; }
 .room-alive[data-play=on] .alive-led[data-led=b],
-.room-alive[data-play=on] .alive-led[data-led=d] { animation-delay: -.6s; }
-.room-alive[data-play=on][data-halt=on] .alive-halt { animation: alive-halt 1.4s ease-in-out infinite alternate; }
+.room-alive[data-play=on] .alive-led[data-led=d] { animation-delay: -.8s; }
+.room-alive[data-play=on][data-halt=on] .alive-halt { animation: alive-halt 1.6s ease-in-out infinite alternate; }
 
 @keyframes alive-rain { from { transform: translateY(-6%); } to { transform: translateY(8%); } }
-@keyframes alive-neon { 0%, 100% { opacity: .1; } 45% { opacity: .28; } 70% { opacity: .14; } }
-@keyframes alive-tape { from { transform: translateY(0); } to { transform: translateY(-36%); } }
-@keyframes alive-dim { from { opacity: .26; } to { opacity: .5; } }
-@keyframes alive-eye { from { opacity: .35; transform: translate(-50%, -50%); } to { opacity: .95; transform: translate(-42%, -62%); } }
-@keyframes alive-lamp { from { opacity: .2; } to { opacity: .58; } }
-@keyframes alive-type { from { opacity: .25; } to { opacity: 1; } }
-@keyframes alive-sweep { from { transform: translateX(-120%); opacity: .85; } to { transform: translateX(120%); opacity: .85; } }
+@keyframes alive-neon { 0%, 100% { opacity: .05; } 45% { opacity: .16; } 70% { opacity: .08; } }
+@keyframes alive-glow { from { opacity: .06; } to { opacity: .18; } }
+@keyframes alive-glow-hot { from { opacity: .16; } to { opacity: .32; } }
+@keyframes alive-sheen {
+  0%, 68% { transform: translateY(-140%); opacity: 0; }
+  80% { opacity: .12; }
+  100% { transform: translateY(420%); opacity: 0; }
+}
+@keyframes alive-eye { from { opacity: .06; } to { opacity: .2; } }
+@keyframes alive-lamp { from { opacity: .05; } to { opacity: .16; } }
+@keyframes alive-type { from { opacity: .12; } to { opacity: .5; } }
+@keyframes alive-sweep { from { transform: translateX(-140%); opacity: .14; } to { transform: translateX(340%); opacity: .14; } }
 @keyframes alive-spin { to { transform: rotate(1turn); } }
-@keyframes alive-stamp { 0% { opacity: 0; } 18% { opacity: .95; } 100% { opacity: 0; } }
-@keyframes alive-floor { from { opacity: .2; } to { opacity: .7; } }
-@keyframes alive-led { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
-@keyframes alive-halt { from { opacity: .4; } to { opacity: 1; } }
+@keyframes alive-stamp {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(.86); }
+  18% { opacity: .42; }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(1.04); }
+}
+@keyframes alive-floor { from { opacity: .04; } to { opacity: .12; } }
+@keyframes alive-led { 0%, 100% { opacity: .1; } 50% { opacity: .34; } }
+@keyframes alive-halt { from { opacity: .4; } to { opacity: .85; } }
 
 @media (prefers-reduced-motion: reduce) {
   .room-alive, .room-alive * { animation: none !important; }
