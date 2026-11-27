@@ -16,6 +16,39 @@ localStorage.setItem("warp.room.text", "false");
 localStorage.setItem("warp.room.view", params.get("view") === "2d" ? "2d" : "3d");
 
 const published = new Date(now - 1000).toISOString();
+const alert = params.get("alert") === "1";
+const fixtures: Record<string, unknown> = {
+  "/api/alerts": {
+    alerts: alert ? [{ id: 9, event: "halt", state: "pending", last_error: "no channel", attempts: 2, created_at: published }] : [],
+  },
+  "/api/forward": { scored: 4, pending: 2 },
+  "/api/breakers": { halt: false, risk_permitted: true, reason: "ok" },
+  "/api/prices": {
+    symbols: { BTCUSDT: { last: "64000", change_pct: "0.4" } },
+    as_of: published,
+    limit_seconds: 60,
+  },
+};
+const realFetch = window.fetch.bind(window);
+window.fetch = (input, init) => {
+  const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  const path = url.startsWith("/") ? url.split("?")[0] : "";
+  const body = fixtures[path];
+  if (body == null) return realFetch(input, init);
+  return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }));
+};
+class FixtureSource extends EventTarget {
+  onerror: ((this: EventSource, ev: Event) => unknown) | null = null;
+  constructor(url: string) {
+    super();
+    void url;
+    queueMicrotask(() => {
+      this.dispatchEvent(new MessageEvent("hello", { data: JSON.stringify({ ts: new Date(now).toISOString() }) }));
+    });
+  }
+  close() {}
+}
+window.EventSource = FixtureSource as unknown as typeof EventSource;
 function observed(value: string): ObservedValue<string | null> {
   return {
     value, state: "confirmed", availability: "confirmed", freshness: "fresh", source: "worker",

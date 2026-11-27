@@ -1,3 +1,7 @@
+import { useFrame } from "@react-three/fiber";
+import { useRef } from "react";
+import type { Group } from "three";
+import { ambientShift } from "./ambient.ts";
 import type { Pose } from "./office-state.ts";
 
 const ARM: Record<Pose, { ly: number; ry: number; lz: number; rz: number; headY: number; headZ: number }> = {
@@ -14,24 +18,51 @@ const ARM: Record<Pose, { ly: number; ry: number; lz: number; rz: number; headY:
   unknown: { ly: 0.9, ry: 0.9, lz: 0, rz: 0, headY: 1.22, headZ: 0 },
 };
 
-export function Character({ color, pose }: { color: string; pose: Pose }) {
+export function Character({ color, pose, live }: { color: string; pose: Pose; live: boolean }) {
+  const group = useRef<Group>(null);
+  const head = useRef<Group>(null);
+  useFrame((state) => {
+    if (!group.current || !head.current) return;
+    if (!live) {
+      group.current.position.y = 0;
+      head.current.rotation.y = 0;
+      return;
+    }
+    const shift = ambientShift(state.clock.elapsedTime);
+    group.current.position.y = shift.bob;
+    head.current.rotation.y = shift.head;
+  });
   if (pose === "away") return null;
   const arm = ARM[pose];
-  return <group>
+  return <group ref={group}>
+    <mesh position={[-0.09, 0.46, -0.22]}>
+      <boxGeometry args={[0.09, 0.28, 0.09]} />
+      <meshLambertMaterial color="#3a4250" />
+    </mesh>
+    <mesh position={[0.09, 0.46, -0.22]}>
+      <boxGeometry args={[0.09, 0.28, 0.09]} />
+      <meshLambertMaterial color="#3a4250" />
+    </mesh>
     <mesh position={[0, 0.78, -0.28]} castShadow>
-      <boxGeometry args={[0.34, 0.4, 0.2]} />
+      <boxGeometry args={[0.34, 0.38, 0.18]} />
       <meshLambertMaterial color={color} />
     </mesh>
-    <mesh position={[0, arm.headY, -0.28 + arm.headZ]} castShadow>
-      <sphereGeometry args={[0.15, 8, 6]} />
-      <meshLambertMaterial color={color} />
-    </mesh>
+    <group ref={head} position={[0, arm.headY, -0.28 + arm.headZ]}>
+      <mesh castShadow>
+        <sphereGeometry args={[0.13, 8, 6]} />
+        <meshLambertMaterial color="#f0c9a8" />
+      </mesh>
+      <mesh position={[0, 0.07, 0]}>
+        <boxGeometry args={[0.2, 0.08, 0.18]} />
+        <meshLambertMaterial color={color} />
+      </mesh>
+    </group>
     <mesh position={[-0.24, arm.ly, -0.28 + arm.lz]} castShadow>
-      <boxGeometry args={[0.09, 0.26, 0.09]} />
+      <boxGeometry args={[0.08, 0.24, 0.08]} />
       <meshLambertMaterial color={color} />
     </mesh>
     <mesh position={[0.24, arm.ry, -0.28 + arm.rz]} castShadow>
-      <boxGeometry args={[0.09, 0.26, 0.09]} />
+      <boxGeometry args={[0.08, 0.24, 0.08]} />
       <meshLambertMaterial color={color} />
     </mesh>
     {pose === "coffee" && <mesh position={[0.24, 1.02, -0.08]}>

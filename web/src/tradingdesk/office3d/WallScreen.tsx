@@ -12,9 +12,9 @@ export function WallScreen({
   quotes: { symbol: string; last: string; change: string | null }[];
 }) {
   const lines = eventLines(events);
-  return <group position={[0, 1.85, -2.85]}>
+  return <group position={[0, 1.72, -3.52]}>
     <mesh receiveShadow>
-      <boxGeometry args={[6.4, 1.7, 0.06]} />
+      <boxGeometry args={[2.4, 0.85, 0.05]} />
       <meshLambertMaterial color="#101820" />
     </mesh>
     <Html position={[0, 0, 0.05]} center zIndexRange={[15, 0]}>

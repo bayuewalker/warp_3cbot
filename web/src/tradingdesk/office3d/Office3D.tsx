@@ -1,5 +1,5 @@
 import { OrbitControls } from "@react-three/drei";
-import { Canvas, useThree } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fmtTime } from "../../format.ts";
 import { t, type Lang } from "../../i18n.ts";
@@ -45,6 +45,30 @@ function quality() {
 function Refresh({ token, paused }: { token: string; paused: boolean }) {
   const invalidate = useThree((state) => state.invalidate);
   useEffect(() => { if (!paused) invalidate(); }, [token, paused, invalidate]);
+  return null;
+}
+
+/** Demand-mode loop capped at 24 fps. Stops when `live` is false, which covers a hidden tab and reduced motion. */
+function Ambient({ live }: { live: boolean }) {
+  const last = useRef(0);
+  const timer = useRef(0);
+  const invalidate = useThree((state) => state.invalidate);
+  useEffect(() => {
+    if (!live) {
+      window.clearTimeout(timer.current);
+      return;
+    }
+    invalidate();
+    return () => window.clearTimeout(timer.current);
+  }, [live, invalidate]);
+  useFrame((state) => {
+    if (!live) return;
+    const t = state.clock.elapsedTime;
+    const wait = Math.max(0, 1000 / 24 - (t - last.current) * 1000);
+    last.current = t;
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => invalidate(), wait);
+  });
   return null;
 }
 
@@ -115,10 +139,10 @@ export default function Office3D({ lang, status, events, agents, now, animate, p
       frameloop={hold ? "never" : "demand"}
       shadows={settings.shadows}
       gl={{ antialias: settings.antialias, alpha: false, powerPreference: "low-power" }}
-      camera={{ position: [0.85, 8.5, 10.8], fov: 46, near: 0.1, far: 48 }}
+      camera={{ position: [0.05, 8.2, 11.2], fov: 42, near: 0.1, far: 48 }}
       onPointerMissed={() => setBubble(null)}
       onCreated={({ gl, camera }) => {
-        camera.lookAt(0, 0.4, 0.55);
+        camera.lookAt(0, 0.35, 0.9);
         gl.domElement.addEventListener("webglcontextlost", (event) => {
           event.preventDefault();
           onLost();
@@ -126,6 +150,7 @@ export default function Office3D({ lang, status, events, agents, now, animate, p
       }}
     >
       <Refresh token={token} paused={hold} />
+      <Ambient live={animate && !hold} />
       <Room now={now} shadows={settings.shadows} />
       <WallScreen lang={lang} events={events} notice={notice} quotes={quotes} />
       {DESKS.map((id) => <group key={id} position={[LAYOUT[id].x, 0, LAYOUT[id].z]}>
@@ -134,6 +159,7 @@ export default function Office3D({ lang, status, events, agents, now, animate, p
           desk={model.desks[id]}
           lang={lang}
           glow={model.desks[id].lamp === "off" ? 0 : 0.35 + (1 - light.day) * 0.75}
+          live={animate && !hold}
           showBubble={bubble === id}
           onPick={pick}
           onHover={setBubble}
@@ -148,7 +174,7 @@ export default function Office3D({ lang, status, events, agents, now, animate, p
         maxAzimuthAngle={0.85}
         minDistance={7}
         maxDistance={18}
-        target={[0, 0.4, 0.55]}
+        target={[0, 0.35, 0.9]}
       />
     </Canvas>
     {extra && <ExtraDrawer lang={lang} id={extra} desk={model.desks[extra]} close={() => setExtra(null)} />}

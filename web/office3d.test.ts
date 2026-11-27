@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { ambientShift } from "./src/tradingdesk/office3d/ambient.ts";
 import { wibLight } from "./src/tradingdesk/office3d/lighting.ts";
 import { bubbleText } from "./src/tradingdesk/office3d/office-copy.ts";
 import { officeState, paperStack, type DeskId, type OfficeInput } from "./src/tradingdesk/office3d/office-state.ts";
@@ -153,6 +154,43 @@ test("research poses follow running, the wait, the budget and backoff", () => {
   assert.equal(missing.desks.ANALYST.evidenceKey, "analyst.no_research");
 });
 
+test("blocked analysis follows research backoff, failed and capped instead of unknown", () => {
+  const unavailable = agent(null, { state: "unavailable", freshness: "unknown", value: null });
+  function blockedStatus(research: Record<string, unknown>, publishedAt = published) {
+    return status({
+      published_at: publishedAt,
+      pipeline: { ...status().pipeline, analysis: { state: "blocked", count: 0, mode: "auto" } },
+      research,
+    });
+  }
+  const backoff = officeState(input({
+    agents: agents({ ANALYST: unavailable }),
+    status: blockedStatus({ state: "backoff", running: false, error_code: "providers_failed", next_attempt_at: at(120_000), consecutive_failures: 2 }),
+  }), NOW);
+  assert.equal(backoff.desks.ANALYST.pose, "alert");
+  assert.equal(backoff.desks.ANALYST.lamp, "red");
+  assert.equal(backoff.desks.ANALYST.evidenceKey, "analyst.backoff");
+  const failed = officeState(input({
+    agents: agents({ ANALYST: unavailable }),
+    status: blockedStatus({ state: "failed", running: false, error_code: "providers_failed", consecutive_failures: 3 }),
+  }), NOW);
+  assert.equal(failed.desks.ANALYST.pose, "alert");
+  assert.equal(failed.desks.ANALYST.lamp, "red");
+  const capped = officeState(input({
+    agents: agents({ ANALYST: unavailable }),
+    status: blockedStatus({ state: "capped", running: false }),
+  }), NOW);
+  assert.equal(capped.desks.ANALYST.pose, "coffee");
+  assert.equal(capped.desks.ANALYST.lamp, "amber");
+  assert.equal(capped.desks.ANALYST.evidenceKey, "analyst.budget");
+  const stale = officeState(input({
+    agents: agents({ ANALYST: unavailable }),
+    status: blockedStatus({ state: "backoff", running: false }, at(-16 * 60_000)),
+  }), NOW);
+  assert.equal(stale.desks.ANALYST.pose, "unknown");
+  assert.equal(stale.desks.ANALYST.evidenceKey, "analyst.stale");
+});
+
 test("halt and insufficient free USDT are alerts, and a pass is idle", () => {
   const halted = officeState(input({ status: status({ halt: true, reason: "halt" }) }), NOW);
   assert.equal(halted.desks.AEGIS.pose, "alert");
@@ -289,6 +327,37 @@ test("alerts phone on a new delivered id, failed rows stay red, and a down strea
   assert.equal(down.desks.WATCHER.bubble, "reconnecting");
 });
 
+test("a pending alert with an error and an attempt is red, and a new pending or resolved id rings", () => {
+  const pendingFail = officeState(input({
+    alerts: { alerts: [{ id: 8, event: "halt", state: "pending", last_error: "timeout", attempts: 1, created_at: published }] },
+  }), NOW);
+  assert.equal(pendingFail.desks.WATCHER.pose, "alert");
+  assert.equal(pendingFail.desks.WATCHER.lamp, "red");
+  assert.equal(pendingFail.desks.WATCHER.facts.last_error, "timeout");
+  const noAttempt = officeState(input({
+    alerts: { alerts: [{ id: 9, event: "halt", state: "pending", last_error: "timeout", attempts: 0, created_at: published }] },
+  }), NOW);
+  assert.equal(noAttempt.desks.WATCHER.pose, "idle");
+  const seen = officeState(input({ alerts: { alerts: [{ id: 1, event: "note", state: "delivered", created_at: published }] } }), NOW);
+  const pending = officeState(input({
+    alerts: { alerts: [{ id: 2, event: "note", state: "pending", created_at: published }] },
+    prior: seen.prior,
+  }), NOW);
+  assert.equal(pending.desks.WATCHER.pose, "phone");
+  assert.equal(pending.desks.WATCHER.lamp, "blue");
+  const resolved = officeState(input({
+    alerts: { alerts: [{ id: 3, event: "note", state: "resolved", created_at: published }] },
+    prior: seen.prior,
+  }), NOW);
+  assert.equal(resolved.desks.WATCHER.pose, "phone");
+  const redBeatsPhone = officeState(input({
+    alerts: { alerts: [{ id: 4, event: "note", state: "pending", last_error: "timeout", attempts: 2, created_at: published }] },
+    prior: seen.prior,
+  }), NOW);
+  assert.equal(redBeatsPhone.desks.WATCHER.pose, "alert");
+  assert.equal(redBeatsPhone.desks.WATCHER.lamp, "red");
+});
+
 test("the first frame does not invent delta motion", () => {
   const model = officeState(input({
     forward: { scored: 9, pending: 4 },
@@ -324,6 +393,24 @@ test("office3d source does not pick poses with Math.random or setInterval", () =
     assert.equal(source.includes("Math.random"), false, name);
     assert.equal(source.includes("setInterval"), false, name);
   }
+});
+
+test("ambient motion never changes pose", () => {
+  const model = officeState(input(), NOW);
+  const again = officeState(input(), NOW);
+  assert.deepEqual(again.desks, model.desks);
+  const early = ambientShift(0.4);
+  const late = ambientShift(3.1);
+  assert.notEqual(early.bob, late.bob);
+  assert.ok(Math.abs(early.bob) <= 0.012);
+  assert.ok(Math.abs(early.head) <= 0.06);
+  assert.ok(early.flicker >= 0.78 && early.flicker <= 0.94);
+  const stateSource = readFileSync(fileURLToPath(new URL("./src/tradingdesk/office3d/office-state.ts", import.meta.url)), "utf8");
+  const ambientSource = readFileSync(fileURLToPath(new URL("./src/tradingdesk/office3d/ambient.ts", import.meta.url)), "utf8");
+  assert.equal(stateSource.includes("ambient"), false);
+  assert.equal(ambientSource.includes("pose"), false);
+  assert.equal(ambientSource.includes("lamp"), false);
+  assert.equal(ambientShift.length, 1);
 });
 
 test("paper stack is a capped log of the real pending count", () => {

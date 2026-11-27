@@ -2,14 +2,14 @@ import type { DeskId } from "./office-state.ts";
 
 /** x/z of each desk. The camera sits on +z and looks toward the back wall. */
 export const LAYOUT: Record<DeskId, { x: number; z: number }> = {
-  SCAN: { x: -1.15, z: -1.5 },
-  ANALYST: { x: 1.15, z: -1.5 },
-  AEGIS: { x: -1.15, z: -0.1 },
-  EXECUTOR: { x: 1.15, z: -0.1 },
-  PORTFOLIO: { x: -1.15, z: 1.3 },
-  WATCHER: { x: 1.15, z: 1.3 },
-  XAU: { x: -1.15, z: 2.7 },
-  FORWARD: { x: 1.15, z: 2.7 },
+  SCAN: { x: -1.62, z: -1.65 },
+  ANALYST: { x: 1.62, z: -1.65 },
+  AEGIS: { x: -1.62, z: -0.15 },
+  EXECUTOR: { x: 1.62, z: -0.15 },
+  PORTFOLIO: { x: -1.62, z: 1.35 },
+  WATCHER: { x: 1.62, z: 1.35 },
+  XAU: { x: -1.62, z: 2.85 },
+  FORWARD: { x: 1.62, z: 2.85 },
 };
 
 export const DESK_COLOR: Record<DeskId, string> = {
