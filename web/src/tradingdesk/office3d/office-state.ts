@@ -40,7 +40,8 @@ export type PriorFrame = {
   maxAlertId: number | null;
   xauSignalUntil: number | null;
   alertUntil: number | null;
-  alertKind: "delivered" | "failed" | null;
+  alertKind: "phone" | null;
+  phoneAlertId: number | null;
 };
 
 export type OfficeInput = {
@@ -158,7 +159,15 @@ function riskBubble(reason: string | null): { bubble: Key; facts: Record<string,
   return { bubble: "officeRiskBlock", facts: {} };
 }
 
-type AlertRow = { id: number; state: string; event: string; at: string | null; error: string | null };
+type AlertRow = { id: number; state: string; event: string; at: string | null; error: string | null; attempts: number | null };
+
+const PHONE_STATE = new Set(["pending", "delivered", "resolved"]);
+
+/** A failed row, or a pending row that already has an error and at least one attempt. */
+export function alertFailed(row: Pick<AlertRow, "state" | "error" | "attempts">): boolean {
+  if (row.state === "failed") return true;
+  return row.state === "pending" && row.error != null && row.attempts != null && row.attempts >= 1;
+}
 
 function alertRows(payload: unknown): AlertRow[] {
   const body = record(payload) ? payload : null;
@@ -172,6 +181,7 @@ function alertRows(payload: unknown): AlertRow[] {
       event: text(row.event) ?? "",
       at: text(row.delivered_at) ?? text(row.created_at),
       error: text(row.last_error),
+      attempts: num(row.attempts),
     });
   }
   return out;
@@ -209,21 +219,25 @@ export function officeState(input: OfficeInput, now: number): OfficeModel {
   const alertMax = maxAlertId(alerts);
   let alertUntil = priorIn?.alertUntil ?? null;
   let alertKind = priorIn?.alertKind ?? null;
+  let phoneAlertId = priorIn?.phoneAlertId ?? null;
   if (priorIn?.alertsSeen) {
     const floor = priorIn.maxAlertId;
     let newest: AlertRow | null = null;
     for (const row of alerts) {
       if (floor != null && row.id <= floor) continue;
+      if (!PHONE_STATE.has(row.state) || alertFailed(row)) continue;
       if (!newest || row.id > newest.id) newest = row;
     }
-    if (newest && (newest.state === "delivered" || newest.state === "failed")) {
+    if (newest) {
       alertUntil = now + EVENT_WINDOW_MS;
-      alertKind = newest.state;
+      alertKind = "phone";
+      phoneAlertId = newest.id;
     }
   }
   if (alertUntil != null && now >= alertUntil) {
     alertUntil = null;
     alertKind = null;
+    phoneAlertId = null;
   }
 
   const prior: PriorFrame = {
@@ -237,9 +251,10 @@ export function officeState(input: OfficeInput, now: number): OfficeModel {
     xauSignalUntil,
     alertUntil,
     alertKind,
+    phoneAlertId,
   };
 
-  const shared = { input, now, status, published, age, scanChanged, xau, sent, open, signal: xauSignalUntil != null, scored, pending, scoredDelta, alerts, phone: alertKind === "delivered" && alertUntil != null };
+  const shared = { input, now, status, published, age, scanChanged, xau, sent, open, signal: xauSignalUntil != null, scored, pending, scoredDelta, alerts, phone: alertKind === "phone" && alertUntil != null, phoneAlertId };
   const desks: Record<DeskId, DeskState> = {
     SCAN: scanDesk(shared),
     ANALYST: analystDesk(shared),
@@ -276,6 +291,7 @@ type Shared = {
   scoredDelta: boolean;
   alerts: AlertRow[];
   phone: boolean;
+  phoneAlertId: number | null;
 };
 
 function scanDesk(ctx: Shared): DeskState {
@@ -318,9 +334,18 @@ function analystDesk(ctx: Shared): DeskState {
   }) : [];
   if (!ctx.status) return neutral(agent?.state === "unauthorized" ? "denied" : "loading", null, "analyst.missing", fields);
   const freshness = combine(agent, ctx.age);
+  const analysis = ctx.status && record(ctx.status.pipeline) && record(ctx.status.pipeline.analysis) ? ctx.status.pipeline.analysis : null;
+  const analysisBlocked = text(analysis?.state) === "blocked";
   const gate = blocked(agent, freshness, sourceAt, "analyst", fields);
-  if (gate) return gate;
-  if (!research) return neutral("unknown", sourceAt, "analyst.no_research", fields);
+  // analysis "blocked" is not a recognized agent value, so the observation is unavailable.
+  // A fresh publication still carries the research state that blocked the stage.
+  if (gate && !(analysisBlocked && gate.evidenceKey === "analyst.unknown" && ctx.age === "fresh")) return gate;
+  if (!research) {
+    if (analysisBlocked && ctx.age === "fresh") {
+      return blank({ pose: "alert", lamp: "amber", prop: "none", bubble: "officeResearchBackoff", freshness: "fresh", sourceAt, evidenceKey: "analyst.analysis_blocked", fields });
+    }
+    return neutral("unknown", sourceAt, "analyst.no_research", fields);
+  }
   const providers = record(ctx.status.providers) ? ctx.status.providers : null;
   const budget = providers && record(providers.budget) ? providers.budget : null;
   const used = num(budget?.calls_used);
@@ -343,6 +368,9 @@ function analystDesk(ctx: Shared): DeskState {
     if (code) facts.error_code = code;
     if (next) facts.next_attempt_at = next;
     return blank({ pose: "alert", lamp: "red", prop: "none", bubble: "officeResearchBackoff", freshness, sourceAt, evidenceKey: "analyst.backoff", fields, facts });
+  }
+  if (analysisBlocked) {
+    return blank({ pose: "alert", lamp: "amber", prop: "none", bubble: "officeResearchBackoff", freshness, sourceAt, evidenceKey: "analyst.analysis_blocked", fields, facts: budgetFacts });
   }
   if (state === "ok") {
     const waiting = nextAt != null && nextAt > ctx.now;
@@ -535,7 +563,7 @@ function forwardDesk(ctx: Shared): DeskState {
 function watcherDesk(ctx: Shared): DeskState {
   const agent = agentOf(ctx.input, "WATCHER");
   const sourceAt = agent?.sourceAt ?? null;
-  const failed = ctx.alerts.find((row) => row.state === "failed") ?? null;
+  const failed = ctx.alerts.find((row) => alertFailed(row)) ?? null;
   const fields = ctx.alerts.slice(0, 3).map((row) => ({ name: "alert." + row.id, value: row.state || "unknown" }));
   if (!agent || agent.state === "loading" || agent.state === "awaiting_first_snapshot") return neutral("loading", sourceAt, "watcher.loading", fields);
   if (agent.state === "unauthorized" || ctx.input.alertsIssue === "unauthorized") return neutral("denied", null, "watcher.denied", fields);
@@ -557,7 +585,7 @@ function watcherDesk(ctx: Shared): DeskState {
     return blank({ pose: "away", lamp: "amber", prop: "none", bubble: "reconnecting", freshness: "fresh", sourceAt, evidenceKey: "watcher.stream", fields });
   }
   if (ctx.phone) {
-    const delivered = [...ctx.alerts].reverse().find((row) => row.state === "delivered");
+    const delivered = ctx.alerts.find((row) => row.id === ctx.phoneAlertId) ?? null;
     return blank({
       pose: "phone", lamp: "blue", prop: "none", bubble: "officePhone", freshness: "fresh",
       sourceAt: delivered?.at ?? sourceAt, evidenceKey: "watcher.phone", fields,

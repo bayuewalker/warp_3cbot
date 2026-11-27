@@ -1,22 +1,21 @@
-import { OrbitControls } from "@react-three/drei";
-import { Canvas, useThree } from "@react-three/fiber";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fmtTime } from "../../format.ts";
 import { t, type Lang } from "../../i18n.ts";
 import { useLiveState, useLoad } from "../../snapshot.ts";
-import { deskPrices } from "../quotes.ts";
+import { deskPrices, retainQuotes, type QuoteHistory } from "../quotes.ts";
 import type { Station } from "../room.ts";
 import type { ObservedValue } from "../types.ts";
-import { Desk } from "./Desk.tsx";
-import { LAYOUT } from "./layout.ts";
+import { ambientFrameDelay } from "./ambient.ts";
+import { cardRatio, cardValue, deliveryProgress, officeCues, type OfficeCues, type WatcherCardRow } from "./life.ts";
 import { wibLight } from "./lighting.ts";
-import { bubbleText, deskLabel, fmtWib } from "./office-copy.ts";
+import { bubbleText, cardSentence, deskLabel, fmtWib, PLATE } from "./office-copy.ts";
 import { DESKS, officeState, type DeskId, type DeskState, type PriorFrame } from "./office-state.ts";
-import { Room } from "./Room.tsx";
-import { WallScreen } from "./WallScreen.tsx";
+import { deskHit, paintOffice, SCENE_H, SCENE_W, type PaintScene } from "./pixel.ts";
+import { DESK_COLOR } from "./layout.ts";
 import "./office3d.css";
 
 const STATIONS = new Set<string>(["SCAN", "ANALYST", "AEGIS", "EXECUTOR", "PORTFOLIO", "WATCHER"]);
+const FRAME_S = 1 / 8;
 
 export type Office3DProps = {
   lang: Lang;
@@ -30,23 +29,14 @@ export type Office3DProps = {
   onLost: () => void;
 };
 
-function quality() {
-  const mobile = window.matchMedia("(max-width: 800px)").matches;
-  const cores = navigator.hardwareConcurrency || 8;
-  const memory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8;
-  const low = cores <= 4 || memory <= 4;
-  return {
-    dpr: (mobile ? [1, 1.5] : [1, 2]) as [number, number],
-    antialias: !low,
-    shadows: !mobile && !low,
-  };
-}
-
-function Refresh({ token, paused }: { token: string; paused: boolean }) {
-  const invalidate = useThree((state) => state.invalidate);
-  useEffect(() => { if (!paused) invalidate(); }, [token, paused, invalidate]);
-  return null;
-}
+type SceneView = {
+  desks: PaintScene["desks"];
+  cues: OfficeCues;
+  day: number;
+  motion: boolean;
+  quote: PaintScene["quote"];
+  deliveries: OfficeCues["deliveries"];
+};
 
 export default function Office3D({ lang, status, events, agents, now, animate, paused, onOpenStation, onLost }: Office3DProps) {
   const alerts = useLoad("/api/alerts", true);
@@ -55,6 +45,7 @@ export default function Office3D({ lang, status, events, agents, now, animate, p
   const prices = useLoad("/api/prices", true);
   const stream = useLiveState();
   const prior = useRef<PriorFrame | null>(null);
+  const history = useRef<QuoteHistory>({});
   const model = officeState({
     status,
     events,
@@ -69,90 +60,191 @@ export default function Office3D({ lang, status, events, agents, now, animate, p
     prior: prior.current,
   }, now);
   prior.current = model.prior;
+  const cues = officeCues(model.desks);
+  const tape = deskPrices({ data: prices.data, received: prices.received, issue: prices.issue }, now);
+  if (tape.state === "confirmed" && tape.freshness === "fresh") history.current = retainQuotes(history.current, tape);
+  const quote = chartQuote(history.current, tape.value, universeSymbols(status));
+  const light = wibLight(now);
   const [bubble, setBubble] = useState<DeskId | null>(null);
   const [extra, setExtra] = useState<Extract<DeskId, "XAU" | "FORWARD"> | null>(null);
-  const settings = useMemo(quality, []);
-  const light = wibLight(now);
+  const canvas = useRef<HTMLCanvasElement>(null);
   const hold = paused || extra != null;
-  const token = JSON.stringify(DESKS.map((id) => {
-    const desk = model.desks[id];
-    return [desk.pose, desk.lamp, desk.prop, desk.bubble, desk.stack, desk.plate, desk.present, desk.facts];
-  })) + light.phase + light.day.toFixed(2);
-  const tape = deskPrices({ data: prices.data, received: prices.received, issue: prices.issue }, now);
-  const quotes = tape.state === "confirmed" && tape.freshness === "fresh" && tape.value
-    ? tape.value.map((quote) => ({ symbol: quote.symbol, last: quote.last, change: quote.change }))
-    : [];
-  const watcher = agents.WATCHER;
-  const notice = !Array.isArray(events)
-    ? t(lang, watcher.state === "unauthorized" ? "sessionExpired" : watcher.state === "loading" || watcher.state === "awaiting_first_snapshot" ? "loading" : "unknown")
-    : null;
+  const live = animate && !hold;
+  const pending = typeof (forward.data as { pending?: unknown } | null)?.pending === "number"
+    ? (forward.data as { pending: number }).pending : null;
+  const watcherRows = alerts.issue || !alerts.data ? null : watcherCardRows(alerts.data);
+  const statusRecord = recordStatus(status);
+  const view = useRef<SceneView>({ desks: model.desks, cues, day: light.day, motion: live, quote, deliveries: cues.deliveries });
+  view.current = { desks: model.desks, cues, day: light.day, motion: live, quote, deliveries: cues.deliveries };
+  const draw = useRef<(ms: number) => void>(() => {});
+  const lost = useRef(onLost);
+  lost.current = onLost;
+  draw.current = (ms: number) => {
+    const el = canvas.current;
+    const ctx = el?.getContext("2d");
+    if (!ctx) return;
+    const scene = view.current;
+    paintOffice(ctx, {
+      desks: scene.desks,
+      cues: scene.cues,
+      day: scene.day,
+      seconds: ms / 1000,
+      motion: scene.motion,
+      quote: scene.quote,
+      walks: scene.deliveries.map((row) => ({
+        from: row.from,
+        progress: scene.motion ? deliveryProgress(row.sourceAt, Date.now()) : 1,
+      })),
+    });
+  };
+
+  useEffect(() => {
+    const el = canvas.current;
+    const ctx = el?.getContext("2d");
+    if (!ctx) {
+      lost.current();
+      return;
+    }
+    let stop = false;
+    let timer = 0;
+    let raf = 0;
+    let deadline = 0;
+    const frame = (ms: number) => {
+      if (stop) return;
+      draw.current(ms);
+      if (!view.current.motion) return;
+      const next = ambientFrameDelay(ms / 1000, deadline, FRAME_S);
+      deadline = next.deadline;
+      timer = window.setTimeout(() => { raf = requestAnimationFrame(frame); }, next.waitMs);
+    };
+    raf = requestAnimationFrame(frame);
+    return () => {
+      stop = true;
+      window.cancelAnimationFrame(raf);
+      window.clearTimeout(timer);
+    };
+  }, [live]);
+
+  useEffect(() => {
+    if (live) return;
+    draw.current(0);
+  });
 
   function open(id: DeskId) {
     if (id === "XAU" || id === "FORWARD") setExtra(id);
     else if (STATIONS.has(id)) onOpenStation(id as Station);
   }
-  function pick(id: DeskId, pointerType: string) {
-    if (pointerType === "touch" && bubble !== id) {
-      setBubble(id);
-      return;
-    }
+  function pick(id: DeskId) {
     setBubble(id);
     open(id);
   }
 
-  return <div className="office-stage" data-motion={animate ? "on" : "off"} data-paused={hold ? "on" : "off"}>
+  return <div className="office-stage pixel-office" data-motion={live ? "on" : "off"} data-paused={hold ? "on" : "off"}>
     <ul className="office-a11y">
       {DESKS.map((id) => {
         const desk = model.desks[id];
         const when = fmtWib(desk.sourceAt, lang) ?? fmtTime(desk.sourceAt, lang, true) ?? t(lang, "unknown");
-        return <li key={id}><button type="button" data-desk={id} onFocus={() => setBubble(id)} onClick={() => { setBubble(id); open(id); }}>
+        return <li key={id}><button type="button" data-desk={id} onFocus={() => setBubble(id)} onClick={() => pick(id)}>
           {deskLabel(lang, id) + " · " + bubbleText(lang, id, desk).split("\n")[0] + " · " + when}
         </button></li>;
       })}
     </ul>
-    <Canvas
-      dpr={settings.dpr}
-      frameloop={hold ? "never" : "demand"}
-      shadows={settings.shadows}
-      gl={{ antialias: settings.antialias, alpha: false, powerPreference: "low-power" }}
-      camera={{ position: [0.85, 8.5, 10.8], fov: 46, near: 0.1, far: 48 }}
-      onPointerMissed={() => setBubble(null)}
-      onCreated={({ gl, camera }) => {
-        camera.lookAt(0, 0.4, 0.55);
-        gl.domElement.addEventListener("webglcontextlost", (event) => {
-          event.preventDefault();
-          onLost();
-        });
+    <div className="pixel-cards">
+      {DESKS.map((id) => {
+        const desk = model.desks[id];
+        const value = cardValue(id, desk, statusRecord, pending, watcherRows);
+        const ratio = cardRatio(id, desk, statusRecord);
+        const color = cardColor(id, desk, cues);
+        return <button key={id} type="button" className="pixel-card" data-card={id} data-value={value}
+          onClick={() => pick(id)} style={{ borderColor: color, color }}>
+          <RoleMark id={id} color={color} />
+          <span className="pixel-card-name">{PLATE[id]}</span>
+          <strong>{value}</strong>
+          {ratio && <span className="pixel-bar" aria-hidden="true"><span style={{ width: Math.round((ratio.used / ratio.cap) * 100) + "%", background: color }} /></span>}
+          <em title={cardSentence(lang, id, desk, value)}>{cardSentence(lang, id, desk, value)}</em>
+        </button>;
+      })}
+    </div>
+    <canvas
+      ref={canvas}
+      width={SCENE_W}
+      height={SCENE_H}
+      aria-hidden="true"
+      onClick={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        const x = (event.clientX - rect.left) * (SCENE_W / rect.width);
+        const y = (event.clientY - rect.top) * (SCENE_H / rect.height);
+        const id = deskHit(x, y);
+        if (id) pick(id);
+        else setBubble(null);
       }}
-    >
-      <Refresh token={token} paused={hold} />
-      <Room now={now} shadows={settings.shadows} />
-      <WallScreen lang={lang} events={events} notice={notice} quotes={quotes} />
-      {DESKS.map((id) => <group key={id} position={[LAYOUT[id].x, 0, LAYOUT[id].z]}>
-        <Desk
-          id={id}
-          desk={model.desks[id]}
-          lang={lang}
-          glow={model.desks[id].lamp === "off" ? 0 : 0.35 + (1 - light.day) * 0.75}
-          showBubble={bubble === id}
-          onPick={pick}
-          onHover={setBubble}
-        />
-      </group>)}
-      <OrbitControls
-        enablePan={false}
-        enableDamping={animate}
-        minPolarAngle={0.78}
-        maxPolarAngle={1.22}
-        minAzimuthAngle={-0.85}
-        maxAzimuthAngle={0.85}
-        minDistance={7}
-        maxDistance={18}
-        target={[0, 0.4, 0.55]}
-      />
-    </Canvas>
+    />
+    {bubble && <p className="pixel-bubble" role="status">{bubbleText(lang, bubble, model.desks[bubble])}</p>}
     {extra && <ExtraDrawer lang={lang} id={extra} desk={model.desks[extra]} close={() => setExtra(null)} />}
   </div>;
+}
+
+function RoleMark({ id, color }: { id: DeskId; color: string }) {
+  const shape = id === "SCAN" || id === "XAU" ? "box" : id === "AEGIS" ? "helm" : "round";
+  return <svg className="pixel-mark" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+    <rect width="14" height="14" fill="#120c1c" />
+    {shape === "round" ? <rect x="3" y="1" width="8" height="7" rx="3" fill={DESK_COLOR[id]} /> : <rect x="3" y="1" width="8" height="7" fill={DESK_COLOR[id]} />}
+    <rect x="4" y="4" width="6" height="2" fill={color} />
+    <rect x="4" y="9" width="6" height="3" fill={DESK_COLOR[id]} />
+  </svg>;
+}
+
+function recordStatus(status: unknown): Record<string, unknown> | null {
+  return status !== null && typeof status === "object" && !Array.isArray(status) ? status as Record<string, unknown> : null;
+}
+
+function universeSymbols(status: unknown): string[] {
+  const row = recordStatus(status);
+  const list = row && Array.isArray(row.universe) ? row.universe : [];
+  return list.filter((item): item is string => typeof item === "string" && /^[A-Z0-9]{2,30}$/.test(item));
+}
+
+function watcherCardRows(data: unknown): WatcherCardRow[] | null {
+  if (!data || typeof data !== "object") return null;
+  const rows = (data as { alerts?: unknown }).alerts;
+  if (!Array.isArray(rows)) return null;
+  const out: WatcherCardRow[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const record = row as Record<string, unknown>;
+    if (typeof record.id !== "number" || !Number.isFinite(record.id)) continue;
+    const attempts = typeof record.attempts === "number" && Number.isFinite(record.attempts) ? record.attempts : null;
+    const error = typeof record.last_error === "string" && record.last_error ? record.last_error : null;
+    out.push({
+      id: record.id,
+      state: typeof record.state === "string" ? record.state : "",
+      event: typeof record.event === "string" ? record.event : "",
+      error,
+      attempts,
+    });
+  }
+  return out;
+}
+
+function chartQuote(history: QuoteHistory, latest: { symbol: string; last: string }[] | null, universe: string[]): { symbol: string; points: number[] } | null {
+  const symbol = universe[0] ?? latest?.[0]?.symbol ?? Object.keys(history)[0] ?? null;
+  if (!symbol) return null;
+  const points = (history[symbol] ?? []).map((point) => point.last).filter((value) => Number.isFinite(value));
+  if (!points.length && latest) {
+    const row = latest.find((item) => item.symbol === symbol);
+    const last = row ? Number(row.last) : Number.NaN;
+    if (row && Number.isFinite(last)) return { symbol, points: [last] };
+  }
+  return { symbol, points };
+}
+
+function cardColor(id: DeskId, desk: DeskState, cues: OfficeCues): string {
+  if (id === "AEGIS" && cues.alarm) return "#ff6b6b";
+  if (id === "WATCHER" && cues.phone) return "#5eb0ff";
+  if (desk.lamp === "red") return "#ff6b6b";
+  if (desk.lamp === "amber") return "#e6b15a";
+  if (desk.lamp === "off") return "#3a4450";
+  return DESK_COLOR[id];
 }
 
 function ExtraDrawer({ lang, id, desk, close }: { lang: Lang; id: DeskId; desk: DeskState; close: () => void }) {

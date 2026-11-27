@@ -988,10 +988,10 @@ class StoreAndStatusTests(unittest.TestCase):
             XauSettings(cycle_seconds=1)
 
     def test_config_error_thread_reports_and_returns(self):
-        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.dict(
-            os.environ, {"WARP_XAU_CYCLE_SECONDS": "1"}, clear=False
-        ):
-            runner = start_xau(os.path.join(tmp, "warp.db"), lambda _e, _d: True)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        with unittest.mock.patch.dict(os.environ, {"WARP_XAU_CYCLE_SECONDS": "1"}, clear=False):
+            runner = start_xau(os.path.join(tmp.name, "warp.db"), lambda _e, _d: True)
             self.addCleanup(lambda: runner.stop(0.5))
             deadline = time.time() + 2
             while time.time() < deadline and snapshot().get("state") != "config_error":
