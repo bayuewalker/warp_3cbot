@@ -13,11 +13,10 @@ export default function RoomAlive({ life, play }: { life: RoomLife; play: boolea
       const item = life.stations[role];
       return <div key={role} className="alive-desk" data-desk={role} data-mood={item.mood}
         data-radar={item.radar ? "on" : "off"} data-stamp={item.stamp ? "on" : "off"}>
-        <i className="alive-monitor"><i className="alive-scrim" /><i className="alive-scroll" /><i className="alive-sweep" /><i className="alive-radar" /></i>
+        <i className="alive-monitor"><i className="alive-scrim" /><i className="alive-scroll" /><i className="alive-sweep" /><i className="alive-radar" /><i className="alive-stamp" /></i>
         <i className="alive-eye" />
         <i className="alive-lamp" />
         <i className="alive-keys" />
-        <i className="alive-stamp" />
         {item.bubble && <span className="alive-bubble">{item.bubble}{item.time && <small>{item.time}</small>}</span>}
       </div>;
     })}

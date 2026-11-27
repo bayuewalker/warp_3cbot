@@ -39,7 +39,7 @@ Rain covers the window band at left 7%, top 5%, 88%×16%. The floor shimmer sits
 | AEGIS alert from status | No newer AEGIS event, publication is inside 15 minutes, and `halt` is true or `risk_permitted` is false or `pipeline.risk.state` is `blocked` | `status.reason`, then `pipeline.risk.reason`. The words `ok` and blank are not used as a sentence. The fallback word is `halt` or `blocked`. |
 | Halt wash | `status.halt` is true and the publication is inside 15 minutes | `/api/status`. A stale publication does not tint the room. |
 | Sleep | The desk observation is missing, `freshness` is `stale`, or `state` is `stale`, `unavailable`, `error`, `loading`, or `awaiting_first_snapshot` | That observation. The bubble is the letters zzz. A fresh event in the 12s window wins over sleep. |
-| Stamp | The newest EXECUTOR event in the window is `strategy_confirmed` and `mode` is `paper` or `live` | Same guard as `sweep()`. `observe` never stamps. |
+| Stamp | The newest EXECUTOR event in the window is `strategy_confirmed` and `mode` is `paper` or `live` | White flash inset on that monitor glass. Same guard as `sweep()`. `observe` never stamps. |
 | SCAN radar | `pipeline.screening` state, count, and source change to a key whose state is `ready` | The previous key held on the client. The first sample does not sweep. A change to `blocked` does not sweep. No scan-complete event is published on `/api/events`. |
 | Not drawn | XAU market-closed sleep | This art has no XAU seat, and the classic room's `Status` type has no `xau` field. Nothing is invented for it. |
 
