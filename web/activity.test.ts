@@ -311,6 +311,18 @@ test("halt, risk gate and provider states raise incidents from their own fields"
   assert.equal(providers.level, "incident");
   const unconfigured = riskHealth({ status: read({ ...(status.data as object), providers: { nvidia: { state: "unconfigured" } } }) }, connected, now);
   assert.equal(unconfigured.incidents.length, 0);
+  const postponed = riskHealth({ status: read({
+    ...(status.data as object), risk_permitted: false, reason: "spot_postponed",
+    providers: { threecommas: { state: "postponed" } },
+    xau: { state: "warming", ready_reason: "warming" },
+  }) }, connected, now);
+  assert.equal(postponed.incidents.length, 0);
+  const xauDown = riskHealth({ status: read({
+    ...(status.data as object), risk_permitted: false, reason: "spot_postponed",
+    providers: { threecommas: { state: "postponed" } },
+    xau: { state: "feed_unavailable", ready_reason: "feed_unavailable" },
+  }) }, connected, now);
+  assert.deepEqual(xauDown.incidents, [{ id: "xau", detail: "feed_unavailable" }]);
 });
 
 test("OBSERVE mode blocking entries by design is a neutral gate, not an incident, and never clear", () => {

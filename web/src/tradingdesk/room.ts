@@ -72,3 +72,61 @@ export function publishedCount(observation: ObservedValue<string | null>, value:
   return observation.state === "confirmed" && observation.freshness === "fresh" &&
     typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
+
+export type LaneStatus = {
+  published_at?: string | null;
+  lanes?: { primary?: string; spot?: { state?: string; flag?: string; since?: string } };
+  xau?: {
+    enabled?: boolean;
+    state?: string;
+    ready?: boolean;
+    ready_reason?: string;
+    feed?: string | null;
+    basis?: string | null;
+    basis_std?: string | null;
+    spot_last?: string | null;
+    spot_at?: string | null;
+    cycle_seconds?: number;
+    window?: { name?: string; start_wib?: string };
+    engine?: string | null;
+    next_window?: { name?: string; start_wib?: string } | null;
+    open_signal?: {
+      direction?: string; entry?: string; sl?: string; tp1?: string; tp2?: string | null;
+      grade?: string; valid_until?: string | null;
+    } | null;
+    today?: { signals_sent?: number; journal_only?: number; realized_r?: string };
+    funnel?: { recent?: { reason?: string; wib?: string }[] };
+    last_signal_at?: string | null;
+    heartbeat_at?: string | null;
+  } | null;
+};
+
+export function xauPrimary(status: LaneStatus | null | undefined) {
+  return status?.lanes?.primary === "xau";
+}
+
+export function spotPostponed(status: unknown) {
+  const row = status && typeof status === "object" ? status as { lanes?: { spot?: { state?: string } } } : null;
+  return row?.lanes?.spot?.state === "postponed";
+}
+
+/** Spot-only routes. They stay in the tree and return when the lane is active. */
+export const SPOT_PAGES = ["signals", "assets", "screener"] as const;
+const NAV_IDS = ["overview", "desk", "signals", "assets", "screener", "preferences"] as const;
+
+export function spotPage(page: string) {
+  return (SPOT_PAGES as readonly string[]).includes(page);
+}
+
+/** Bottom nav never exceeds five items. Desk stays off it, matching the active-lane rail. */
+export function navIds(postponed: boolean, placement: "rail" | "bottom") {
+  const items = NAV_IDS.filter(id => !(postponed && spotPage(id)));
+  if (placement === "bottom") return items.filter(id => id !== "desk").slice(0, 5);
+  return items;
+}
+
+/** A direct hash to a hidden spot route lands on Overview. */
+export function lanePage(page: string, postponed: boolean) {
+  return postponed && spotPage(page) ? "overview" : page;
+}
+

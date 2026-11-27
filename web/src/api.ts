@@ -59,6 +59,36 @@ export type Status = {
     risk: { state: string; reason: string };
     opportunities: { state: string; count: number };
   };
+  lanes?: {
+    primary?: string;
+    spot?: { state?: "postponed" | "active" | string; since?: string; flag?: string };
+  };
+  xau?: {
+    enabled?: boolean;
+    state?: string;
+    ready?: boolean;
+    ready_reason?: string;
+    feed?: string | null;
+    basis?: string | null;
+    basis_std?: string | null;
+    spot_last?: string | null;
+    spot_at?: string | null;
+    perp_close?: string | null;
+    perp_bar_at?: string | null;
+    cycle_seconds?: number;
+    window?: { name?: string; start_wib?: string; end_wib?: string };
+    engine?: string | null;
+    next_window?: { name?: string; start_wib?: string } | null;
+    open_signal?: {
+      direction?: string; entry?: string; sl?: string; tp1?: string; tp2?: string | null;
+      grade?: string; valid_until?: string | null;
+    } | null;
+    today?: { signals_sent?: number; journal_only?: number; realized_r?: string };
+    funnel?: { today?: Record<string, number>; window?: Record<string, number>; recent?: { reason?: string; wib?: string }[] };
+    last_signal_at?: string | null;
+    heartbeat_at?: string | null;
+    basis_healthy?: boolean;
+  } | null;
 };
 
 export type CardRow = {

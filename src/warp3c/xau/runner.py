@@ -30,6 +30,7 @@ from .clock import (
     ema_entry_open,
     format_wib,
     market_closed,
+    next_trade_window,
     smc_entry_open,
     trading_day_start,
     week_start,
@@ -84,12 +85,20 @@ class XauRunner:
         self._feed_down = False
         self._basis_down = False
         self._basis_alerted = False
+        self._basis_unhealthy_since: datetime | None = None
+        self._basis_alert_at: datetime | None = None
         self._episode = 0
         self._error = ""
         self._started_at = clock() if callable(clock) else datetime.now(timezone.utc)
         self._live_feed: str | None = None
         self._last_bar_at: datetime | None = None
         self._basis_state = None
+        self._spot_last: D | None = None
+        self._spot_at: datetime | None = None
+        self._spot_state = "unavailable"
+        self._perp_now: D | None = None
+        self._perp_at: datetime | None = None
+        self._last_signal_at: datetime | None = None
         self._warming = False
         self.state = "starting"
         self.thread = threading.Thread(target=self._loop, name="xau", daemon=True)
@@ -167,6 +176,7 @@ class XauRunner:
         try:
             feed_name, raw = self.feeds.book()
             spot = self.feeds.spot()
+            perp_now = self.feeds.perp_now() if callable(getattr(self.feeds, "perp_now", None)) else None
             dxy = self.feeds.dxy()
         except FeedUnavailable:
             self._feed_unavailable(now)
@@ -184,9 +194,18 @@ class XauRunner:
             if self.outbox.submit(now, OPS, event, detail):
                 self.store.meta_set("news:" + wib(now).date().isoformat(), event)
         m1 = cleaned.bars.get("1m", ())
-        perp_close = m1[-1].close if m1 else None
-        basis = self.basis.observe(perp_close, spot, now)
+        basis = self.basis.observe(perp_now, spot, now)
         self._live_feed = feed_name
+        closed_market = market_closed(now)
+        if spot is not None:
+            self._spot_last = spot
+            if not closed_market or self._spot_at is None:
+                self._spot_at = now
+        self._spot_state = (
+            "unavailable" if self._spot_last is None else "market_closed" if closed_market else "live"
+        )
+        self._perp_now = perp_now
+        self._perp_at = now if perp_now is not None else None
         if m1:
             self._last_bar_at = m1[-1].open_time
         self._basis_state = basis
@@ -205,31 +224,64 @@ class XauRunner:
             self.state = "degraded"
         else:
             self.state = "running"
-        if not halt_global and not halt_xau and not dirty and not view.blocked and not market_closed(now):
-            self._maybe_signal(engine, window, shifted, now, feed_name, basis.value, dxy, basis.healthy, dirty)
+        reason = self._silence(now, window, halt_global, halt_xau, basis, cleaned, view, dirty)
+        if reason is None and window.kind in {"kz", "ema"}:
+            reason = self._maybe_signal(
+                engine, window, shifted, now, feed_name, basis.value, dxy, basis.healthy, dirty
+            )
+        if reason and window.kind in {"kz", "ema", "closed"}:
+            self.store.note_funnel(now.isoformat(), window.key, reason)
         self._maybe_summaries(now)
         self._error = ""
+
+    def _silence(self, now, window, halt_global, halt_xau, basis, cleaned, view, dirty) -> str | None:
+        """Why this cycle will not send. None means the gate may still send."""
+        if window.kind not in {"kz", "ema", "closed"}:
+            return None
+        if market_closed(now) or window.kind == "closed":
+            return "market_closed"
+        if halt_global or halt_xau:
+            return "halt"
+        if self._warming:
+            return "warming_up"
+        if not basis.healthy:
+            return "dirty_basis"
+        if cleaned.gaps:
+            return "dirty_gaps"
+        if cleaned.stale_m5:
+            return "stale_m5"
+        if view.blocked or dirty:
+            return "news_block" if view.blocked else "dirty_basis"
+        return None
 
     def _watch_basis(self, basis, now: datetime) -> bool:
         """Warm-up is the sample requirement plus five minutes, measured from start.
 
         few_samples during that window reports warming and does not alert.
-        Any unhealthy basis after warm-up, or after a healthy reading, alerts once.
+        After warm-up, basis_unhealthy waits until the book has been unhealthy for
+        10 minutes, and at most one such alert goes out per hour.
         Recovery alerts once, and only after an alert was sent.
         """
         deadline = self._started_at + timedelta(minutes=MIN_SAMPLES) + timedelta(minutes=5)
         warming = now < deadline and not basis.healthy and basis.reason == "few_samples"
         self._warming = warming
         if warming:
+            self._basis_unhealthy_since = None
             return True
         if not basis.healthy:
-            if not self._basis_alerted:
+            if self._basis_unhealthy_since is None:
+                self._basis_unhealthy_since = now
+            persisted = now - self._basis_unhealthy_since >= timedelta(minutes=10)
+            cooled = self._basis_alert_at is None or now - self._basis_alert_at >= timedelta(hours=1)
+            if persisted and cooled and not self._basis_alerted:
                 self._basis_alerted = True
                 self._basis_down = True
+                self._basis_alert_at = now
                 self._episode += 1
                 event, detail = ops("basis_unhealthy", str(self._episode), basis.reason)
                 self.outbox.submit(now, OPS, event, detail)
             return False
+        self._basis_unhealthy_since = None
         if self._basis_alerted:
             event, detail = ops("basis_recovered", str(self._episode), "ok")
             self.outbox.submit(now, OPS, event, detail)
@@ -310,18 +362,22 @@ class XauRunner:
             dol_distance=distance, atr_h1=atr_h1, m15_directional=m15_dir, h1_veto=veto,
         )
 
-    def _maybe_signal(self, engine, window, bars, now, feed, basis, dxy, basis_ok, dirty) -> None:
+    def _maybe_signal(self, engine, window, bars, now, feed, basis, dxy, basis_ok, dirty) -> str | None:
         profile = self.profile
         book = RiskBook(self.store.signals(), profile, now)
+        if engine in {None, "", "NO_TRADE"}:
+            return "engine_none"
         direction = _direction(bars)
         if direction is None:
-            return
+            return "no_direction"
         spread = self.settings.spread_assumed
         valid = window.end_wib.astimezone(timezone.utc)
         bias_text = _bias_text(bars, direction)
         risk = D("0.40")
         setup = None
-        if engine == "SMC" and smc_entry_open(now):
+        if engine == "SMC":
+            if not smc_entry_open(now):
+                return "entry_closed"
             risk = D("0.60")
             setup = evaluate_smc(
                 m15=bars.get("15m", ()), h1=bars.get("1h", ()), h4=bars.get("4h", ()),
@@ -331,7 +387,9 @@ class XauRunner:
                 risk_pct=risk, in_kz=True, window_start=window.start_wib.astimezone(timezone.utc),
                 m5=bars.get("5m", ()),
             )
-        elif engine == "EMA" and ema_entry_open(now):
+        elif engine == "EMA":
+            if not ema_entry_open(now):
+                return "entry_closed"
             risk = D("0.50")
             highs = [point.price for point in swings(bars.get("15m", ()), 2) if point.kind == "high"]
             lows = [point.price for point in swings(bars.get("15m", ()), 2) if point.kind == "low"]
@@ -343,7 +401,7 @@ class XauRunner:
             )
         elif engine == "SCALP":
             if self.news.scalp_window_blocked(now):
-                return
+                return "news_block"
             m15 = bars.get("15m", ())
             or_high, or_low = _or15(m15)
             setup = evaluate_scalp(
@@ -351,8 +409,10 @@ class XauRunner:
                 risk_pct=D("0.25"), window=window.name, valid_until=valid, bias_text=bias_text,
                 or_high=or_high, or_low=or_low,
             )
+        else:
+            return "engine_none"
         if setup is None:
-            return
+            return "no_setup"
         if setup.engine == "SMC":
             wide = _wide_week(self.news, bars.get("1d", ()), now)
             tier = D("0.35") if wide else (D("0.60") if setup.grade == "A+" else D("0.40"))
@@ -383,6 +443,7 @@ class XauRunner:
             payload = _render_input(gated, equity, dxy)
             event, detail = new_signal(payload)
             self.outbox.submit(now, SIGNAL, event, detail)
+            self._last_signal_at = now
         self._persist(gated, now, event, dxy)
         self.store.add_decision(
             now.isoformat(), signal_id, list(gated.checklist.keys()), gated.sent, gated.grade,
@@ -396,6 +457,13 @@ class XauRunner:
             day = wib(now).date().isoformat()
             paused, text = ops(f"model_paused {gated.model}", day, "rolling 30")
             self.outbox.submit(now, OPS, paused, text)
+        if gated.sent:
+            return None
+        if not allowed and rule:
+            return "risk_block:" + rule
+        if gated.failures:
+            return "gate_fail:" + ",".join(gated.failures)
+        return "no_setup"
 
     def _persist(self, setup, now, event, dxy) -> None:
         self.store.insert_signal({
@@ -522,9 +590,54 @@ class XauRunner:
         opens = [row for row in rows if row.get("status") in {"PENDING", "FILLED", "TP1", "TRAIL"}]
         nxt = self.news.next_tier1(now)
         parent = Path(self.db_path).parent
+        upcoming = next_trade_window(now)
+        basis_ok = self._basis_state is not None and self._basis_state.healthy
+        feed_fresh = bool(self._live_feed) and not self._feed_down
+        closed = market_closed(now)
+        halted = (parent / "HALT").exists() or (parent / "XAU_HALT").exists()
+        ready = (
+            self.state == "running" and basis_ok and feed_fresh and not closed
+            and not self._warming and not halted
+        )
+        if ready:
+            ready_reason = "ok"
+        elif self._warming or self.state == "warming":
+            ready_reason = "warming"
+        elif self.state != "running":
+            ready_reason = self.state
+        elif not feed_fresh:
+            ready_reason = "feed"
+        elif not basis_ok:
+            ready_reason = self._basis_state.reason if self._basis_state is not None else "basis_unknown"
+        elif closed:
+            ready_reason = "market_closed"
+        elif halted:
+            ready_reason = "halt"
+        else:
+            ready_reason = "unknown"
+        funnel = {"today": {}, "window": {}, "recent": []}
+        if self.store._migrated:
+            raw = self.store.funnel_counts(day.astimezone(timezone.utc).isoformat(), window.key)
+            funnel = {
+                "today": raw["today"],
+                "window": raw["window"],
+                "recent": [
+                    {
+                        "reason": item["reason"],
+                        "count": item["count"],
+                        "wib": format_wib(datetime.fromisoformat(item["at_utc"]), "%Y-%m-%d %H:%M"),
+                    }
+                    for item in raw["recent"]
+                ],
+            }
+        stored_signal = self.store.latest_sent_at() if self.store._migrated else None
+        if stored_signal is None and self._last_signal_at is not None:
+            stored_signal = self._last_signal_at.isoformat()
         return {
             "enabled": True,
             "state": self.state,
+            "ready": ready,
+            "ready_reason": ready_reason,
             "heartbeat_at": None,
             "last_error": self._error[:120],
             "rules_version": self.settings.rules_version,
@@ -534,9 +647,28 @@ class XauRunner:
                 "start_wib": format_wib(window.start_wib, "%Y-%m-%d %H:%M"),
                 "end_wib": format_wib(window.end_wib, "%Y-%m-%d %H:%M"),
             },
+            "next_window": None if upcoming is None else {
+                "name": upcoming.name,
+                "start_wib": format_wib(upcoming.start_wib, "%Y-%m-%d %H:%M"),
+            },
             "engine": self.store.window_engine(window.key) if self.store._migrated else None,
-            "feed": rows[-1]["feed"] if rows else None,
-            "basis": rows[-1]["basis"] if rows else None,
+            "feed": self._live_feed,
+            "basis": (
+                None if self._basis_state is None or self._basis_state.value is None
+                else format(self._basis_state.value, "f")
+            ),
+            "basis_std": (
+                None if self._basis_state is None or self._basis_state.std is None
+                else format(self._basis_state.std, "f")
+            ),
+            "spot_last": None if self._spot_last is None else format(self._spot_last, "f"),
+            "spot_at": None if self._spot_at is None else self._spot_at.isoformat(),
+            "spot_state": self._spot_state,
+            "perp_close": None if self._perp_now is None else format(self._perp_now, "f"),
+            "perp_at": None if self._perp_at is None else self._perp_at.isoformat(),
+            "perp_bar_at": None if self._perp_at is None else self._perp_at.isoformat(),
+            "last_signal_at": stored_signal,
+            "funnel": funnel,
             "live_feed": self._live_feed,
             "last_bar_age_s": _bar_age(self._last_bar_at, now),
             "basis_value": (
@@ -617,6 +749,8 @@ def _brief(row: dict) -> dict:
         "entry": row.get("entry"),
         "sl": row.get("sl"),
         "tp1": row.get("tp1"),
+        "tp2": row.get("tp2"),
+        "valid_until": row.get("valid_until"),
     }
 
 

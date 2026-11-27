@@ -1,4 +1,4 @@
-import { currentPublication } from "./tradingdesk/room";
+import { currentPublication, spotPostponed } from "./tradingdesk/room";
 import { currentResumeAck, forgetResumeAck, recordResumeAck, requestPreferencesTab, resumeGate } from "./tradingdesk/activity-model";
 import { instant, sourceInstant } from "./tradingdesk/frames";
 import { TradingRoom } from "./tradingdesk/TradingRoom";
@@ -20,7 +20,7 @@ import {
   ShieldCheck,
   Wallet,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { api, type CardRow, type Status } from "./api";
 import { t, type Lang, type Key } from "./i18n";
 import { Badge, Button, Card, CardHead, Field, Loading, Problem, inputClass } from "./ui";
@@ -347,13 +347,17 @@ function useDeskTelemetry(status: StatusRead) {
   return { now, model, events };
 }
 
+const XauDesk = lazy(() => import("./tradingdesk/xau-desk").then(mod => ({ default: mod.XauDesk })));
+
 export function DeskPage({ lang, status }: { lang: Lang; status: StatusRead }) {
   const { now, model, events } = useDeskTelemetry(status);
+  const postponed = spotPostponed(status.data);
   return <div className="control-desk">
+    {status.data && <Suspense fallback={null}><XauDesk lang={lang} row={status.data} /></Suspense>}
     <TradingRoom lang={lang} agents={model.agents} status={status.data} events={events.data?.events} now={now} />
-    <DeskMetrics lang={lang} model={model} />
+    {postponed ? null : <DeskMetrics lang={lang} model={model} />}
     <div className="monitor-grid">
-      <DeskResearch lang={lang} status={status} now={now} />
+      {postponed ? null : <DeskResearch lang={lang} status={status} now={now} />}
       <EventLog lang={lang} loaded={events} now={now} />
     </div>
   </div>;
@@ -438,9 +442,12 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
   if (status.error) return <>{room}<Problem lang={lang} retry={status.reload} /></>;
   if (!status.data) return <>{room}<Loading lang={lang} /></>;
   const row = status.data;
+  const postponed = spotPostponed(row);
   return (
     <div className="overview">
+      <Suspense fallback={null}><XauDesk lang={lang} row={row} /></Suspense>
       {room}
+      {postponed ? null : <>
       <DeskMetrics lang={lang} model={model} />
       <Evidence lang={lang} model={model} />
       <div className="monitor-grid">
@@ -511,6 +518,7 @@ export function Overview({ lang, status }: { lang: Lang; status: StatusRead }) {
           <EventLog lang={lang} loaded={events} now={now} />
         </div>
       </div>
+      </>}
     </div>
   );
 }

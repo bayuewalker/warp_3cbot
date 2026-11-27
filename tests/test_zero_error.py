@@ -89,6 +89,9 @@ class _Feeds:
     def spot(self):
         return self.spot_price
 
+    def perp_now(self):
+        return getattr(self, "perp_price", None)
+
     def dxy(self):
         return None
 
@@ -100,6 +103,7 @@ def _arm(feeds: _Feeds, moment: datetime, gap: str) -> None:
     opened = moment - timedelta(minutes=1)
     price = Decimal("2300") + Decimal(gap)
     feeds.spot_price = Decimal("2300")
+    feeds.perp_price = price
     feeds.bars = {"1m": [Bar(opened, price, price, price, price, Decimal("1"), "1m")]}
 
 
@@ -499,7 +503,13 @@ class BasisAlertTests(unittest.TestCase):
             try:
                 clock.moment = T0 + timedelta(minutes=16)
                 feeds.bars = {"1m": []}
+                feeds.perp_price = None
                 runner.cycle()
+                self.assertEqual(
+                    [event for event in alerts if event.startswith("XAU basis_unhealthy")],
+                    [],
+                )
+                clock.moment = T0 + timedelta(minutes=26)
                 runner.cycle()
                 unhealthy = [event for event in alerts if event.startswith("XAU basis_unhealthy")]
                 self.assertEqual(unhealthy, ["XAU basis_unhealthy #1"])
@@ -526,10 +536,20 @@ class BasisAlertTests(unittest.TestCase):
                 runner.cycle()
                 self.assertEqual(
                     [event for event in alerts if event.startswith("XAU basis_unhealthy")],
+                    [],
+                )
+                clock.moment = moment + timedelta(minutes=11)
+                runner.basis.seed(
+                    [(clock.moment - timedelta(minutes=20 - i), Decimal("30")) for i in range(10)]
+                )
+                _arm(feeds, clock.moment, "30")
+                runner.cycle()
+                self.assertEqual(
+                    [event for event in alerts if event.startswith("XAU basis_unhealthy")],
                     ["XAU basis_unhealthy #1"],
                 )
 
-                clock.moment = moment + timedelta(minutes=2)
+                clock.moment = moment + timedelta(minutes=12)
                 runner.basis.seed(
                     [(clock.moment - timedelta(minutes=20 - i), Decimal("1")) for i in range(10)]
                 )
@@ -558,7 +578,7 @@ class BasisAlertTests(unittest.TestCase):
                 self.assertIsNone(block["basis_value"])
                 self.assertIsInstance(block["last_bar_age_s"], int)
                 self.assertGreaterEqual(block["last_bar_age_s"], 0)
-                self.assertIsNone(block["feed"])
+                self.assertEqual(block["feed"], "binance")
                 self.assertIsNone(block["basis"])
             finally:
                 runner.store.close()

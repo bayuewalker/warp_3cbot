@@ -9,7 +9,7 @@ import { MarketWall } from "./MarketWall";
 import { record, sourceInstant } from "./frames";
 import {
   ambient, currentPublication, EVENT_WINDOW_MS, PUBLICATION_TTL_MS, publishedCount, roleHistory,
-  stationNames, stations, sweep, type Station,
+  stationNames, stations, sweep, xauPrimary, type Station,
 } from "./room";
 import type { Mood } from "./room-life";
 import type { ObservedValue } from "./types";
@@ -42,6 +42,7 @@ function executorPermitted(status: Status | null) {
 }
 
 function reading(lang: Lang, role: Station, item: ObservedValue<string | null>, status: Status | null) {
+  if (xauPrimary(status)) return item.value ?? readLabel(lang, item.state);
   if (item.state === "confirmed" && item.freshness === "unknown" && (item.value === "ready" || item.value === "pass")) {
     return t(lang, "freshnessUnknown");
   }
@@ -55,6 +56,7 @@ function SourceRecords({ role, lang, primary }: { role: Station; lang: Lang; pri
   const { route, list, fields } = stations[role];
   const read = useLoad<Record<string, unknown>>(route, true);
   const data = read.data;
+  if (data && data.state === "postponed") return null;
   const rows = data?.[list];
   const rawAt = role === "SCAN" ? data?.fetched_at : data?.as_of;
   const at = sourceInstant(rawAt, Date.now());
@@ -139,7 +141,15 @@ export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
     document.addEventListener("visibilitychange", update);
     return () => { observer.disconnect(); document.removeEventListener("visibilitychange", update); };
   }, []);
-  const logs = agents.WATCHER.state === "unauthorized" ? null : events;
+  const [xauSeats, setXauSeats] = useState<Record<Station, ObservedValue<string | null>> | null>(null);
+  useEffect(() => {
+    if (!xauPrimary(status)) { setXauSeats(null); return; }
+    let live = true;
+    void import("./xau-lane").then(mod => { if (live) setXauSeats(mod.xauAgents(status, now)); });
+    return () => { live = false; };
+  }, [status, now]);
+  const shown = xauPrimary(status) ? (xauSeats ?? agents) : agents;
+  const logs = shown.WATCHER.state === "unauthorized" ? null : events;
   // Expire motion at its evidence deadline even between two Overview refreshes.
   const [expiredAt, setExpiredAt] = useState(now);
   const [moods, setMoods] = useState<Partial<Record<Station, Mood>>>({});
@@ -164,11 +174,11 @@ export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
     return () => window.clearTimeout(timer);
   }, [logs, status?.published_at, motionNow]);
   const floor = (
-    <MarketWall lang={lang} now={now}>{(panel, monitorLine) =>
+    <MarketWall lang={lang} now={now} status={status}>{(panel, monitorLine) =>
       <div className="office-layout">
         {!text && <div className="control-room-scene" role="group" aria-label={t(lang, "officeFloor")}>
           <Suspense fallback={null}>
-            <RoomAlive monitorLine={monitorLine} agents={agents} status={status} events={logs} now={motionNow} flags={aliveFlags} onMoods={setMoods} />
+            <RoomAlive monitorLine={monitorLine} agents={shown} status={status} events={logs} now={motionNow} flags={aliveFlags} onMoods={setMoods} />
           </Suspense>
           {stationNames.map(role => <button key={role} className="office-seat" data-seat={role}
             data-mood={moods[role] ?? "idle"}
@@ -180,11 +190,11 @@ export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
         <div className="office-instruments">
           {panel}
           <dl>{stationNames.map(role => {
-            const item = agents[role];
+            const item = shown[role];
             const event = roleHistory(role, logs, now).latest;
             const at = event?.ts ?? item.sourceAt;
             const moving = ambient(role, item, stream, publicationFresh) && (role !== "EXECUTOR" || executorPermitted(status));
-            const recent = moving && agents.WATCHER.state === "confirmed" && agents.WATCHER.freshness === "fresh" &&
+            const recent = moving && shown.WATCHER.state === "confirmed" && shown.WATCHER.freshness === "fresh" &&
               sweep(role, event, status?.mode, motionNow);
             const count = publishedCount(item, role === "SCAN" && item.value !== "blocked" ? status?.pipeline?.screening?.count :
               role === "ANALYST" ? status?.pipeline?.analysis?.count : null);
@@ -220,7 +230,7 @@ export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
       </div>}
       {floor}
     </section>
-    {selected && <RoomDetail role={selected} lang={lang} item={agents[selected]} status={status}
-      history={roleHistory(selected, logs, now)} stream={stream} historyState={readLabel(lang, agents.WATCHER.state)} close={() => select(null)} />}
+    {selected && <RoomDetail role={selected} lang={lang} item={shown[selected]} status={status}
+      history={roleHistory(selected, logs, now)} stream={stream} historyState={readLabel(lang, shown.WATCHER.state)} close={() => select(null)} />}
   </>;
 }

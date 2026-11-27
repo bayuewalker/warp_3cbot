@@ -124,6 +124,10 @@ export function AccountsPanel({ lang, onSelect }: { lang: Lang; onSelect: (code:
     }
   }
 
+  if (loaded.data && "state" in loaded.data && loaded.data.state === "postponed") {
+    return null;
+  }
+
   return (
     <div className="stack">
       <Card>
@@ -718,6 +722,10 @@ export function WarpBotsPanel({ lang, status }: { lang: Lang; status: Status | n
     }
   }
 
+  if (accounts.data && "state" in accounts.data && (accounts.data as { state?: string }).state === "postponed") {
+    return null;
+  }
+
   return (
     <div className="space-y-3">
       <Card>
@@ -857,6 +865,9 @@ export function ForwardPanel({ lang }: { lang: Lang }) {
   const loaded = useLoad<ForwardStats>("/api/forward", true);
   if (loaded.error) return <Problem lang={lang} retry={loaded.reload} />;
   const stats = loaded.data;
+  if (stats && "state" in stats && (stats as { state?: string }).state === "postponed") {
+    return null;
+  }
   if (!stats) return <Loading lang={lang} />;
   const empty = stats.scored === 0;
   const na = t(lang, "unknown");

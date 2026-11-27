@@ -18,23 +18,23 @@ The status snapshot is a reference swap. Readers do not take a lock. If the hear
 - An injected `alert_sink(event, detail)`. `__main__` builds that sink as `enqueue_incident` on the existing outbox. XAU does not call Telegram and does not read the bot token.
 - `warp3c.telemetry.log_event` only.
 
-XAU does not write `HEALTH` and does not change `dependencies_healthy`, `risk_permitted`, `execution_permitted`, `reason`, or `/ready`.
+The XAU thread does not write `HEALTH`. When the spot lane is postponed, the host loop copies `xau.state` onto `HEALTH["xau_state"]` and `/ready` follows that state. When the spot lane is active, `/ready` stays the worker predicate.
 
-`/api/status` gains one key, `xau`, read from the snapshot. If that read fails, the value is `{"enabled": false, "state": "unavailable"}` and the rest of the payload is unchanged.
+`/api/status` carries `xau` and `lanes`. `xau.feed` and `xau.basis` are the live book, including before the first signal. If the snapshot read fails, `xau` is `{"enabled": false, "state": "unavailable"}`.
 
 ## Data flow
 
 1. Candles come from Binance USDⓈ-M `XAUUSDT`, then Bybit, then OKX. The open bar is dropped. Bars inside the New York close (Friday 17:00 to Sunday 18:00, and the daily 17:00–18:00 break) are dropped.
-2. Spot for the basis is TradingView `OANDA:XAUUSD`. The basis is the median of the last 15 one-minute `(perp − spot)` samples. Published levels are perp minus that basis.
+2. Spot for the basis is TradingView `OANDA:XAUUSD`. In the same cycle the desk reads the Binance USDⓈ-M last price and stores one `(perp_now − spot_now)` sample per minute. The basis is the median of the last 15 samples. It stays unhealthy under 10 samples, when the absolute median exceeds the configured maximum, or when the standard deviation exceeds 1.50. `basis_unhealthy` is sent only after that state has lasted 10 minutes, at most once an hour. `basis_recovered` is sent only after an unhealthy alert. Published levels are perp minus that basis.
 3. DXY is informational only.
 4. News is the Forex Factory weekly JSON, at most once an hour, with `data/news_static.toml` as the backstop.
 5. At each killzone open the selector locks SMC, SCALP, or NO_TRADE for that window. EMA runs only in the two K3 windows.
-6. The gate scores C1–C14. Only A+ and A with 14/14 are sent. Scalp is journaled with `sent=false`.
+6. The gate scores C1–C14. Only A+ and A with 14/14 are sent. Scalp is journaled with `sent=false`. Every cycle in an open window that does not send records one reason in `xau_funnel`: `market_closed`, `halt`, `warming_up`, `dirty_basis`, `dirty_gaps`, `stale_m5`, `news_block`, `no_direction`, `engine_none`, `entry_closed`, `no_setup`, `gate_fail:<checks>`, or `risk_block:<rule>`. Warm-up is `warming_up`, not `dirty_basis`. Rows older than 30 days are deleted on write. The table is indexed on `at_utc` and `window_key`. `/api/status` exposes today's counts, the current window's counts, and the last five reason runs with a count and WIB time. `last_signal_at` is the newest sent row in `xau_signals`.
 7. Outcome tracking uses closed M1 bars and resumes from the last bar stored for that signal.
 
 ## Tables
 
-`xau_signals`, `xau_signal_events`, `xau_decisions` (last 5000), `xau_windows`, `xau_news`, `xau_feed_health`, `xau_meta`.
+`xau_signals`, `xau_signal_events`, `xau_decisions` (last 5000), `xau_windows`, `xau_news`, `xau_feed_health`, `xau_funnel`, `xau_meta`.
 
 ## States
 

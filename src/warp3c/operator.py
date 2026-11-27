@@ -28,6 +28,28 @@ HEALTH = {
     "last_cycle_ok": None,
     "reason": "starting",
 }
+_LANE_SINCE = datetime.now(timezone.utc).isoformat()
+_POSTPONED_ROUTES = (
+    "/api/accounts",
+    "/api/account-positions",
+    "/api/positions",
+    "/api/warp-bots",
+    "/api/bots",
+    "/api/forward",
+    "/api/decisions",
+    "/api/screener",
+    "/api/journal",
+    "/api/opportunities",
+    "/api/signals",
+    "/api/risk",
+)
+
+
+def lanes(state: str) -> dict:
+    return {
+        "primary": "xau",
+        "spot": {"state": state, "since": _LANE_SINCE, "flag": "WARP_SPOT_LANE_ENABLED"},
+    }
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -292,7 +314,7 @@ def _xau_block() -> dict:
             return {"enabled": False, "state": "unavailable"}
         if block.get("enabled") is not True:
             return block
-        # feed/basis stay the last signal row. These fields are the live book.
+        # feed and basis are the live book, including before the first signal.
         live = dict(block)
         live.setdefault("live_feed", None)
         live.setdefault("last_bar_age_s", None)
@@ -369,6 +391,7 @@ def publish(cfg, journal, engine) -> None:
         "published_at": now.isoformat(),
         "risk_decisions": journal.recent_risk_decisions(20),
         "xau": _xau_block(),
+        "lanes": lanes("active" if getattr(cfg, "spot_lane_enabled", False) else "postponed"),
     }
     SNAPSHOT["/api/risk"] = {
         "reason": status.reason,
@@ -429,6 +452,62 @@ def publish(cfg, journal, engine) -> None:
     RUNTIME["journal"] = journal
     RUNTIME["cfg"] = cfg
     RUNTIME["engine"] = engine
+    from .httpapi import broadcast_live
+
+    broadcast_live()
+
+
+def publish_postponed(cfg, journal) -> None:
+    """Spot lane is not running. XAU status stays live. Broker routes are not data."""
+    now = datetime.now(timezone.utc)
+    block = _xau_block()
+    postponed = {"state": "postponed"}
+    halted = Path(cfg.db_path).parent.joinpath("HALT").is_file()
+    SNAPSHOT["/api/status"] = {
+        "alive": True,
+        "mode": cfg.mode,
+        "shared_account": dict(postponed),
+        "reason": "spot_postponed",
+        "market_data_fresh": False,
+        "dependencies_healthy": True,
+        "risk_permitted": False,
+        "execution_permitted": False,
+        "opened": 0,
+        "universe": [],
+        "halt": halted,
+        "pnl_today": dict(postponed),
+        "equity": dict(postponed),
+        "providers": {"threecommas": dict(postponed)},
+        "research": dict(postponed),
+        "pipeline": {
+            "screening": dict(postponed),
+            "analysis": dict(postponed),
+            "risk": dict(postponed),
+            "opportunities": dict(postponed),
+        },
+        "published_at": now.isoformat(),
+        "risk_decisions": [],
+        "xau": block,
+        "lanes": lanes("postponed"),
+    }
+    for route in _POSTPONED_ROUTES:
+        SNAPSHOT[route] = dict(postponed)
+    from .live import BUS, recent_events
+
+    SNAPSHOT["/api/events"] = {"events": recent_events()[-20:], "as_of": now.isoformat()}
+    SNAPSHOT["/api/prices"] = {
+        "symbols": BUS.prices,
+        "as_of": BUS.prices_at,
+        "error": BUS.prices_error or ("price_feed_unavailable" if not BUS.prices else None),
+        "limit_seconds": 30,
+    }
+    SNAPSHOT["/api/alerts"] = {"alerts": journal.recent_alerts(30) if journal is not None else []}
+    SNAPSHOT["/api/config"] = public_config(cfg)
+    SNAPSHOT["/api/breakers"] = {"reason": "spot_postponed", "halt": halted, "risk_permitted": False}
+    RUNTIME["journal"] = journal
+    RUNTIME["cfg"] = cfg
+    RUNTIME["engine"] = None
+    HEALTH["xau_state"] = block.get("state") if isinstance(block, dict) else None
     from .httpapi import broadcast_live
 
     broadcast_live()

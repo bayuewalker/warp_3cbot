@@ -162,6 +162,18 @@ class HttpFeeds:
             return name, bars
         raise FeedUnavailable(",".join(errors) or "none")
 
+    def perp_now(self) -> D | None:
+        """Binance USDⓈ-M last price, sampled in the same cycle as spot()."""
+        try:
+            response = self._client(BINANCE).get("/fapi/v1/ticker/price", params={"symbol": "XAUUSDT"})
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict) or payload.get("price") is None:
+                return None
+            return _dec(payload["price"])
+        except (FeedError, httpx.HTTPError, ValueError):
+            return None
+
     def spot(self) -> D | None:
         body = {"symbols": {"tickers": ["OANDA:XAUUSD"]}, "columns": ["close"]}
         try:

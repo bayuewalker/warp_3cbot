@@ -140,6 +140,66 @@ function cue(mood: Mood, bubble: string | null, time: string | null, stamp = fal
   return { mood, bubble, time, stamp, radar: false };
 }
 
+function xauText(value: unknown) {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
+function xauAlert(xau: Record<string, unknown> | null, halted: boolean) {
+  if (halted) return true;
+  const state = xauText(xau?.state);
+  const reason = xauText(xau?.ready_reason);
+  const basis = xauText(xau?.basis_reason);
+  if (state === "warming" || reason === "warming" || reason === "market_closed" || state === "market_closed") return false;
+  if (state === "feed_unavailable" || state === "stalled" || state === "config_error") return true;
+  if (reason?.startsWith("basis_") || basis?.startsWith("basis_")) return true;
+  return false;
+}
+
+function xauRoom(input: { status: LifeStatus; events: unknown; now: number }): RoomLife {
+  const status = input.status as (LifeStatus & { xau?: Record<string, unknown> }) | null;
+  const xau = status?.xau && typeof status.xau === "object" ? status.xau : null;
+  const haltFile = xau && typeof xau.halt === "object" && xau.halt
+    ? (xau.halt as { global?: boolean; xau?: boolean }) : null;
+  const halted = status?.halt === true || haltFile?.global === true || haltFile?.xau === true;
+  const state = xauText(xau?.state);
+  const feed = xauText(xau?.feed);
+  const engine = xauText(xau?.engine);
+  const ready = xau?.ready === true;
+  const reason = xauText(xau?.ready_reason);
+  const open = xau && typeof xau.open_signal === "object" && xau.open_signal
+    ? xauText((xau.open_signal as { direction?: string }).direction) : null;
+  const realized = xau && typeof xau.today === "object" && xau.today
+    ? Number((xau.today as { realized_r?: string }).realized_r) : NaN;
+  const book = Boolean(open) || (Number.isFinite(realized) && realized !== 0);
+  const event = xauEvent(input.events, input.now);
+  const filled = event !== null && /^XAU FILLED\b/.test(event.event);
+  const alert = xauAlert(xau, halted);
+  const quiet = cue("idle", null, null);
+  const stations = {
+    SCAN: cue(feed ? "working" : "sleep", null, null),
+    ANALYST: cue(engine ? "working" : "idle", null, null),
+    AEGIS: alert ? cue("alert", clipBubble(reason ?? state ?? "halt"), null) : cue(ready ? "working" : "idle", null, null),
+    EXECUTOR: filled
+      ? cue("working", clipBubble(event?.event ?? ""), wibClock(event?.ts ?? ""), true)
+      : cue(open ? "working" : "idle", null, null),
+    PORTFOLIO: book ? { ...quiet, mood: "working" as Mood } : quiet,
+    WATCHER: event ? cue("working", clipBubble(event.event), wibClock(event.ts)) : cue(state ? "idle" : "sleep", null, null),
+  } as Record<Station, LifeCue>;
+  return { halt: halted, stations };
+}
+
+function xauEvent(events: unknown, now: number) {
+  if (!Array.isArray(events)) return null;
+  let best: { event: string; ts: string; time: number } | null = null;
+  for (const row of events) {
+    if (!record(row) || typeof row.event !== "string" || !row.event.startsWith("XAU ") || typeof row.ts !== "string") continue;
+    const time = sourceInstant(row.ts, now);
+    if (time === null || Math.max(0, now - time) > EVENT_WINDOW_MS) continue;
+    if (!best || time >= best.time) best = { event: row.event, ts: row.ts, time };
+  }
+  return best;
+}
+
 export function roomLife(input: {
   agents: Partial<Record<Station, ObservedValue<string | null>>>;
   status: LifeStatus;
@@ -147,6 +207,8 @@ export function roomLife(input: {
   now: number;
   radar: boolean;
 }): RoomLife {
+  const lanes = input.status as (LifeStatus & { lanes?: { primary?: string } }) | null;
+  if (lanes?.lanes?.primary === "xau") return xauRoom(input);
   const { status, now } = input;
   const published = currentPublication(status?.published_at, now);
   const halt = published && status?.halt === true;
