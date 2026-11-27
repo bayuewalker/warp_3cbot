@@ -510,5 +510,37 @@ class BasisDebounceTests(unittest.TestCase):
             )
 
 
+class PlaybookTests(unittest.TestCase):
+    def test_playbook_repeats_the_loaded_settings_and_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runner, _clock, _feeds, _alerts = _runner(tmp, LONDON)
+            self.addCleanup(runner.store.close)
+            book = runner._snapshot_body()["playbook"]
+            settings = runner.settings
+            profile = runner.profile
+            self.assertEqual(book["rules_version"], settings.rules_version)
+            self.assertEqual(book["cycle_seconds"], settings.cycle_seconds)
+            self.assertEqual(book["basis_max"], format(Decimal(str(settings.basis_max)), "f"))
+            self.assertEqual(book["spread_assumed"], format(settings.spread_assumed, "f"))
+            self.assertEqual(book["profile_name"], profile.name)
+            self.assertEqual(book["profile_type"], profile.account_type)
+            self.assertEqual(book["profile_type"], "example")
+            self.assertEqual(book["max_risk_per_trade_pct"], format(profile.max_risk_per_trade_pct, "f"))
+            self.assertEqual(book["daily_dd_pct"], format(profile.daily_dd_pct, "f"))
+            self.assertEqual(book["max_dd_pct"], format(profile.max_dd_pct, "f"))
+            self.assertEqual(book["news_rule"], profile.news_rule)
+            self.assertEqual(book["news_window_min"], profile.news_window_min)
+            self.assertEqual(book["gate_checks"], 14)
+            self.assertEqual(book["engines"], ["SMC", "EMA", "SCALP"])
+            self.assertEqual(
+                [(row["name"], row["engine"]) for row in book["windows"]],
+                [("London KZ", "SMC"), ("London EMA", "EMA"), ("NY KZ", "SMC"), ("NY EMA", "EMA")],
+            )
+            blob = json.dumps(book).lower()
+            for banned in ("token", "password", "telegram", "profile_path", "secret"):
+                self.assertNotIn(banned, blob)
+            self.assertNotIn("playbook", runner.settings.__dict__)
+
+
 if __name__ == "__main__":
     unittest.main()

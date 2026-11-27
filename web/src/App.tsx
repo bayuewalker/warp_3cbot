@@ -29,7 +29,7 @@ import {
 import { Key, Lang, t } from "./i18n";
 import { AccountsPanel, BudgetForm, ForwardPanel, PaperCheck, RulesPage, WarpBotsPanel } from "./desk";
 import { Badge, Button, Card, CardHead, Choice, Empty, Field, KV, Loading, Note, Problem, inputClass } from "./ui";
-import { DeskPage, Overview, Providers } from "./monitor";
+import { DeskPage, Overview, Providers, XauSettings } from "./monitor";
 import { lanePostponed } from "./tradingdesk/validate";
 import { Age, ReceivedAge } from "./age";
 import { settingLabel, settingValue } from "./labels";
@@ -305,6 +305,9 @@ const RiskHealthPanel = lazy(() => import("./tradingdesk/Activity").then((m) => 
 function Preferences({ lang, status, read }: { lang: Lang; status: Status | null; read: ReturnType<typeof useLoad<Status>> }) {
   const [tab, setTab] = useState<PreferencesTab>(() => takeRequestedTab() ?? "venues");
   const [selected, setSelected] = useState("");
+  if (spotPostponed(status)) {
+    return <Suspense fallback={<Loading lang={lang} />}><XauSettings lang={lang} row={status} showLog={tab === "activity"} /></Suspense>;
+  }
   return (
     <>
       <Sections

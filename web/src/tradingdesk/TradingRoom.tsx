@@ -9,7 +9,7 @@ import { MarketWall } from "./MarketWall";
 import { record, sourceInstant } from "./frames";
 import {
   ambient, currentPublication, EVENT_WINDOW_MS, PUBLICATION_TTL_MS, publishedCount, roleHistory,
-  stationNames, stations, sweep, xauPrimary, type Station,
+  stationNames, stations, sweep, xauPrimary, spotPostponed, type Station,
 } from "./room";
 import type { Mood } from "./room-life";
 import type { ObservedValue } from "./types";
@@ -187,7 +187,7 @@ export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
             <span><i className="seat-led" aria-hidden="true" />{role}</span>
           </button>)}
         </div>}
-        <div className="office-instruments">
+        {!spotPostponed(status) && <div className="office-instruments">
           {panel}
           <dl>{stationNames.map(role => {
             const item = shown[role];
@@ -213,7 +213,7 @@ export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
                 {clock ?? "—"}{count !== null && ' · ' + count + ' ' + t(lang, role === "SCAN" ? "symbols" : "outputs").toLowerCase()}</dd>
             </div>;
           })}</dl>
-        </div>
+        </div>}
       </div>}
     </MarketWall>
   );
