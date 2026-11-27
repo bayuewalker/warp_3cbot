@@ -47,7 +47,7 @@ Characters, desks, lamps and props are original procedural geometry (boxes, a lo
 
 `ResearchGate._status_locked()` now includes `running`, which is `busy()` (the research thread is alive). `once()` copies that view onto `engine.research_status` when a run starts. Settle already republishes the same view when the run is finished, so `running` is false there. Scheduling, budget, pacing and the research call are unchanged.
 
-`operator._research_view()` still copies a fixed set of research keys and does not include `running`. That file is outside this change, so `/api/status` does not currently expose `research.running`. The analyst thinking pose is implemented and tested against the field. It stays off in the dashboard until that one boolean is forwarded. No thinking pose is shown from a missing field.
+`operator._research_view()` copies `running` through as a boolean (`True` only when the stored value is `True`, otherwise `False`, including when `research_status` is missing). `publish()` writes that block to `/api/status`, and the SSE snapshot is the same published view. A missing or non-boolean value does not show the thinking pose.
 
 ## Checks
 

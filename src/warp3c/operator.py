@@ -196,6 +196,7 @@ def _research_view(engine) -> dict:
             "last_failed_at": None,
             "next_attempt_at": None,
             "consecutive_failures": 0,
+            "running": False,
         }
     return {
         "state": view.get("state") or "ok",
@@ -204,6 +205,7 @@ def _research_view(engine) -> dict:
         "last_failed_at": view.get("last_failed_at"),
         "next_attempt_at": view.get("next_attempt_at"),
         "consecutive_failures": view.get("consecutive_failures") or 0,
+        "running": view.get("running") is True,
     }
 
 
