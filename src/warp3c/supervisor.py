@@ -216,6 +216,8 @@ class ResearchGate:
             "last_failed_at": None if self._last_failed is None else self._last_failed.isoformat(),
             "next_attempt_at": None if self._next is None else self._next.isoformat(),
             "consecutive_failures": self._consecutive,
+            # Same thread busy() reads. No schedule, budget, or cap change.
+            "running": self.busy(),
         }
 
 
@@ -370,6 +372,8 @@ def once(engine, gate: ResearchGate, clocks: Clocks, *, now: datetime | None = N
         _score_forward(engine, moment)
     if "research" in actions and not gate.busy():
         if gate.start(engine.collect_research):
+            # Publish running=true on the start, not on the next settle.
+            engine.research_status = gate.status()
             clocks = replace(clocks, research=moment)
             journal = getattr(engine, "journal", None)
             if journal is not None and hasattr(journal, "note_research_started"):
