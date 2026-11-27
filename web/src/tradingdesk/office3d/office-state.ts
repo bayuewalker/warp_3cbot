@@ -41,6 +41,7 @@ export type PriorFrame = {
   xauSignalUntil: number | null;
   alertUntil: number | null;
   alertKind: "phone" | null;
+  phoneAlertId: number | null;
 };
 
 export type OfficeInput = {
@@ -218,21 +219,25 @@ export function officeState(input: OfficeInput, now: number): OfficeModel {
   const alertMax = maxAlertId(alerts);
   let alertUntil = priorIn?.alertUntil ?? null;
   let alertKind = priorIn?.alertKind ?? null;
+  let phoneAlertId = priorIn?.phoneAlertId ?? null;
   if (priorIn?.alertsSeen) {
     const floor = priorIn.maxAlertId;
     let newest: AlertRow | null = null;
     for (const row of alerts) {
       if (floor != null && row.id <= floor) continue;
+      if (!PHONE_STATE.has(row.state) || alertFailed(row)) continue;
       if (!newest || row.id > newest.id) newest = row;
     }
-    if (newest && PHONE_STATE.has(newest.state) && !alertFailed(newest)) {
+    if (newest) {
       alertUntil = now + EVENT_WINDOW_MS;
       alertKind = "phone";
+      phoneAlertId = newest.id;
     }
   }
   if (alertUntil != null && now >= alertUntil) {
     alertUntil = null;
     alertKind = null;
+    phoneAlertId = null;
   }
 
   const prior: PriorFrame = {
@@ -246,9 +251,10 @@ export function officeState(input: OfficeInput, now: number): OfficeModel {
     xauSignalUntil,
     alertUntil,
     alertKind,
+    phoneAlertId,
   };
 
-  const shared = { input, now, status, published, age, scanChanged, xau, sent, open, signal: xauSignalUntil != null, scored, pending, scoredDelta, alerts, phone: alertKind === "phone" && alertUntil != null };
+  const shared = { input, now, status, published, age, scanChanged, xau, sent, open, signal: xauSignalUntil != null, scored, pending, scoredDelta, alerts, phone: alertKind === "phone" && alertUntil != null, phoneAlertId };
   const desks: Record<DeskId, DeskState> = {
     SCAN: scanDesk(shared),
     ANALYST: analystDesk(shared),
@@ -285,6 +291,7 @@ type Shared = {
   scoredDelta: boolean;
   alerts: AlertRow[];
   phone: boolean;
+  phoneAlertId: number | null;
 };
 
 function scanDesk(ctx: Shared): DeskState {
@@ -578,7 +585,7 @@ function watcherDesk(ctx: Shared): DeskState {
     return blank({ pose: "away", lamp: "amber", prop: "none", bubble: "reconnecting", freshness: "fresh", sourceAt, evidenceKey: "watcher.stream", fields });
   }
   if (ctx.phone) {
-    const delivered = [...ctx.alerts].reverse().find((row) => PHONE_STATE.has(row.state) && !alertFailed(row));
+    const delivered = ctx.alerts.find((row) => row.id === ctx.phoneAlertId) ?? null;
     return blank({
       pose: "phone", lamp: "blue", prop: "none", bubble: "officePhone", freshness: "fresh",
       sourceAt: delivered?.at ?? sourceAt, evidenceKey: "watcher.phone", fields,

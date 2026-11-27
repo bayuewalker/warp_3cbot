@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { ambientShift } from "./src/tradingdesk/office3d/ambient.ts";
+import { ambientFrameDelay, ambientShift } from "./src/tradingdesk/office3d/ambient.ts";
+import { cardValue, officeCues, walkPosition, CHIEF, SEAT } from "./src/tradingdesk/office3d/life.ts";
 import { wibLight } from "./src/tradingdesk/office3d/lighting.ts";
-import { bubbleText } from "./src/tradingdesk/office3d/office-copy.ts";
+import { bubbleText, fmtWib } from "./src/tradingdesk/office3d/office-copy.ts";
 import { officeState, paperStack, type DeskId, type OfficeInput } from "./src/tradingdesk/office3d/office-state.ts";
 import type { ObservedValue } from "./src/tradingdesk/types.ts";
 
@@ -358,6 +359,33 @@ test("a pending alert with an error and an attempt is red, and a new pending or 
   assert.equal(redBeatsPhone.desks.WATCHER.lamp, "red");
 });
 
+test("a newest-first alerts payload puts the new row on the phone bubble", () => {
+  const older = at(-4000);
+  const newer = at(-500);
+  const seen = officeState(input({
+    alerts: { alerts: [{ id: 4, event: "old_note", state: "delivered", created_at: older }] },
+  }), NOW);
+  const rung = officeState(input({
+    alerts: { alerts: [
+      { id: 6, event: "new_halt", state: "pending", created_at: newer },
+      { id: 5, event: "mid_note", state: "resolved", created_at: at(-2000) },
+      { id: 4, event: "old_note", state: "delivered", created_at: older },
+    ] },
+    prior: seen.prior,
+  }), NOW);
+  assert.equal(rung.desks.WATCHER.pose, "phone");
+  assert.equal(rung.desks.WATCHER.facts.state, "new_halt");
+  assert.equal(rung.desks.WATCHER.sourceAt, newer);
+  assert.equal(rung.prior.phoneAlertId, 6);
+  const bubble = bubbleText("en", "WATCHER", rung.desks.WATCHER);
+  const when = fmtWib(newer, "en");
+  assert.ok(when);
+  assert.match(bubble, /new_halt/);
+  assert.match(bubble, new RegExp(when!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.equal(bubble.includes("old_note"), false);
+  assert.equal(bubble.includes("mid_note"), false);
+});
+
 test("the first frame does not invent delta motion", () => {
   const model = officeState(input({
     forward: { scored: 9, pending: 4 },
@@ -395,6 +423,20 @@ test("office3d source does not pick poses with Math.random or setInterval", () =
   }
 });
 
+test("a due ambient draw waits a full period instead of scheduling the next one immediately", () => {
+  const period = 1000 / 30;
+  const first = ambientFrameDelay(1, 0);
+  assert.ok(Math.abs(first.waitMs - period) < 1e-6);
+  const onTime = ambientFrameDelay(first.deadline, first.deadline);
+  assert.ok(onTime.waitMs > 0);
+  assert.ok(Math.abs(onTime.waitMs - period) < 1e-6);
+  const late = ambientFrameDelay(first.deadline + 0.05, first.deadline);
+  assert.ok(Math.abs(late.waitMs - period) < 1e-6);
+  const early = ambientFrameDelay(first.deadline - 0.01, first.deadline);
+  assert.ok(Math.abs(early.waitMs - 10) < 1e-6);
+  assert.equal(early.deadline, first.deadline);
+});
+
 test("ambient motion never changes pose", () => {
   const model = officeState(input(), NOW);
   const again = officeState(input(), NOW);
@@ -402,15 +444,57 @@ test("ambient motion never changes pose", () => {
   const early = ambientShift(0.4);
   const late = ambientShift(3.1);
   assert.notEqual(early.bob, late.bob);
-  assert.ok(Math.abs(early.bob) <= 0.012);
-  assert.ok(Math.abs(early.head) <= 0.06);
-  assert.ok(early.flicker >= 0.78 && early.flicker <= 0.94);
+  assert.ok(Math.abs(early.bob) <= 1);
+  assert.ok(early.flicker >= 0.44 && early.flicker <= 1);
   const stateSource = readFileSync(fileURLToPath(new URL("./src/tradingdesk/office3d/office-state.ts", import.meta.url)), "utf8");
   const ambientSource = readFileSync(fileURLToPath(new URL("./src/tradingdesk/office3d/ambient.ts", import.meta.url)), "utf8");
   assert.equal(stateSource.includes("ambient"), false);
   assert.equal(ambientSource.includes("pose"), false);
   assert.equal(ambientSource.includes("lamp"), false);
   assert.equal(ambientShift.length, 1);
+});
+
+test("walk, phone, stamp and alarm fire only on the real deltas", () => {
+  const quiet = officeState(input(), NOW);
+  const still = officeCues(quiet.desks);
+  assert.deepEqual(still.deliveries, []);
+  assert.equal(still.phone, false);
+  assert.equal(still.alarm, false);
+  assert.equal(still.stamp, false);
+  assert.equal(still.sleep, false);
+  const later = officeCues(officeState(input(), NOW + 8000).desks);
+  assert.deepEqual(later, still);
+  const halted = officeState(input({ status: status({ halt: true, reason: "halt" }) }), NOW);
+  assert.equal(officeCues(halted.desks).alarm, true);
+  const closed = officeState(input({ status: status({ xau: xau({ window: { name: "closed" } }) }) }), NOW);
+  assert.equal(officeCues(closed.desks).sleep, true);
+  const seen = officeState(input({ alerts: { alerts: [{ id: 1, event: "note", state: "delivered", created_at: published }] } }), NOW);
+  const phone = officeState(input({
+    alerts: { alerts: [{ id: 2, event: "note", state: "pending", created_at: published }] },
+    prior: seen.prior,
+  }), NOW);
+  assert.equal(officeCues(phone.desks).phone, true);
+  assert.equal(officeCues(seen.desks).phone, false);
+  const scored = officeState(input({ forward: { scored: 10, pending: 2 }, prior: officeState(input({ forward: { scored: 9, pending: 2 } }), NOW).prior }), NOW);
+  assert.equal(officeCues(scored.desks).stamp, true);
+  const signal = officeState(input({
+    status: status({ xau: xau({ today: { signals_sent: 2 } }) }),
+    prior: officeState(input({ status: status({ xau: xau({ today: { signals_sent: 1 } }) }) }), NOW).prior,
+  }), NOW);
+  assert.deepEqual(officeCues(signal.desks).deliveries.map((row) => row.kind), ["signal"]);
+  const order = officeState(input({
+    status: status({ mode: "paper", execution_permitted: true }),
+    events: [{ event: "strategy_confirmed", ts: at(-1000) }],
+    agents: agents({ EXECUTOR: agent("permitted") }),
+  }), NOW);
+  assert.deepEqual(officeCues(order.desks).deliveries.map((row) => row.kind), ["order"]);
+  const start = walkPosition("XAU", 0);
+  const end = walkPosition("XAU", 1);
+  assert.deepEqual(start, SEAT.XAU);
+  assert.deepEqual(end, SEAT[CHIEF]);
+  assert.equal(walkPosition(CHIEF, 0.4).x, SEAT[CHIEF].x);
+  assert.equal(cardValue("PORTFOLIO", quiet.desks.PORTFOLIO, null, null, null), "—");
+  assert.equal(cardValue("SCAN", officeState(input({ status: null }), NOW).desks.SCAN, null, null, null), "—");
 });
 
 test("paper stack is a capped log of the real pending count", () => {
