@@ -1,8 +1,8 @@
-# TradingDesk 3D office
+# Archived TradingDesk 3D prototype
 
-Read-only view inside the existing Trading Room. 2D stays the default. The bottom nav is unchanged.
+The production Trading Room is 2D only. The 3D prototype is accessible through the development harness at `web/office3d-harness.html`. The notes below describe the earlier dashboard integration.
 
-## Toggle
+## Former dashboard toggle
 
 The room header has a `2D | 3D` switch, next to the existing display settings. The choice is stored in `localStorage` under `warp.room.view` (`2d` by default). 3D is offered only when the browser can create a WebGL2 or WebGL context. Otherwise the 3D button is disabled and the header says why.
 

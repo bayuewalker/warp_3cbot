@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Activity, SlidersHorizontal, X } from "lucide-react";
 import type { Status } from "../api";
 import { fmtTime } from "../format";
@@ -15,35 +15,7 @@ import type { Mood } from "./room-life";
 import type { ObservedValue } from "./types";
 import "./room.css";
 
-const Office3D = lazy(() => import("./office3d/Office3D"));
 const RoomAlive = lazy(() => import("./room-alive"));
-
-let officeLogged = false;
-class OfficeBoundary extends Component<{ onFail: () => void; children: ReactNode }, { failed: boolean }> {
-  state = { failed: false };
-  static getDerivedStateFromError() { return { failed: true }; }
-  componentDidCatch(error: unknown) {
-    if (!officeLogged) {
-      officeLogged = true;
-      console.error(error);
-    }
-    this.props.onFail();
-  }
-  render() { return this.state.failed ? null : this.props.children; }
-}
-
-function webglOk() {
-  try {
-    const canvas = document.createElement("canvas");
-    return Boolean(canvas.getContext("webgl2") || canvas.getContext("webgl"));
-  } catch { return false; }
-}
-function storedView(): "2d" | "3d" {
-  try { return localStorage.getItem("warp.room.view") === "3d" ? "3d" : "2d"; } catch { return "2d"; }
-}
-function storeView(view: "2d" | "3d") {
-  try { localStorage.setItem("warp.room.view", view); } catch { /* The in-memory choice still applies. */ }
-}
 
 type RoomProps = {
   lang: Lang; agents: Record<Station, ObservedValue<string | null>>; status: Status | null;
@@ -146,9 +118,6 @@ function RoomDetail({ role, lang, item, status, history, stream, historyState, c
 export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
   const [selected, select] = useState<Station | null>(null);
   const [settings, showSettings] = useState(false);
-  const [view, setView] = useState<"2d" | "3d">(storedView);
-  const [webgl] = useState(webglOk);
-  const [lost, setLost] = useState(false);
   const [reduced, setReduced] = useState(() => window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   const [motion, setMotion] = useState(() => preference("warp.room.motion", true));
   const [text, setText] = useState(() => preference("warp.room.text",
@@ -194,7 +163,6 @@ export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
     const timer = window.setTimeout(() => setExpiredAt(Date.now()), Math.max(0, Math.min(...deadlines) - clock));
     return () => window.clearTimeout(timer);
   }, [logs, status?.published_at, motionNow]);
-  const show3d = view === "3d" && webgl && !lost;
   const floor = (
     <MarketWall lang={lang} now={now}>{(panel, monitorLine) =>
       <div className="office-layout">
@@ -241,30 +209,16 @@ export function TradingRoom({ lang, agents, status, events, now }: RoomProps) {
   );
   return <>
     <section ref={room} className="room-summary trading-room" aria-labelledby="room-title" data-text={text ? "on" : "off"}
-      data-motion={motion && !text && visible && !selected ? "on" : "off"} data-view={show3d ? "3d" : "2d"}>
+      data-motion={motion && !text && visible && !selected ? "on" : "off"}>
       <header><h2 id="room-title"><Activity size={17} />{t(lang, "room")}</h2>
-        <div className="room-tools">
-          <div className="room-view" role="group" aria-label={t(lang, "officeView")}>
-            <button type="button" aria-pressed={view === "2d"} onClick={() => { setView("2d"); storeView("2d"); }}>{t(lang, "office2d")}</button>
-            <button type="button" aria-pressed={view === "3d"} disabled={!webgl || lost}
-              aria-describedby={!webgl || lost ? "office-view-reason" : undefined}
-              onClick={() => { setView("3d"); storeView("3d"); }}>{t(lang, "office3d")}</button>
-          </div>
-          <button className="room-settings" aria-label={t(lang, "roomSettings")} aria-expanded={settings}
+        <button className="room-settings" aria-label={t(lang, "roomSettings")} aria-expanded={settings}
             onClick={() => showSettings(!settings)}><SlidersHorizontal size={17} /></button>
-        </div></header>
-      {(!webgl || lost) && <p id="office-view-reason" className="room-notice">{t(lang, lost ? "office3dLost" : "office3dDisabled")}</p>}
+      </header>
       {settings && <div className="room-options">
         <label><input type="checkbox" checked={motion} onChange={e => { setMotion(e.target.checked); save("warp.room.motion", e.target.checked); }} />{t(lang, "roomMotion")}</label>
         <label><input type="checkbox" checked={text} onChange={e => { setText(e.target.checked); save("warp.room.text", e.target.checked); }} />{t(lang, "roomText")}</label>
       </div>}
-      {show3d ? <OfficeBoundary onFail={() => setLost(true)}>
-        <Suspense fallback={floor}>
-          <Office3D lang={lang} status={status} events={logs} agents={agents} now={motionNow}
-            animate={motion && !reduced && visible && !selected} paused={!visible || selected !== null}
-            onOpenStation={select} onLost={() => setLost(true)} />
-        </Suspense>
-      </OfficeBoundary> : floor}
+      {floor}
     </section>
     {selected && <RoomDetail role={selected} lang={lang} item={agents[selected]} status={status}
       history={roleHistory(selected, logs, now)} stream={stream} historyState={readLabel(lang, agents.WATCHER.state)} close={() => select(null)} />}
