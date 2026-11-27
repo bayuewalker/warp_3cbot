@@ -350,10 +350,14 @@ class SharedAccountingTests(unittest.TestCase):
             self.assertEqual(decision.equity, Decimal("46"))
 
     def test_warp_daily_loss_still_halts(self):
+        # Midday UTC, not the wall clock. A mark 30 minutes back stays on this date.
+        self.now = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
+        self.since = self.now - timedelta(days=1)
         marks = [EquityMark(self.now - timedelta(minutes=30), Decimal("50"), True)]
         cfg = shared_cfg(max_drawdown=Decimal("0.5"))
         account = live_account(now=self.now, warp_sol="0.2")
         decision = self.run_assess(account, [warp_row(price="80")], {"SOLUSDT": Decimal("80")}, marks, cfg=cfg)
+        self.assertEqual(marks[0].marked_at.astimezone(timezone.utc).date(), self.now.date())
         self.assertEqual(decision.reason, "daily_loss")
         self.assertFalse(decision.execution_permitted)
 

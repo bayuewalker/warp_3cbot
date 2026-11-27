@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Office 3D harness</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      if (new URLSearchParams(location.search).get("webgl") === "0") {
+        const original = HTMLCanvasElement.prototype.getContext;
+        HTMLCanvasElement.prototype.getContext = function (type, attrs) {
+          if (String(type).indexOf("webgl") === 0) return null;
+          return original.call(this, type, attrs);
+        };
+      }
+    </script>
+    <script type="module" src="/src/tradingdesk/office3d/harness.tsx"></script>
+  </body>
+</html>
