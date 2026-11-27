@@ -14,18 +14,36 @@ Date.now = () => now;
 localStorage.setItem("warp.room.motion", params.get("motion") === "0" ? "false" : "true");
 localStorage.setItem("warp.room.text", "false");
 localStorage.setItem("warp.room.view", params.get("view") === "2d" ? "2d" : "3d");
+if (params.get("reduced") === "1") {
+  window.matchMedia = ((query: string) => ({
+    matches: query.includes("prefers-reduced-motion"), media: query, onchange: null,
+    addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {},
+    dispatchEvent() { return false; },
+  })) as typeof window.matchMedia;
+}
 
 const published = new Date(now - 1000).toISOString();
-function observed(value: string): ObservedValue<string | null> {
+const pose = params.get("pose") ?? "";
+function observed(value: string, asleep = false): ObservedValue<string | null> {
   return {
-    value, state: "confirmed", availability: "confirmed", freshness: "fresh", source: "worker",
+    value, state: asleep ? "stale" : "confirmed", availability: asleep ? "unavailable" : "confirmed",
+    freshness: asleep ? "stale" : "fresh", source: "worker",
     sourceAt: published, receivedAt: new Date(now).toISOString(), reason: null, traceId: null,
   };
 }
 
+const poseEvent = pose === "working"
+  ? { event: "observe_candidate", ts: published, reason: "BTCUSDT crossed the book" }
+  : pose === "fill"
+    ? { event: "strategy_confirmed", ts: published }
+    : pose === "alert"
+      ? { event: "alert_failed", ts: published, alert_event: "telegram delivery rejected now" }
+      : null;
+
 const status = {
-  alive: true, mode: "observe", reason: "ok", market_data_fresh: true, risk_permitted: true,
-  execution_permitted: false, halt: false, gating: "current", published_at: published,
+  alive: true, mode: pose === "fill" ? "paper" : "observe", reason: pose === "halt" ? "daily loss" : "ok",
+  market_data_fresh: true, risk_permitted: pose !== "risk",
+  execution_permitted: false, halt: pose === "halt", gating: "current", published_at: published,
   equity: null, pnl_today: null, universe: ["BTCUSDT"],
   pipeline: {
     screening: { state: "ready", source: "binance_spot_public", count: 12 },
@@ -51,14 +69,14 @@ createRoot(document.getElementById("root")!).render(
       lang="en"
       now={now}
       status={status}
-      events={[{ event: "worker_started", ts: published }]}
+      events={poseEvent ? [poseEvent] : [{ event: "worker_started", ts: published }]}
       agents={{
-        SCAN: observed("ready"),
-        ANALYST: observed("ready"),
-        AEGIS: observed("pass"),
-        EXECUTOR: observed("observe"),
-        PORTFOLIO: { ...observed("reported"), source: "threecommas" },
-        WATCHER: observed("reported"),
+        SCAN: observed("ready", pose === "sleep"),
+        ANALYST: observed("ready", pose === "sleep"),
+        AEGIS: observed("pass", pose === "sleep"),
+        EXECUTOR: observed("observe", pose === "sleep"),
+        PORTFOLIO: { ...observed("reported", pose === "sleep"), source: "threecommas" },
+        WATCHER: observed("reported", pose === "sleep"),
       }}
     />
   </StrictMode>,
