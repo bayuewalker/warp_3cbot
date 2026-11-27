@@ -39,3 +39,17 @@ export function retainQuotes(history: QuoteHistory, prices: ReturnType<typeof de
     return [quote.symbol, [...entries, { time, last }].slice(-60)];
   }));
 }
+
+/** The wall and the miniature PC displays share one time-scaled line. */
+export function quoteTrace(points: QuotePoint[]) {
+  const first = points[0], last = points.at(-1);
+  if (!first || !last || last.time <= first.time) return null;
+  const low = Math.min(...points.map(point => point.last));
+  const high = Math.max(...points.map(point => point.last));
+  const line = points.map(point => {
+    const x = (point.time - first.time) / (last.time - first.time) * 480 + 10;
+    const y = low === high ? 40 : 72 - (point.last - low) / (high - low) * 64;
+    return x + "," + y;
+  }).join(" ");
+  return { line, low, high, start: first.time, end: last.time };
+}

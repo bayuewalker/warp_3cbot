@@ -15,13 +15,14 @@ type Flags = {
 
 /** Decorative and data-driven layers on the classic control-room art. CSS transforms and opacity only. */
 export default function RoomAlive({
-  agents, status, events, now, flags, onMoods,
+  agents, status, events, now, flags, onMoods, monitorLine,
 }: {
   agents: Partial<Record<Station, ObservedValue<string | null>>>;
   status: LifeStatus;
   events: unknown;
   now: number;
   flags: Flags;
+  monitorLine: string | null;
   onMoods: (moods: Record<Station, Mood>) => void;
 }) {
   const scanRef = useRef<ScanMemory | null>(null);
@@ -56,6 +57,10 @@ export default function RoomAlive({
           <i className="alive-radar" />
           <i className="alive-stamp" />
         </i>
+        {monitorLine && <svg className="alive-chart" viewBox="0 0 500 80" preserveAspectRatio="none" focusable="false">
+          <polyline points={monitorLine} fill="none" stroke="currentColor" strokeWidth="1.25"
+            strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+        </svg>}
         <i className="alive-eye" />
         <i className="alive-lamp" />
         <i className="alive-keys" />

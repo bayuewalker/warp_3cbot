@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { deskPrices, retainQuotes } from "./src/tradingdesk/quotes.ts";
+import { deskPrices, quoteTrace, retainQuotes } from "./src/tradingdesk/quotes.ts";
 import type { ReadInput } from "./src/tradingdesk/types.ts";
 
 const now = Date.parse("2026-11-23T13:00:00Z");
@@ -28,4 +28,14 @@ test("the session trace uses only fresh distinct source timestamps", () => {
   const next = retainQuotes(first, prices(0, { BTCUSDT: { ...quote.BTCUSDT, last: "102" } }));
   assert.deepEqual(next.BTCUSDT.map(point => point.last), [100.5, 102]);
   assert.equal(retainQuotes(next, prices(0, quote, "rate_limit")), next);
+});
+
+test("the market wall and monitor trace use source times and handle flat or insufficient history", () => {
+  const start = { time: 1000, last: 12 };
+  assert.equal(quoteTrace([]), null);
+  assert.equal(quoteTrace([start]), null);
+  assert.equal(quoteTrace([start, start]), null);
+  assert.equal(quoteTrace([start, { time: 2000, last: 12 }])?.line, "10,40 490,40");
+  assert.equal(quoteTrace([start, { time: 2000, last: 14 }, { time: 5000, last: 10 }])?.line,
+    "10,40 130,8 490,72");
 });
