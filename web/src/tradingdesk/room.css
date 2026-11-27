@@ -6,12 +6,6 @@
 .trading-room header h2 { display: flex; align-items: center; gap: 8px; color: #e0edf4; margin: 0; }
 .trading-room header h2 svg { color: #65daca; }
 .room-settings, .room-dialog header button { display: grid; place-items: center; color: #c1d6e1; border-radius: 6px; }
-.room-tools { display: flex; align-items: center; gap: 6px; }
-.room-view { display: inline-flex; border: 1px solid #3c5160; border-radius: 8px; overflow: hidden; }
-.room-view button { min-width: 44px; min-height: 36px; padding: 0 8px; color: #c5d7e2; background: transparent; font: 600 12px/1 var(--mono); }
-.room-view button[aria-pressed="true"] { background: #143044; color: #d9fff8; }
-.room-view button:disabled { color: #6d7f8c; }
-.room-notice { margin: 0 0 6px; color: #e3bb83; font: 12px/1.4 var(--mono); }
 .room-options { justify-content: flex-start; flex-wrap: wrap; gap: 4px 18px; }
 .room-options label { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; cursor: pointer; }
 .room-options input { accent-color: #64dccc; }
