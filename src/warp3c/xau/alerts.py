@@ -8,6 +8,8 @@ from warp3c.telemetry import log_event
 
 from .clock import format_wib
 
+_CARD = "🎯 Verdict"
+
 SIGNAL = 0
 LIFECYCLE = 1
 OPS = 2
@@ -27,17 +29,51 @@ def new_signal(signal: dict) -> tuple[str, str]:
     side = "BUY" if signal["direction"] == "long" else "SELL"
     kind = {"limit": "LIMIT", "stop": "STOP", "market": "MKT"}.get(signal["entry_type"], "MKT")
     event = f"XAU {side} {kind} {signal['grade']} #{signal['id6']}"
-    tp2 = signal.get("tp2") or "-"
-    rr2 = signal.get("rr_tp2") or "-"
-    reason = _clip(str(signal.get("reason") or ""), 90)
-    detail = "\n".join([
-        f"{signal['model']} · {signal['window']} · conf {signal['confidence']}",
-        f"E {signal['entry']} SL {signal['sl']} (${signal['r_usd']}) TP1 {signal['tp1']} {signal['rr_tp1']}R TP2 {tp2} {rr2}R",
-        f"Risk {signal['risk_pct']}% · ex {signal['lot']} lot/{signal['ref']} · valid {signal['valid_wib']} WIB",
-        reason,
-        f"News clear to {signal['news_wib']} WIB · signal only, no order",
-    ])
-    return event, _fit(event, detail)
+    return event, _fit(event, xau_card(signal))
+
+
+def xau_card(signal: dict) -> str:
+    """Labeled rows from the setup. No lot, dollar risk, account reference, or id."""
+    side = "BUY" if signal.get("direction") == "long" else "SELL"
+    icon = "🟢" if side == "BUY" else "🔴"
+    kind = {"limit": "LIMIT", "stop": "STOP", "market": "MKT"}.get(str(signal.get("entry_type") or ""))
+    action = f"{icon} {side}" + (f" {kind}" if kind else "")
+    rows = [f"{_CARD} — XAUUSD", f"Action: {action}"]
+    grade = str(signal.get("grade") or "").strip()
+    if grade:
+        rows.append(f"Grade: {grade}")
+    bias = str(signal.get("bias") or "").strip()
+    if bias:
+        rows.append(f"Bias: {_clip(bias, 90)}")
+    for label, key in (("Entry", "entry"), ("SL", "sl"), ("TP1", "tp1")):
+        shown = _plain(signal.get(key))
+        if shown:
+            rows.append(f"{label}: {shown}")
+    tp2 = signal.get("tp2")
+    if tp2 not in (None, "", "-"):
+        shown = _plain(tp2)
+        if shown:
+            rows.append(f"TP2: {shown}")
+    risk = _plain(signal.get("risk_pct"))
+    if risk:
+        rows.append(f"Risk: {risk}%")
+    reason = str(signal.get("reason") or "").strip()
+    if reason:
+        rows.append(f"Why: {_clip(reason, 90)}")
+    rows.append("Next: Signal only. No order.")
+    text = "\n".join(rows)
+    return text if len(text) <= 400 else _clip(text, 400)
+
+
+def _plain(value: object) -> str | None:
+    if value is None or value == "":
+        return None
+    text = str(value).strip()
+    if not text or text == "-":
+        return None
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or None
 
 
 def follow_up(kind: str, id6: str, price: str, realized_r: str, status: str) -> tuple[str, str]:
@@ -65,6 +101,10 @@ def ops(name: str, key: str, detail: str = "") -> tuple[str, str]:
 
 
 def _fit(event: str, detail: str) -> str:
+    if detail.startswith(_CARD):
+        if len(detail) <= 400:
+            return detail
+        return _clip(detail, 400)
     prefix = f"{event}: "
     room = 400 - len(prefix)
     if room < 1:
@@ -87,8 +127,8 @@ class Outbox:
         if len(self.sent) >= self.cap:
             log_event("xau_alert_dropped", name=event, priority=priority)
             return False
-        full = f"{event}: {detail}"
-        if len(full) > 400:
+        budget = detail if detail.startswith(_CARD) else f"{event}: {detail}"
+        if len(budget) > 400:
             detail = _fit(event, detail)
         accepted = bool(self.sink(event, detail))
         if accepted:

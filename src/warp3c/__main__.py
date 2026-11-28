@@ -20,6 +20,7 @@ from .httpapi import dispatch
 from .market import MarketData
 from .notify import Delivery, channel_configured, enqueue_incident, flush_alerts
 from .operator import HEALTH, publish, publish_postponed
+from .signalcard import worker_block_card
 from .state import OrderJournal
 from .supervisor import ResearchGate, clocks_from_journal, once
 from .telemetry import configure_logging, log_event, send_alert, send_telegram
@@ -255,7 +256,7 @@ def note_blocked_cycle(
         detail=detail[:300],
     )
     if tracker.failure(exc, now):
-        _notify(cfg, journal, "cycle_blocked", detail[:300])
+        _notify(cfg, journal, "cycle_blocked", worker_block_card())
 
 
 def note_cycle_recovered(cfg: Settings, journal: OrderJournal | None, tracker: CycleBlockTracker) -> None:

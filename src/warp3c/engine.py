@@ -48,6 +48,7 @@ from .risk import (
     unfilled_quote,
 )
 from .screener import ScreenerError, ScreenerFilters, select_symbols
+from .signalcard import block_why, blocked_card, halt_off_card, halt_on_card, spot_card
 from .state import OrderJournal
 from .telemetry import log_event
 from .threecommas import IntegrationError, StrategyNotFound, ThreeCommas
@@ -302,6 +303,7 @@ class Engine:
         deduped: list[Signal] = []
         seen: set[str] = set()
         notes: list[tuple[str, str, str, str, str]] = []
+        posts: list[tuple[Signal, dict]] = []
         replace_cards = submit or bool(signals)
         if replace_cards:
             self.last_opportunities = []
@@ -345,6 +347,7 @@ class Engine:
                     gated.symbol, gated.action, gated.confidence, enriched.evidence.last_price, now
                 )
             deduped.append(gated)
+            posts.append((gated, card))
             notes.append((stamp, signal.symbol, "research", gated.action, "accepted"))
             if gated.action != signal.action:
                 notes.append((stamp, signal.symbol, "backtest", card.get("backtest_reason", ""), "rejected"))
@@ -361,6 +364,7 @@ class Engine:
             self.status.reason = "halt" if paused else "observe_without_account"
             self._record(notes)
             log_event("halt" if paused else "observe", signals=len(deduped), fresh=self.status.market_data_fresh)
+            self._announce_research(posts, None, None, now, planned_as="buy")
             return 0
 
         prices, price_problem = self._price_map(account, positions, now)
@@ -371,6 +375,7 @@ class Engine:
             self.status.reason = "halt" if paused else price_problem
             self._record(notes)
             log_event("entries_paused", mode=self.cfg.mode, reason=self.status.reason)
+            self._announce_research(posts, None, None, now, planned_as="buy")
             return 0
 
         since = self._shared_since(now)
@@ -407,7 +412,7 @@ class Engine:
             enqueue_incident(
                 self.journal,
                 f"breaker:{decision.reason}",
-                f"{decision.reason} {decision.equity}",
+                decision.reason,
                 now=now,
                 channel=channel_configured(self.cfg),
             )
@@ -430,7 +435,10 @@ class Engine:
                 log_event("halt", mode=self.cfg.mode)
             elif not self.status.risk_permitted:
                 log_event("entries_paused", mode=self.cfg.mode, reason=self.status.reason)
+            self._announce_research(posts, planned, decision.reason, now, planned_as="buy")
             return 0
+
+        self._announce_research(posts, planned, decision.reason, now, planned_as="later")
 
         opened = 0
         self.last_aegis = []
@@ -440,8 +448,15 @@ class Engine:
             if self.journal.recently_submitted(plan.symbol):
                 notes.append((stamp, plan.symbol, "broker", "duplicate_cooldown", "skipped"))
                 log_event("duplicate_skipped", symbol=plan.symbol)
+                self._queue_spot(posts, plan.symbol, now, state="BUY")
                 continue
             if opened >= 1:
+                started = False
+                for later in decision.orders:
+                    if later.symbol == plan.symbol:
+                        started = True
+                    if started:
+                        self._queue_spot(posts, later.symbol, now, state="BUY")
                 break
             if self._halted():
                 self.status.reason = "halt"
@@ -450,6 +465,7 @@ class Engine:
                 break
             if self.cfg.mode == "observe":
                 notes.append((stamp, plan.symbol, "broker", "observe", "not_submitted"))
+                self._queue_spot(posts, plan.symbol, now, state="BUY")
                 log_event(
                     "observe_candidate",
                     symbol=plan.symbol,
@@ -463,10 +479,12 @@ class Engine:
             if not allowed:
                 notes.append((stamp, plan.symbol, "broker", why, "not_submitted"))
                 self.status.execution_permitted = False
+                self._queue_spot(posts, plan.symbol, now, state="BUY")
                 continue
             if getattr(account, "market", "spot") not in {"", "spot"}:
                 notes.append((stamp, plan.symbol, "broker", "spot_only", "not_submitted"))
                 self.status.execution_permitted = False
+                self._queue_spot(posts, plan.symbol, now, state="BUY")
                 continue
             if self._trade_book_error:
                 self.last_aegis.append(
@@ -474,6 +492,7 @@ class Engine:
                 )
                 notes.append((stamp, plan.symbol, "broker", "WAIT_DATA_INCOMPLETE", "not_submitted"))
                 self.status.execution_permitted = False
+                self._queue_spot(posts, plan.symbol, now, state="BLOCKED", why="market_data")
                 continue
             book = self._approve(account, plan, now)
             self._record_risk_decision(plan, account, book, now)
@@ -481,12 +500,16 @@ class Engine:
             if book.decision != "APPROVED" or book.ladder is None:
                 notes.append((stamp, plan.symbol, "broker", ",".join(book.reasons) or book.decision, "not_submitted"))
                 self.status.execution_permitted = False
+                self._queue_spot(
+                    posts, plan.symbol, now, state="BLOCKED", why=book.reasons[0] if book.reasons else ""
+                )
                 continue
             self._approved_ladder = book.ladder
             client_id = allocate_client_id(self.journal, plan.symbol, template, now)
             if client_id is None:
                 notes.append((stamp, plan.symbol, "broker", "duplicate_client", "skipped"))
                 log_event("duplicate_skipped", symbol=plan.symbol)
+                self._queue_spot(posts, plan.symbol, now, state="BUY")
                 continue
             try:
                 result = self._place(plan, client_id, template, account)
@@ -525,6 +548,61 @@ class Engine:
         self.status.opened = opened
         self._record(notes)
         return opened
+
+    def _announce_research(self, posts, planned, reason, now, *, planned_as: str) -> None:
+        """One card per research symbol. A halt stays the single global card."""
+        if self._halted() or not posts:
+            return
+        for signal, _card in posts:
+            in_plan = planned is not None and signal.symbol in planned
+            if signal.action == "BUY" and in_plan and planned_as != "buy":
+                continue
+            if signal.action == "BUY" and planned is not None and not in_plan:
+                self._queue_spot(posts, signal.symbol, now, state="BLOCKED", why=reason or "")
+                continue
+            self._queue_spot(posts, signal.symbol, now, state=signal.action)
+
+    def _queue_spot(self, posts, symbol: str, now, *, state: str, why: str = "") -> None:
+        if self._halted():
+            return
+        found = next(((signal, card) for signal, card in posts if signal.symbol == symbol), None)
+        if found is None:
+            return
+        signal, card = found
+        evidence = signal.evidence
+        if state == "BLOCKED":
+            text = blocked_card(
+                symbol=symbol,
+                confidence=signal.confidence,
+                why=block_why(why),
+                was="BUY",
+            )
+            label = "BLOCKED"
+        else:
+            action = state if state in {"BUY", "WAIT", "SKIP"} else "WAIT"
+            text = spot_card(
+                symbol=symbol,
+                action=action,
+                confidence=signal.confidence,
+                thesis=str(card.get("thesis") or signal.thesis),
+                regime=None if evidence is None else evidence.regime,
+                rsi=None if evidence is None else evidence.rsi,
+                entry=card.get("entry"),
+                stop=card.get("stop"),
+                take=card.get("take"),
+                pair_cap=self.cfg.max_pair if action == "BUY" else None,
+                model_action=None if card.get("model_action") is None else str(card.get("model_action")),
+                backtest_passed=card.get("backtest_passed") if isinstance(card.get("backtest_passed"), bool) else None,
+                evidence_passed=None if evidence is None else evidence.passed,
+            )
+            label = action
+        enqueue_incident(
+            self.journal,
+            f"signal:{symbol}:{label}",
+            text,
+            now=now,
+            channel=channel_configured(self.cfg),
+        )
 
     def _template(self) -> BotTemplate:
         raw = self.journal.get_setting("bot_template")
@@ -978,7 +1056,7 @@ class Engine:
         enqueue_incident(
             self.journal,
             "halt_on" if paused else "halt_off",
-            "HALT file is present" if paused else "HALT file was removed",
+            halt_on_card() if paused else halt_off_card(),
             now=datetime.now(timezone.utc),
             channel=channel_configured(self.cfg),
         )

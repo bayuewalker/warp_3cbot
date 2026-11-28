@@ -732,9 +732,15 @@ class AlertTests(unittest.TestCase):
         ]
         for event, detail in samples:
             self.assertTrue(event.startswith("XAU "))
-            self.assertLessEqual(len(f"{event}: {detail}"), 400)
+            if detail.startswith("🎯 Verdict"):
+                self.assertLessEqual(len(detail), 400)
+            else:
+                self.assertLessEqual(len(f"{event}: {detail}"), 400)
         event, detail = new_signal(self._signal(reason="x" * 200))
         self.assertIn("…", detail)
+        self.assertNotIn("10000", detail)
+        self.assertNotIn("0.05", detail)
+        self.assertNotIn("7.35", detail)
 
     def test_events_are_unique_and_the_cap_drops_summaries_first(self):
         first, _ = new_signal(self._signal(id6="ABC123"))
