@@ -921,6 +921,7 @@ def _render_input(setup, equity: D, _dxy: str) -> dict:
         "valid_wib": valid_label(setup.valid_until),
         "reason": setup.reason,
         "news_wib": valid_label(setup.valid_until),
+        "bias": setup.bias,
     }
 
 

@@ -18,6 +18,7 @@ from warp3c.httpapi import dispatch
 from warp3c.notify import enqueue_incident, flush_alerts
 from warp3c.operator import RUNTIME
 from warp3c.schedule import Clocks
+from warp3c.signalcard import halt_off_card, halt_on_card
 from warp3c.state import OrderJournal
 from warp3c.supervisor import ResearchGate
 from warp3c.telemetry import configure_logging, log_event, send_telegram
@@ -298,7 +299,7 @@ class TriggerTests(unittest.TestCase):
             engine.monitor()
             due = journal.due_alerts(datetime.now(timezone.utc) + timedelta(seconds=1))
             self.assertEqual([row[1] for row in due], ["halt_on"])
-            self.assertEqual(due[0][2], "HALT file is present")
+            self.assertEqual(due[0][2], halt_on_card())
             restarted = Engine(_cfg, None, None, journal, None)
             restarted.monitor()
             due = journal.due_alerts(datetime.now(timezone.utc) + timedelta(seconds=1))
@@ -318,7 +319,7 @@ class TriggerTests(unittest.TestCase):
                 for row in journal.due_alerts(datetime.now(timezone.utc) + timedelta(seconds=1))
                 if row[1] == "halt_off"
             ]
-            self.assertEqual(detail, ["HALT file was removed"])
+            self.assertEqual(detail, [halt_off_card()])
 
     def test_worker_started_reports_mode_and_shared_account(self):
         with tempfile.TemporaryDirectory() as tmp:

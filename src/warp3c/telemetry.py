@@ -211,7 +211,9 @@ def send_telegram(token: str, chat_id: str, event: str, detail: str, *, transpor
     if not token or not chat_id:
         return TelegramResult(False)
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    text = f"{event}: {detail}"[:400]
+    from .signalcard import telegram_text
+
+    text = telegram_text(event, detail)
     body = {"chat_id": chat_id, "text": text}
     try:
         with httpx.Client(transport=transport, timeout=5) as client:
